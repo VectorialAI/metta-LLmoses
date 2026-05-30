@@ -79,7 +79,7 @@ done
 # Repo / entry-point validation
 # ---------------------------------------------------------------------------
 REPO="${REPO:-$PWD}"
-ENTRY_REL="deme/tests/expand-demes-test.metta"
+ENTRY_REL="llmoses/deme/tests/expand-demes-test.metta"
 ENTRY="$REPO/$ENTRY_REL"
 
 if [[ ! -f "$ENTRY" ]]; then
@@ -98,7 +98,7 @@ if [[ -z "$RUN_SH" ]] || [[ ! -f "$RUN_SH" ]]; then
     exit 2
 fi
 
-LOGDIR="${LOGDIR_OVERRIDE:-$REPO/moses_demo_logs}"
+LOGDIR="${LOGDIR_OVERRIDE:-$REPO/llmoses/outputs/logs}"
 mkdir -p "$LOGDIR"
 STAMP="$(date +%Y%m%d-%H%M%S)"
 
@@ -266,7 +266,7 @@ example_count() {
 # ---------------------------------------------------------------------------
 run_example() {
     local N="$1"
-    local DRIVER_REL="deme/tests/_moses_demo_driver_${STAMP}_${N}.metta"
+    local DRIVER_REL="llmoses/deme/tests/_moses_demo_driver_${STAMP}_${N}.metta"
     local DRIVER="$REPO/$DRIVER_REL"
 
     if ! python3 -c "$PYGEN" "$ENTRY" build "$N" > "$DRIVER"; then

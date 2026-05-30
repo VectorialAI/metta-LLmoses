@@ -109,7 +109,15 @@ $optimDeme
 ;; To enable that, we may need to change our termination condition so that the generation is equivalent to the number of expansion as well.
 ;; The number of expansions in the open cog classic is equivalent to the number of deme expansions. That looks like the same thing we are doing here but not sure.
 
+;; Public entry — unchanged 15-arg signature. Captures the budget once,
+;; then delegates to the internal loop with $totalGen pinned.
 (= (runMoses $maxGen $maxScore $maxCandOutput $metaPop $nExpansion $nDeme $context $optimize $nEval $maxCandsPerDeme $minPoolSize $complexityTemperature $nToKeep $capCoef $genCount)
+   (let $totalGen $maxGen
+        (runMosesLoop $maxGen $totalGen $maxScore $maxCandOutput $metaPop $nExpansion $nDeme $context $optimize $nEval $maxCandsPerDeme $minPoolSize $complexityTemperature $nToKeep $capCoef $genCount)))
+
+;; Internal loop — carries $totalGen (the original budget, never modified) so
+;; the ascending generation index can be derived at each step.
+(= (runMosesLoop $maxGen $totalGen $maxScore $maxCandOutput $metaPop $nExpansion $nDeme $context $optimize $nEval $maxCandsPerDeme $minPoolSize $complexityTemperature $nToKeep $capCoef $genCount)
 (if (== $maxGen 0)
     (if (<= $maxCandOutput (OS.length $metaPop))
         (let $topCandidates (OS.getTopN $maxCandOutput $metaPop) $topCandidates)
@@ -118,6 +126,8 @@ $optimDeme
     (let*
      (
        ($_ (println! (Generation $maxGen)))
+       ($genIndex (+ (- $totalGen $maxGen) 1))
+       ($_ (emitState $genIndex $maxGen))
        ($optimizedDemes (case $context
                         ((($prune-exemplar $fs-algo $truthTableBScore $itable) (trace! "expand  deme returnn" (expandDeme $metaPop $nExpansion $nDeme $prune-exemplar $fs-algo $truthTableBScore $optimize $itable mi)))
                         (($nGames $opponentPolicy $complexityRatio) (trace! "expand deme return" (expandDeme $metaPop $nExpansion $nDeme $nGames $opponentPolicy $complexityRatio $maxScore $optimize))))))
@@ -138,7 +148,7 @@ $optimDeme
       )
  (if (== $topScore $maxScore)
          $resultCandi
-         (runMoses (- $maxGen 1) $maxScore $maxCandOutput $updatedMetaPop $nExpansion $nDeme $context $optimize $nEval $maxCandsPerDeme $minPoolSize $complexityTemperature $nToKeep $capCoef $genCount)))))
+         (runMosesLoop (- $maxGen 1) $totalGen $maxScore $maxCandOutput $updatedMetaPop $nExpansion $nDeme $context $optimize $nEval $maxCandsPerDeme $minPoolSize $complexityTemperature $nToKeep $capCoef $genCount)))))
 
 
 ;; Some helpers specific to final testing

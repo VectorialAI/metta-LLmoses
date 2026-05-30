@@ -63,9 +63,14 @@ ARG PETTA_COMMIT=ebdb51168135f7fdf68c59acf7521a1b85c19ba0
 
 # UTF-8 locale: without this, SWI-Prolog emits "Illegal multibyte Sequence"
 # on the emoji (✅/❌) and other UTF-8 in the .metta files.
+# PYTHONPATH: makes utilities/ importable by bare module name from any CWD.
+# The embedded CPython (janus) inherits the process environment, so
+# `!(import! &self "llmoses_emitter.py")` resolves without a brittle
+# ../../ prefix regardless of which .metta entry point is running.
 ENV LANG=C.UTF-8 \
     LC_ALL=C.UTF-8 \
-    PYTHONUNBUFFERED=1
+    PYTHONUNBUFFERED=1 \
+    PYTHONPATH=/workspace/metta-moses/utilities:/workspace/metta-moses/llmoses/utilities
 
 # Build + Python embedding deps (matches PeTTa's own CI Dockerfile), plus git.
 RUN apt-get update \
@@ -105,10 +110,11 @@ COPY . /workspace/metta-moses
 
 # Declare the bind-mount point for host-persisted outputs and wrapper logs.
 # At run time the Makefile mounts <repo>/outputs → this path, so anything the
-# wrapper writes under outputs/ (including outputs/logs/) is visible on the host
+# wrapper writes under llmoses/outputs/ is visible on the host
 # even after the container exits.  Creating the sub-directories here ensures
 # they exist if no bind-mount is provided (e.g. a bare `docker run`).
-RUN mkdir -p /workspace/metta-moses/outputs/logs
+RUN mkdir -p /workspace/metta-moses/llmoses/outputs/logs \
+          && mkdir -p /workspace/metta-moses/llmoses/outputs/states
 
 # Default: run the full metta-moses test suite exactly as CI does.
 # Override with e.g.:  docker run --rm IMAGE run.sh deme/tests/expand-demes-test.metta
