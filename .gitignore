@@ -6,6 +6,21 @@ __pycache__/
 logs/
 .DS_Store
 
+# ── Containerisation setup (branch-local, not merged to main) ──────────────
+Dockerfile
+.dockerignore
+run_moses_demo.sh
+Makefile
+
+# Container outputs – host-bound volume; runtime artefacts, not committed.
+# The outputs/ directory and logs/ subdirectory are kept in tree via .gitkeep;
+# everything else under them is ignored.
+outputs/*
+!outputs/.gitkeep
+!outputs/logs/
+outputs/logs/*
+!outputs/logs/.gitkeep
+
 myTest.metta
 todo
 tree-helper-registration-test.metta
