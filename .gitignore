@@ -20,6 +20,8 @@ outputs/*
 !outputs/logs/
 outputs/logs/*
 !outputs/logs/.gitkeep
+llmoses/outputs/*
+!llmoses/outputs/.gitkeep
 
 myTest.metta
 todo

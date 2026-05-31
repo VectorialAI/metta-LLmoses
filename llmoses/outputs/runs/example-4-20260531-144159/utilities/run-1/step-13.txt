@@ -1,6 +1,0 @@
-STUB_UTILITY_v0 run 1 step 13 ts 1780238538276 (NOT a real utility estimate)
--- received state-13 (head 10) --
-METAPOP gen 13 remaining 8 pop_size 8 best_penalized_score -2
-DEME gen 13 optimized_instances 92
--- received action-13 (head 10) --
-ACTION gen 13 candidate_exemplars 8 action_taken UNCAPTURED_v0

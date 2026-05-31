@@ -1,2 +1,0 @@
-METAPOP gen 13 remaining 8 pop_size 8 best_penalized_score -2
-DEME gen 13 optimized_instances 92
