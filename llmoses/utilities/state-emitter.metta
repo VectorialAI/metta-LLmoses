@@ -12,9 +12,28 @@
 ;; If PYTHONPATH does not include llmoses/utilities/ this produces no
 ;; output — a visible sign that emitState will silently be a no-op.
 !(py-call (llmoses_emitter.log_path))
+!(py-call (llmoses_emitter.run_dir))
 
 ;; $genIndex : ascending, human-facing generation number (1-based)
 ;; $remaining: the loop's native descending counter ($maxGen)
 ;; (: emitState (-> Number Number Number))
 (= (emitState $genIndex $remaining)
    (py-call (llmoses_emitter.emit_state $genIndex $remaining)))
+
+;; v0: single entry point; Python fans out into metapop/deme/action channels.
+;; $genIndex  : ascending 1-based generation number
+;; $remaining : the loop's native descending counter ($maxGen)
+;; $popSize   : OS.length of the metapopulation going into this generation
+;; $bestScore : penalized score of the current top exemplar
+;; $demeSize  : number of scored instances in the optimized deme this gen
+;; (: emitGen (-> Number Number Number Number Number Number))
+(= (emitGen $genIndex $remaining $popSize $bestScore $demeSize)
+   (py-call (llmoses_emitter.emit_gen $genIndex $remaining $popSize $bestScore $demeSize)))
+
+;; Called once at the top of every runMoses invocation to open a fresh
+;; per-run subdirectory for step files (run-1/, run-2/, …). Without this,
+;; all runMoses calls within the same process write gen-1 of run A and
+;; gen-1 of run B into the same step-1.txt.
+;; (: emitNewRun (-> Number))
+(= (emitNewRun)
+   (py-call (llmoses_emitter.new_run)))

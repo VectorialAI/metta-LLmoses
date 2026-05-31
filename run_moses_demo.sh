@@ -103,6 +103,42 @@ mkdir -p "$LOGDIR"
 STAMP="$(date +%Y%m%d-%H%M%S)"
 
 # ---------------------------------------------------------------------------
+# Watcher lifecycle helpers
+#
+# Ordering contract (must match the design spec):
+#   1. mkdir -p "$RUN_DIR/ready"  (done inside start_watcher)
+#   2. start_watcher <run_id>     — launches watcher in background
+#   3. run the MeTTa entry point with LLMOSES_RUN_ID=<run_id>
+#   4. stop_watcher               — touches CONTROL/stop, then WAITS
+#
+# The wait in stop_watcher is load-bearing: it guarantees that this
+# invocation returns only after the watcher has drained all sentinels, so
+# trailing steps can never vanish.  The CONTROL/stop flag is only touched
+# AFTER the MeTTa process returns, which ensures the last sentinel is on
+# disk before the watcher begins its final drain pass.
+# ---------------------------------------------------------------------------
+_WATCHER_PID=""
+_WATCHER_RUN_DIR=""
+
+start_watcher() {
+    local run_id="$1"
+    _WATCHER_RUN_DIR="$REPO/llmoses/outputs/runs/$run_id"
+    mkdir -p "$_WATCHER_RUN_DIR/ready"
+    python3 "$REPO/llmoses/utilities/llmoses_watcher.py" "$_WATCHER_RUN_DIR" &
+    _WATCHER_PID=$!
+}
+
+stop_watcher() {
+    if [[ -n "$_WATCHER_PID" && -n "$_WATCHER_RUN_DIR" ]]; then
+        mkdir -p "$_WATCHER_RUN_DIR/CONTROL"
+        touch "$_WATCHER_RUN_DIR/CONTROL/stop"
+        wait "$_WATCHER_PID" 2>/dev/null || true
+        _WATCHER_PID=""
+        _WATCHER_RUN_DIR=""
+    fi
+}
+
+# ---------------------------------------------------------------------------
 # run_traced <log-stem> -- <cmd> [args...]
 #
 # Runs <cmd> from $REPO, applies --trace filtering, optionally saves full log.
@@ -282,8 +318,11 @@ run_example() {
     echo " may be slow or surface WIP behavior.)"
     echo "----------------------------------------------------------------"
 
+    local RUN_ID_VAL="example-${N}-${STAMP}"
     local exit_code=0
-    run_traced "example-${N}-${STAMP}" -- "$RUN_SH" "$DRIVER_REL" || exit_code=$?
+    start_watcher "$RUN_ID_VAL"
+    run_traced "example-${N}-${STAMP}" -- env LLMOSES_RUN_ID="$RUN_ID_VAL" "$RUN_SH" "$DRIVER_REL" || exit_code=$?
+    stop_watcher
 
     rm -f "$DRIVER"
     echo "----------------------------------------------------------------"
@@ -313,8 +352,12 @@ case "$cmd" in
         echo "Running entry-point test NON-silent (shows built-in optimizeDemes/"
         echo "runMoses output).  Trace: $TRACE  |  head: $HEAD_N"
         echo "----------------------------------------------------------------"
-        run_traced "live-${STAMP}" -- "$RUN_SH" "$ENTRY_REL"
+        _live_rc=0
+        start_watcher "live-${STAMP}"
+        run_traced "live-${STAMP}" -- env LLMOSES_RUN_ID="live-${STAMP}" "$RUN_SH" "$ENTRY_REL" || _live_rc=$?
+        stop_watcher
         echo "----------------------------------------------------------------"
+        (( _live_rc == 0 )) || exit "$_live_rc"
         ;;
 
     example)

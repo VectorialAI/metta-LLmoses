@@ -1,0 +1,6 @@
+STUB_UTILITY_v0 run 1 step 20 ts 1780238548726 (NOT a real utility estimate)
+-- received state-20 (head 10) --
+METAPOP gen 20 remaining 1 pop_size 8 best_penalized_score -2
+DEME gen 20 optimized_instances 92
+-- received action-20 (head 10) --
+ACTION gen 20 candidate_exemplars 8 action_taken UNCAPTURED_v0
