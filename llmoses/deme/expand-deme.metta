@@ -112,7 +112,8 @@ $optimDeme
 ;; Public entry — unchanged 15-arg signature. Captures the budget once,
 ;; then delegates to the internal loop with $totalGen pinned.
 (= (runMoses $maxGen $maxScore $maxCandOutput $metaPop $nExpansion $nDeme $context $optimize $nEval $maxCandsPerDeme $minPoolSize $complexityTemperature $nToKeep $capCoef $genCount)
-   (let $totalGen $maxGen
+   (let* (($totalGen $maxGen)
+          ($_ (emitNewRun)))
         (runMosesLoop $maxGen $totalGen $maxScore $maxCandOutput $metaPop $nExpansion $nDeme $context $optimize $nEval $maxCandsPerDeme $minPoolSize $complexityTemperature $nToKeep $capCoef $genCount)))
 
 ;; Internal loop — carries $totalGen (the original budget, never modified) so
@@ -127,7 +128,6 @@ $optimDeme
      (
        ($_ (println! (Generation $maxGen)))
        ($genIndex (+ (- $totalGen $maxGen) 1))
-       ($_ (emitState $genIndex $maxGen))
        ($optimizedDemes (case $context
                         ((($prune-exemplar $fs-algo $truthTableBScore $itable) (trace! "expand  deme returnn" (expandDeme $metaPop $nExpansion $nDeme $prune-exemplar $fs-algo $truthTableBScore $optimize $itable mi)))
                         (($nGames $opponentPolicy $complexityRatio) (trace! "expand deme return" (expandDeme $metaPop $nExpansion $nDeme $nGames $opponentPolicy $complexityRatio $maxScore $optimize))))))
@@ -141,6 +141,12 @@ $optimDeme
        ;; ($_ (println! (Top Exemplar before expansion: $top)))
        ($topScore (getExemplarCscore $top))
        ;; ($_ (println! (topscore: $topScore)))
+       ;; --- LLMOSES v0 emit: bind scalars, then delegate (mirrors emitState) ---
+       ($popSize   (eval (OS.length $metaPop)))
+       ($bestScore (eval (getPenScore $topScore)))
+       ($demeSize  (eval (List.length (second $sInst))))
+       ($_ (emitGen $genIndex $maxGen $popSize $bestScore $demeSize))
+       ;; -----------------------------------------------------------------------
        ($resultCandi (if (<= $maxCandOutput (OS.length $updatedMetaPop)) (OS.getTopN $maxCandOutput $updatedMetaPop) $updatedMetaPop))
        ;; ($_ (println! (Top: $topScore Max: $maxScore (cScore>= $topScore $maxScore))))
        ($_ (cut))

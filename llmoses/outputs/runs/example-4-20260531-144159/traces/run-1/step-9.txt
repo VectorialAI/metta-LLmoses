@@ -1,0 +1,2 @@
+STUB_TRACE_v0 run 1 step 9 ts 1780238532399
+observed ready/run-1-step-9; read 2 state line(s), 1 action line(s); wrote utilities + traces.
