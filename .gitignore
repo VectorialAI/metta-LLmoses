@@ -31,3 +31,11 @@ run_python_tests.py
 # Ignore HTML and Prolog files
 *.html
 *.pl
+
+
+llmoses/design-spec/*
+llmoses/deme/tests/extractors-test.metta
+llmoses/drafts/*
+llmoses/drafts
+llmoses/tests
+llmoses/tests/*

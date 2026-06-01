@@ -88,13 +88,21 @@ if [[ ! -f "$ENTRY" ]]; then
     exit 2
 fi
 
-# Locate PeTTa's run.sh (on PATH in the container image; otherwise search).
+# Locate PeTTa's run.sh. Resolution order:
+#   1. PATH lookup (works in the container: /opt/PeTTa is on PATH)
+#   2. Known install location in the container image (/opt/PeTTa/run.sh)
+#   3. Broad filesystem search under any *PeTTa* directory (dev fallback)
+# Note: the interpreter is run.sh — there is no `petta` or `metta` binary.
 RUN_SH="$(command -v run.sh 2>/dev/null || true)"
+if [[ -z "$RUN_SH" ]] && [[ -f /opt/PeTTa/run.sh ]]; then
+    RUN_SH=/opt/PeTTa/run.sh
+fi
 if [[ -z "$RUN_SH" ]]; then
     RUN_SH="$(find / -name run.sh -type f -path '*PeTTa*' 2>/dev/null | head -n1 || true)"
 fi
 if [[ -z "$RUN_SH" ]] || [[ ! -f "$RUN_SH" ]]; then
-    echo "ERROR: could not find PeTTa's run.sh on PATH or under a *PeTTa* dir." >&2
+    echo "ERROR: could not find PeTTa's run.sh on PATH, at /opt/PeTTa/run.sh, or under a *PeTTa* dir." >&2
+    echo "       (There is no 'petta' or 'metta' binary — the interpreter is run.sh)" >&2
     exit 2
 fi
 
