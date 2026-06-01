@@ -30,3 +30,9 @@ tree-helper-registration-test.metta
 run_python_tests.py
 
 *.html
+llmoses/design-spec/*
+llmoses/deme/tests/extractors-test.metta
+llmoses/drafts/*
+llmoses/drafts
+llmoses/tests
+llmoses/tests/*
