@@ -36,3 +36,5 @@ llmoses/drafts/*
 llmoses/drafts
 llmoses/tests
 llmoses/tests/*
+llmoses/logs
+llmoses/logs/*
