@@ -18,6 +18,7 @@ visible value rather than crashing the run.
 Lives in llmoses/utilities/ (on PYTHONPATH), imported from MeTTa as
   !(import! &self "state_builder.py")
 """
+import math
 import os
 import json
 import time
@@ -59,6 +60,13 @@ _cur_action_dir = _ACTION_DIR
 _gen = {}                 # gen -> accumulating record
 _prev_member_ids = set()  # cross-generation lineage diff
 _pending_selection = None  # buffered {id, tree} from set_selection, consumed by flush_gen
+_pending_merge = None      # buffered post-merge metapop ids from sbEmitAllMerged, consumed by flush_gen
+_total_evals = 0           # cumulative deme_instances across all gens in the current run
+_explored_ids = set()      # program_ids selected in a prior gen (reset per run; "explored" flag)
+
+# Boltzmann selection constants — mirror exemplar-selection.metta COMPXY_TEMP / INV_TEMP
+_COMPXY_TEMP = 6.0
+_INV_TEMP = 100.0 / _COMPXY_TEMP
 
 
 # ===========================================================================
@@ -138,6 +146,21 @@ def _cr_or_none(x):
     return _num(x)
 
 
+def _boltzmann(pen_scores):
+    """Reproduce normalizeProbs + the sum in selectExemplar.
+    w_i = exp((s_i - best) * INV_TEMP) / sum(w), aligned to input order.
+    Returns a parallel list of floats (or None for non-finite inputs)."""
+    finite = [s for s in pen_scores if isinstance(s, (int, float)) and not math.isinf(s)]
+    if not finite:
+        return [None] * len(pen_scores)
+    best = max(finite)
+    w = [0.0 if (not isinstance(s, (int, float)) or math.isinf(s))
+         else math.exp((s - best) * _INV_TEMP)
+         for s in pen_scores]
+    tot = sum(w)
+    return [0.0] * len(w) if tot <= 0 else [x / tot for x in w]
+
+
 def _pid(expr_str):
     return "p" + hashlib.sha1(expr_str.encode("utf-8")).hexdigest()[:10]
 
@@ -171,7 +194,7 @@ def sb_run_dir():
 
 def new_run():
     """Open a fresh per-run subdir. Call once at the top of each runMoses."""
-    global _run_seq, _cur_state_dir, _cur_action_dir, _prev_member_ids, _pending_selection
+    global _run_seq, _cur_state_dir, _cur_action_dir, _prev_member_ids, _pending_selection, _pending_merge, _total_evals, _explored_ids
     _run_seq += 1
     _cur_state_dir = os.path.join(_STATE_DIR, f"run-{_run_seq}")
     _cur_action_dir = os.path.join(_ACTION_DIR, f"run-{_run_seq}")
@@ -179,6 +202,9 @@ def new_run():
     os.makedirs(_cur_action_dir, exist_ok=True)
     _prev_member_ids = set()
     _pending_selection = None
+    _pending_merge = None
+    _total_evals = 0
+    _explored_ids = set()
     return _run_seq
 
 
@@ -240,6 +266,31 @@ def set_deme_meta(gen, deme_id, deme_tree, instances):
     return 0
 
 
+def begin_merge():
+    """post_deme_close Tier A: open a fresh merge buffer before walking $updatedMetaPop."""
+    global _pending_merge
+    _pending_merge = {"post_ids": [], "counts": {}}
+    return 0
+
+
+def add_merged_member(tree):
+    """Append one post-merge member's program_id (hashed from its full raw tree).
+    Uses the identical _pid(expr_to_str(tree)) scheme as add_member so the ids
+    align with the candidate set built during the same generation."""
+    if _pending_merge is not None:
+        _pending_merge["post_ids"].append(_pid(expr_to_str(tree)))
+    return 0
+
+
+def set_merge_count(name, value):
+    """Accumulate a named merge-pipeline count into _pending_merge["counts"].
+    Additive so nDeme>1 recurses correctly through mergeDemes."""
+    if _pending_merge is not None:
+        k = _flat(name); c = _pending_merge["counts"]
+        c[k] = (c.get(k) or 0) + (_num(value) or 0)
+    return 0
+
+
 def set_selection(tree):
     """post_selection hook: record the exemplar selectExemplar chose THIS gen.
     Called from inside expandDeme with the FULL raw tree — same value the member
@@ -253,12 +304,17 @@ def set_selection(tree):
     return 0
 
 
+def get_total_evals():
+    """Return cumulative deme_instances evaluated in the current run (reset by new_run)."""
+    return _total_evals
+
+
 def flush_gen(gen, problem_type, complexity_ratio, max_gen, n_eval,
               max_cands_per_deme, min_pool_size, complexity_temperature,
               n_to_keep, cap_coef, n_deme, optimizer):
     """Assemble + write state/step-G.json and action/step-G.json, append JSONL,
     then drop the ready/ sentinel (LAST)."""
-    global _prev_member_ids, _pending_selection
+    global _prev_member_ids, _pending_selection, _pending_merge, _total_evals, _explored_ids
     g = _num(gen)
     s = _gs(g)
     members = s["members"]
@@ -272,6 +328,8 @@ def flush_gen(gen, problem_type, complexity_ratio, max_gen, n_eval,
     culled_ids = sorted(_prev_member_ids - cur_ids)
     id_to_expr = {m["program_id"]: m["expr"] for m in members}
 
+    probs = _boltzmann([m["cscore"]["penalized_score"] for m in members])
+
     # consume + VALIDATE buffered selection (must be one of this gen's candidates)
     selected_id = None
     selection_status = "no_selection"
@@ -283,9 +341,65 @@ def flush_gen(gen, problem_type, complexity_ratio, max_gen, n_eval,
         else:
             selected_id = "MISMATCH"; selection_status = "mismatch"
 
+    # consume buffered post-merge metapop (Tier A post_deme_close event)
+    ts = int(time.time() * 1000)
+    post_deme_close_evt = None
+    if _pending_merge is not None:
+        post = set(_pending_merge["post_ids"])
+        c = _pending_merge["counts"]
+        post_deme_close_evt = {
+            "event_type": "post_deme_close", "generation": g, "timestamp_ms": ts,
+            "metapop_size_before": len(cur_ids),
+            "metapop_size_after": len(post),
+            "members_added": sorted(post - cur_ids),
+            "members_removed": sorted(cur_ids - post),
+            "candidates_produced": c.get("candidates_produced"),
+            "duplicates_dropped":  c.get("duplicates_dropped"),
+            "dominated_removed":   c.get("dominated_removed"),
+        }
+        _pending_merge = None
+
     knobs = s["knobs"]
     neighborhood = sum(max(_num(k["multiplicity"]) - 1, 0)
                        for k in knobs if isinstance(k["multiplicity"], (int, float)))
+
+    _total_evals += _num(s["deme_instances"]) or 0
+
+    # Annotate each member with whether it was previously selected (explored flag).
+    # Checked BEFORE adding this gen's pick so "explored" honestly means "prior gen".
+    members_out = [{**m, "explored": m["program_id"] in _explored_ids} for m in members]
+
+    post_selection_evt = None
+    if selection_status != "no_selection":
+        rank = None
+        if selected_id not in (None, "MISMATCH"):
+            rank = next((i for i, m in enumerate(members)
+                         if m["program_id"] == selected_id), None)
+        post_selection_evt = {
+            "event_type": "post_selection", "generation": g, "timestamp_ms": ts,
+            "chosen_program_id": selected_id,
+            "native_boltzmann_probability": (probs[rank]
+                                              if rank is not None and rank < len(probs)
+                                              else None),
+            "selected_rank": rank,
+            "llm_utility": None,
+            "selection_status": selection_status,
+        }
+
+    breakdown = {"logical": 0, "strategy": 0, "other": 0}
+    for k in knobs:
+        m = _num(k.get("multiplicity"))
+        breakdown["logical" if m == 3 else "strategy" if m == 2 else "other"] += 1
+
+    post_representation_evt = {
+        "event_type": "post_representation", "generation": g, "timestamp_ms": ts,
+        "exemplar_program_id": selected_id,
+        "knob_count": len(knobs),
+        "knob_type_breakdown": breakdown,
+        "neighborhood_size": neighborhood,
+        "sampled_pair_count": (breakdown["logical"]
+                               if _flat(problem_type) == "boolean" else None),
+    }
 
     run_parameters = {
         "problem_type": _flat(problem_type),
@@ -299,8 +413,10 @@ def flush_gen(gen, problem_type, complexity_ratio, max_gen, n_eval,
 
     state_doc = {
         "schema_version": _VERSION, "run_seq": _run_seq, "generation": g,
+        "timestamp_ms": ts,
+        "total_evaluations": _total_evals,
         "metapopulation": {
-            "size": len(members), "best_penalized_score": best, "members": members,
+            "size": len(members_out), "best_penalized_score": best, "members": members_out,
         },
         "current_deme": {
             "deme_id": s["deme_id"], "exemplar_expr": s["deme_tree"],
@@ -311,6 +427,11 @@ def flush_gen(gen, problem_type, complexity_ratio, max_gen, n_eval,
         "lineage": {
             "new_members": [{"program_id": pid, "expr": id_to_expr.get(pid)} for pid in new_ids],
             "culled_program_ids": culled_ids,
+        },
+        "moses_native_events": {
+            "post_selection": post_selection_evt,
+            "post_representation": post_representation_evt,
+            "post_deme_close": post_deme_close_evt,
         },
         "run_parameters": run_parameters,
     }
@@ -344,6 +465,8 @@ def flush_gen(gen, problem_type, complexity_ratio, max_gen, n_eval,
     }) + "\n")
 
     _prev_member_ids = cur_ids
+    if selection_status == "ok":
+        _explored_ids.add(selected_id)
 
     # MUST be last: ready sentinel (compound name avoids cross-run collision).
     ready = os.path.join(_READY_DIR, f"run-{_run_seq}-step-{g}")
