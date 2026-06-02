@@ -106,10 +106,6 @@ $optimDeme
 ;;     - $maxCandOutput : The number of candidates to be returned
 ;;     - other parameters required by the expandDeme method
 ; (: runMoses (-> Number Cscore Number (OS (Exemplar $a)) Number Number Bool Symbol (TruthTableBScore $a) (-> Deme (TruthTableBScore $a) Instance $Scorer (Instance Deme $state)) $Scorer Number Number Number Number (ITable $a) Number Number Number (OS (Exemplar $a))))
-;; TODO: $nEval isn't being used. Increase it so that it works as expected. 
-;; To enable that, we may need to change our termination condition so that the generation is equivalent to the number of expansion as well.
-;; The number of expansions in the open cog classic is equivalent to the number of deme expansions. That looks like the same thing we are doing here but not sure.
-
 ;; Public entry — unchanged 15-arg signature. Captures the budget once,
 ;; then delegates to the internal loop with $totalGen pinned.
 (= (runMoses $maxGen $maxScore $maxCandOutput $metaPop $nExpansion $nDeme $context $optimize $nEval $maxCandsPerDeme $minPoolSize $complexityTemperature $nToKeep $capCoef $genCount)
@@ -151,12 +147,12 @@ $optimDeme
             ((($prune-exemplar $fs-algo $truthTableBScore $itable) ("boolean" ()))
              (($nGames $opponentPolicy $cr)                        ("strategy" $cr)))))
        ($demeSize (eval (List.length (second $sInst))))
+       ($_ (sbEmitAllMerged $updatedMetaPop))
        ($_ (sbEmitGeneration $genIndex $metaPop $demeId $rep $demeSize
                              $problemType $complexityRatio $maxGen $nEval $maxCandsPerDeme
                              $minPoolSize $complexityTemperature $nToKeep $capCoef $nDeme $optimize))
        ;; ---------------------------------------------------------------------
        ($resultCandi (if (<= $maxCandOutput (OS.length $updatedMetaPop)) (OS.getTopN $maxCandOutput $updatedMetaPop) $updatedMetaPop))
-       ;; ($_ (println! (Top: $topScore Max: $maxScore (cScore>= $topScore $maxScore))))
        ($_ (cut))
        ($_ (println! ""))
       )

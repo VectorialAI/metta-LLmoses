@@ -21,8 +21,9 @@
 !(py-call (state_builder.sb_run_dir))
 
 ;; --- direct delegators (scalars already; mirror emitGen/emitNewRun) ---------
-(= (sbNewRun)        (py-call (state_builder.new_run)))
-(= (sbBeginGen $g)   (py-call (state_builder.begin_gen $g)))
+(= (sbNewRun)           (py-call (state_builder.new_run)))
+(= (sbBeginGen $g)      (py-call (state_builder.begin_gen $g)))
+(= (sbGetTotalEvals)    (py-call (state_builder.get_total_evals)))
 
 ;; --- post_selection hook: buffer the selected exemplar's tree -------------
 ;; Called from inside expandDeme right after $tree is bound. Passes the FULL
@@ -78,6 +79,19 @@
    (py-call (state_builder.flush_gen $g $problemType $complexityRatio $maxGen $nEval
               $maxCandsPerDeme $minPoolSize $complexityTemperature $nToKeep $capCoef
               $nDeme $optimizer)))
+
+;; --- post_deme_close Tier A: capture post-merge metapop ids for the diff ----
+;; Reuses memberByIdx / memberTree / metapopSize — no new extractors.
+(= (sbEmitMergedPop $os $i $n)
+   (if (>= $i $n) 0
+       (let* (($x  (memberByIdx $os $i))
+              ($tr (eval (memberTree $x)))
+              ($_  (py-call (state_builder.add_merged_member $tr))))
+         (sbEmitMergedPop $os (+ $i 1) $n))))
+(= (sbEmitAllMerged $os)
+   (let* (($_ (py-call (state_builder.begin_merge)))
+          ($n (eval (metapopSize $os))))
+     (sbEmitMergedPop $os 0 $n)))
 
 ;; --- one-call convenience: emit a full generation --------------------------
 ;; Order: begin -> members -> knobs -> deme meta -> flush. Caller supplies the

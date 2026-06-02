@@ -253,12 +253,15 @@
             ($_ (println! (TrimmedDownDeme: (List.length $trimmedDeme))))
             ($potCandidates (demeToTrees (mkDeme $rep (mkSInstSet $trimmedDeme) $demeId) $scoringContext)) ;;convert instances to trees
             ($_ (println! (Before getNewCandidates: (List.length $potCandidates))))
+            ($_ (py-call (state_builder.set_merge_count "candidates_produced" (List.length $potCandidates))))
             ;; ($_ (println! (Metapop: $metapop)))
             ;; ($_ (println! ("--")))
             ($candidates (getNewCandidates $potCandidates $metapop)) ;;which aren't found in the meta pop
             ;; ($_ (println! (NewCandidates: (List.length $candidates))))
+            ($_ (py-call (state_builder.set_merge_count "duplicates_dropped" (- (List.length $potCandidates) (List.length $candidates)))))
             ($removedDominated (removeDominated $candidates))  ;;removeDominated
             ;; ($_ (println! (Removed Dominated: $removedDominated)))
+            ($_ (py-call (state_builder.set_merge_count "dominated_removed" (- (List.length $candidates) (List.length $removedDominated)))))
             ($_ (println! (Going to merge (List.length $removedDominated) Instances)))
             ($updatedMetaPop (mergeCandidates $removedDominated $metapop))  ;;merge candidates into metapop
             ;; ($_ (println! (merged Candidate: $updatedMetaPop)))
