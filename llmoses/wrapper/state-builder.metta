@@ -1,5 +1,5 @@
 ;; ============================================================================
-;; llmoses/wrapper/state-builder.metta  (v0.4)
+;; llmoses/wrapper/state-builder.metta  (v0.4-mvp)
 ;;
 ;; Mirrors state-emitter.metta's emitGen call site EXACTLY (expand-deme.metta
 ;; lines 145-148): bind each value with `eval` in the let*, THEN pass the bound
@@ -20,20 +20,30 @@
 ;; Canary: prints the run dir at import if PYTHONPATH resolves the module.
 !(py-call (state_builder.sb_run_dir))
 
-;; --- direct delegators (cargo-copied from emitGen shape) -------------------
+;; --- direct delegators (scalars already; mirror emitGen/emitNewRun) ---------
 (= (sbNewRun)        (py-call (state_builder.new_run)))
 (= (sbBeginGen $g)   (py-call (state_builder.begin_gen $g)))
 
+;; --- post_selection hook: buffer the selected exemplar's tree -------------
+;; Called from inside expandDeme right after $tree is bound. Passes the FULL
+;; raw tree (so its program_id matches a member/candidate id). Buffered in
+;; Python; flush_gen consumes + validates it against the gen's candidates.
+(= (sbSetSelection $tree)
+   (py-call (state_builder.set_selection $tree)))
+
 ;; --- member loop: eval-bind every extractor result, THEN py-call ------------
+;; $expr = short preOrder display; $tree = full raw tree for collision-resistant id.
+;; cscore crosses as a flat list via cscoreFields; Python unwraps defensively.
 (= (sbEmitMembers $g $os $i $n)
    (if (>= $i $n)
        0
        (let* (
          ($x    (memberByIdx $os $i))
-         ($expr (eval (memberExpr   $x)))
+         ($expr (eval (memberExpr   $x)))   ; short display (preOrder)
+         ($tree (eval (memberTree   $x)))   ; full raw tree -> collision-resistant id
          ($cs   (eval (cscoreFields (memberCscore $x))))
          ($bs   (eval (memberBScore $x)))
-         ($_    (py-call (state_builder.add_member $g $expr $cs $bs)))
+         ($_    (py-call (state_builder.add_member $g $expr $tree $cs $bs)))
        )
        (sbEmitMembers $g $os (+ $i 1) $n))))
 (= (sbEmitAllMembers $g $os)
