@@ -58,6 +58,7 @@ _cur_state_dir = _STATE_DIR
 _cur_action_dir = _ACTION_DIR
 _gen = {}                 # gen -> accumulating record
 _prev_member_ids = set()  # cross-generation lineage diff
+_pending_selection = None  # buffered {id, tree} from set_selection, consumed by flush_gen
 
 
 # ===========================================================================
@@ -123,6 +124,20 @@ def _flat(x):
         return "<unrepr>"
 
 
+def _cr_or_none(x):
+    """Coerce complexity_ratio to float/int or None.
+    The boolean context emits () (marshalled as '()' or [] or empty string);
+    treat any of those as absent → JSON null. Real numeric values pass through _num."""
+    if x is None:
+        return None
+    s = str(x).strip()
+    if s in ("", "()", "Nil"):
+        return None
+    if isinstance(x, list) and len(x) == 0:
+        return None
+    return _num(x)
+
+
 def _pid(expr_str):
     return "p" + hashlib.sha1(expr_str.encode("utf-8")).hexdigest()[:10]
 
@@ -156,13 +171,14 @@ def sb_run_dir():
 
 def new_run():
     """Open a fresh per-run subdir. Call once at the top of each runMoses."""
-    global _run_seq, _cur_state_dir, _cur_action_dir, _prev_member_ids
+    global _run_seq, _cur_state_dir, _cur_action_dir, _prev_member_ids, _pending_selection
     _run_seq += 1
     _cur_state_dir = os.path.join(_STATE_DIR, f"run-{_run_seq}")
     _cur_action_dir = os.path.join(_ACTION_DIR, f"run-{_run_seq}")
     os.makedirs(_cur_state_dir, exist_ok=True)
     os.makedirs(_cur_action_dir, exist_ok=True)
     _prev_member_ids = set()
+    _pending_selection = None
     return _run_seq
 
 
@@ -171,21 +187,30 @@ def begin_gen(gen):
     return 0
 
 
-def add_member(gen, expr, cscore, bscore):
+def add_member(gen, expr, tree, cscore, bscore):
     """One call per metapopulation member.
-      expr   : marshalled preOrder expression (nested list)
+      expr   : marshalled preOrder expression — SHORT display form (nested list).
+               NB preOrder currently collapses children, so this is for
+               human/agent readability only.
+      tree   : marshalled RAW tree (full mkTree structure). Used for program_id
+               because it is collision-resistant: two distinct programs cannot
+               share a raw tree, whereas preOrder can flatten distinct programs
+               to the same short form. Identity off the full tree; display off
+               the (possibly lossy) preOrder.
       cscore : flat [raw, cpxy, cpen, upen, pen]
       bscore : ['mkBScore', <Cons spine>]  (or bare spine / Nil)
     """
-    es = expr_to_str(expr)
+    es = expr_to_str(expr)          # short display
+    ts = expr_to_str(tree)          # full raw tree -> stable identity
     cs = [_num(v) for v in (cscore if isinstance(cscore, list) else [cscore])]
     # pad/truncate defensively to 5 fields so a bad marshal is visible, not fatal
     while len(cs) < 5:
         cs.append(None)
     bs = [_num(v) for v in cons_to_list(bscore)]
     _gs(gen)["members"].append({
-        "program_id": _pid(es),
+        "program_id": _pid(ts),     # hash the FULL tree, not the lossy display
         "expr": es,
+        "tree": ts,                 # full structural rendering (audit / debug)
         "cscore": {
             "raw_score": cs[0], "complexity": cs[1], "complexity_penalty": cs[2],
             "uniformity_penalty": cs[3], "penalized_score": cs[4],
@@ -215,12 +240,25 @@ def set_deme_meta(gen, deme_id, deme_tree, instances):
     return 0
 
 
+def set_selection(tree):
+    """post_selection hook: record the exemplar selectExemplar chose THIS gen.
+    Called from inside expandDeme with the FULL raw tree — same value the member
+    loop hashes — so the program_id matches a candidate's id.
+    Buffered (expandDeme lacks $genIndex); flush_gen consumes + validates it.
+    A MISMATCH signals a real defect (stale buffer / multi-or-zero selection /
+    non-canonical id)."""
+    global _pending_selection
+    ts = expr_to_str(tree)
+    _pending_selection = {"program_id": _pid(ts), "tree": ts}
+    return 0
+
+
 def flush_gen(gen, problem_type, complexity_ratio, max_gen, n_eval,
               max_cands_per_deme, min_pool_size, complexity_temperature,
               n_to_keep, cap_coef, n_deme, optimizer):
     """Assemble + write state/step-G.json and action/step-G.json, append JSONL,
     then drop the ready/ sentinel (LAST)."""
-    global _prev_member_ids
+    global _prev_member_ids, _pending_selection
     g = _num(gen)
     s = _gs(g)
     members = s["members"]
@@ -234,13 +272,24 @@ def flush_gen(gen, problem_type, complexity_ratio, max_gen, n_eval,
     culled_ids = sorted(_prev_member_ids - cur_ids)
     id_to_expr = {m["program_id"]: m["expr"] for m in members}
 
+    # consume + VALIDATE buffered selection (must be one of this gen's candidates)
+    selected_id = None
+    selection_status = "no_selection"
+    sel = _pending_selection
+    _pending_selection = None
+    if sel is not None:
+        if sel["program_id"] in cur_ids:
+            selected_id = sel["program_id"]; selection_status = "ok"
+        else:
+            selected_id = "MISMATCH"; selection_status = "mismatch"
+
     knobs = s["knobs"]
     neighborhood = sum(max(_num(k["multiplicity"]) - 1, 0)
                        for k in knobs if isinstance(k["multiplicity"], (int, float)))
 
     run_parameters = {
         "problem_type": _flat(problem_type),
-        "complexity_ratio": _num(complexity_ratio), "max_gen": _num(max_gen),
+        "complexity_ratio": _cr_or_none(complexity_ratio), "max_gen": _num(max_gen),
         "n_eval": _num(n_eval), "max_cands_per_deme": _num(max_cands_per_deme),
         "min_pool_size": _num(min_pool_size),
         "complexity_temperature": _num(complexity_temperature),
@@ -275,8 +324,14 @@ def flush_gen(gen, problem_type, complexity_ratio, max_gen, n_eval,
              "cscore": m["cscore"], "complexity": m["complexity"]}
             for m in members
         ],
-        "selected_program_id": None,   # UNCAPTURED until the post_selection hook
-        "complexity_ratio": {"current_value": _num(complexity_ratio)},
+        "selected_program_id": selected_id,
+        "selection_status": selection_status,
+        "selection_detail": (
+            None if selection_status in ("ok", "no_selection")
+            else {"buffered_id": sel["program_id"], "buffered_tree": sel["tree"],
+                  "candidate_ids": sorted(cur_ids)}
+        ),
+        "complexity_ratio": {"current_value": _cr_or_none(complexity_ratio)},
     }
 
     _write_json(os.path.join(_cur_state_dir, f"step-{g}.json"), state_doc)

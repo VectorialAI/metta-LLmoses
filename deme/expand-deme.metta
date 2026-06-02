@@ -55,6 +55,7 @@
     ;; ($_ (println! "getting exemplar tree"))
     ($tree (getExemplarTree $exemplar)) 
     ($_ (println! (SelectedTree: (preOrder $tree))))
+    ($_ (sbSetSelection $tree))                          ;; <-- LLMOSES post_selection hook
     ;; ($_ (println! "creating deme IDs"))
     ($demeIds (createDemeIds $nExpansion $nDeme))
     ;; ($_ (println! $demeIds))
