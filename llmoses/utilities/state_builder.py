@@ -58,10 +58,11 @@ _run_seq = 0
 _cur_state_dir = _STATE_DIR
 _cur_action_dir = _ACTION_DIR
 _gen = {}                 # gen -> accumulating record
-_prev_member_ids = set()  # cross-generation lineage diff
 _pending_selection = None  # buffered {id, tree} from set_selection, consumed by flush_gen
 _pending_merge = None      # buffered post-merge metapop ids from sbEmitAllMerged, consumed by flush_gen
-_total_evals = 0           # cumulative deme_instances across all gens in the current run
+_pending_deme_evals = {}   # deme_id -> currentNInstances (from expandDemeHelper)
+_depth = {}               # program_id -> lineage depth (reset per run)
+_total_evals = 0           # cumulative true fitness calls across all gens in the current run
 _explored_ids = set()      # program_ids selected in a prior gen (reset per run; "explored" flag)
 
 # Boltzmann selection constants — mirror exemplar-selection.metta COMPXY_TEMP / INV_TEMP
@@ -132,6 +133,15 @@ def _flat(x):
         return "<unrepr>"
 
 
+def _demeid(x):
+    """mkDemeId payload: dotted pair ($nExpansion . $idx) -> 'exp.idx'; bare
+    numeric string (nDeme<=1) passes through; anything else -> _flat."""
+    p = unwrap_atom(x)
+    if isinstance(p, list) and len(p) == 3 and str(p[1]).strip() == ".":
+        return f"{_flat(p[0])}.{_flat(p[2])}"
+    return _flat(p)
+
+
 def _cr_or_none(x):
     """Coerce complexity_ratio to float/int or None.
     The boolean context emits () (marshalled as '()' or [] or empty string);
@@ -166,8 +176,18 @@ def _pid(expr_str):
 
 
 def _blank(gen):
-    return {"generation": gen, "members": [], "knobs": [],
-            "deme_id": None, "deme_tree": None, "deme_instances": None}
+    return {"generation": gen, "members": [], "demes": {}, "deme_order": []}
+
+
+def _knob_kind(m):
+    """Problem-agnostic: boolean LSK=3, strategy SSK=2, else 'other'
+    (continuous coefficient knobs land in 'other' rather than being mislabeled)."""
+    return "logical" if m == 3 else "strategy" if m == 2 else "other"
+
+
+def _dslot(s, did):
+    return s["demes"].setdefault(did, {"knobs": [], "deme_tree": None,
+                                       "instances": None, "evaluations": None})
 
 
 def _gs(gen):
@@ -194,15 +214,16 @@ def sb_run_dir():
 
 def new_run():
     """Open a fresh per-run subdir. Call once at the top of each runMoses."""
-    global _run_seq, _cur_state_dir, _cur_action_dir, _prev_member_ids, _pending_selection, _pending_merge, _total_evals, _explored_ids
+    global _run_seq, _cur_state_dir, _cur_action_dir, _pending_selection, _pending_merge, _pending_deme_evals, _depth, _total_evals, _explored_ids
     _run_seq += 1
     _cur_state_dir = os.path.join(_STATE_DIR, f"run-{_run_seq}")
     _cur_action_dir = os.path.join(_ACTION_DIR, f"run-{_run_seq}")
     os.makedirs(_cur_state_dir, exist_ok=True)
     os.makedirs(_cur_action_dir, exist_ok=True)
-    _prev_member_ids = set()
     _pending_selection = None
     _pending_merge = None
+    _pending_deme_evals = {}
+    _depth = {}
     _total_evals = 0
     _explored_ids = set()
     return _run_seq
@@ -214,29 +235,19 @@ def begin_gen(gen):
 
 
 def add_member(gen, expr, tree, cscore, bscore):
-    """One call per metapopulation member.
-      expr   : marshalled preOrder expression — SHORT display form (nested list).
-               NB preOrder currently collapses children, so this is for
-               human/agent readability only.
-      tree   : marshalled RAW tree (full mkTree structure). Used for program_id
-               because it is collision-resistant: two distinct programs cannot
-               share a raw tree, whereas preOrder can flatten distinct programs
-               to the same short form. Identity off the full tree; display off
-               the (possibly lossy) preOrder.
-      cscore : flat [raw, cpxy, cpen, upen, pen]
-      bscore : ['mkBScore', <Cons spine>]  (or bare spine / Nil)
-    """
-    es = expr_to_str(expr)          # short display
-    ts = expr_to_str(tree)          # full raw tree -> stable identity
+    """One member. expr = preOrder (lossless clean AST for resolved trees;
+    emitted as tree_str). tree = raw mkTree, used ONLY to derive the
+    collision-resistant program_id — not emitted (bloat, no info gain).
+    cscore = flat [raw, cpxy, cpen, upen, pen]. bscore = ['mkBScore', spine]|spine|Nil."""
+    tree_str = expr_to_str(expr)        # preOrder — lossless for resolved members
+    raw = expr_to_str(tree)             # full raw tree -> identity only
     cs = [_num(v) for v in (cscore if isinstance(cscore, list) else [cscore])]
-    # pad/truncate defensively to 5 fields so a bad marshal is visible, not fatal
     while len(cs) < 5:
         cs.append(None)
     bs = [_num(v) for v in cons_to_list(bscore)]
     _gs(gen)["members"].append({
-        "program_id": _pid(ts),     # hash the FULL tree, not the lossy display
-        "expr": es,
-        "tree": ts,                 # full structural rendering (audit / debug)
+        "program_id": _pid(raw),        # identity off the full tree
+        "tree_str": tree_str,           # lossless clean AST (replaces expr + tree)
         "cscore": {
             "raw_score": cs[0], "complexity": cs[1], "complexity_penalty": cs[2],
             "uniformity_penalty": cs[3], "penalized_score": cs[4],
@@ -247,22 +258,23 @@ def add_member(gen, expr, tree, cscore, bscore):
     return 0
 
 
-def add_knob(gen, loc, multip, default):
-    """One call per deme knob. loc=['mkNodeId',[..]], multip=['mkMultip',n], default=n."""
-    m = _num(unwrap_atom(multip))
-    _gs(gen)["knobs"].append({
-        "knob_id": _flat(unwrap_atom(loc)) if not isinstance(unwrap_atom(loc), (int, float)) else unwrap_atom(loc),
-        "multiplicity": m,
-        "default_setting": _num(default),
+def add_knob(gen, deme_id, loc, multip, default):
+    """One call per deme knob, keyed by deme_id for multi-deme support."""
+    s = _gs(gen); did = _demeid(deme_id); d = _dslot(s, did)
+    m = _num(unwrap_atom(multip)); lz = unwrap_atom(loc)
+    d["knobs"].append({
+        "knob_id": lz if isinstance(lz, (int, float)) else _flat(lz),
+        "multiplicity": m, "kind": _knob_kind(m), "default_setting": _num(default),
     })
     return 0
 
 
-def set_deme_meta(gen, deme_id, deme_tree, instances):
-    s = _gs(gen)
-    s["deme_id"] = _flat(unwrap_atom(deme_id))
-    s["deme_tree"] = expr_to_str(deme_tree)
-    s["deme_instances"] = _num(instances)
+def set_deme(gen, deme_id, deme_tree, instances):
+    s = _gs(gen); did = _demeid(deme_id); d = _dslot(s, did)
+    if did not in s["deme_order"]: s["deme_order"].append(did)
+    d["deme_tree"] = expr_to_str(deme_tree)
+    d["instances"] = _num(instances)
+    d["evaluations"] = _pending_deme_evals.pop(did, None)
     return 0
 
 
@@ -304,17 +316,54 @@ def set_selection(tree):
     return 0
 
 
+def set_deme_evals(deme_id, n):
+    """Per-deme fitness-call count, keyed by deme_id (expandDemeHelper has no gen)."""
+    _pending_deme_evals[_demeid(deme_id)] = _num(n)
+    return 0
+
+
 def get_total_evals():
-    """Return cumulative deme_instances evaluated in the current run (reset by new_run)."""
+    """Return cumulative true fitness calls in the current run (reset by new_run)."""
     return _total_evals
+
+
+def flush_terminal(gen, problem_type, complexity_ratio, max_gen, n_eval,
+                   max_cands_per_deme, min_pool_size, complexity_temperature,
+                   n_to_keep, cap_coef, n_deme, optimizer):
+    """Final post-merge metapopulation -> terminal.json. Offline/experiment use;
+    no ready/ sentinel (not an agent step)."""
+    g = _num(gen)
+    s = _gs(g)
+    members = s["members"]
+    pens = [m["cscore"]["penalized_score"] for m in members
+            if isinstance(m["cscore"]["penalized_score"], (int, float))]
+    best = max(pens) if pens else None
+    members_out = [{**m, "explored": m["program_id"] in _explored_ids} for m in members]
+    doc = {
+        "schema_version": _VERSION, "run_seq": _run_seq, "record_type": "terminal",
+        "timestamp_ms": int(time.time() * 1000), "total_evaluations": _total_evals,
+        "metapopulation": {"size": len(members_out),
+                           "best_penalized_score": best, "members": members_out},
+        "run_parameters": {
+            "problem_type": _flat(problem_type), "complexity_ratio": _cr_or_none(complexity_ratio),
+            "max_gen": _num(max_gen), "n_eval": _num(n_eval),
+            "max_cands_per_deme": _num(max_cands_per_deme), "min_pool_size": _num(min_pool_size),
+            "complexity_temperature": _num(complexity_temperature), "n_to_keep": _num(n_to_keep),
+            "cap_coef": _num(cap_coef), "n_deme": _num(n_deme), "optimizer": _flat(optimizer),
+        },
+    }
+    _write_json(os.path.join(_cur_state_dir, "terminal.json"), doc)
+    return 0
 
 
 def flush_gen(gen, problem_type, complexity_ratio, max_gen, n_eval,
               max_cands_per_deme, min_pool_size, complexity_temperature,
               n_to_keep, cap_coef, n_deme, optimizer):
-    """Assemble + write state/step-G.json and action/step-G.json, append JSONL,
-    then drop the ready/ sentinel (LAST)."""
-    global _prev_member_ids, _pending_selection, _pending_merge, _total_evals, _explored_ids
+    """v0.5: tree_str ProgramRecords; lineage_diff replaces lineage + the
+    post_deme_close metapop diff; DemeRecord absorbs knob_type_breakdown,
+    sampled_pair_count, and the merge counts; post_selection is the only
+    surviving nested event."""
+    global _pending_selection, _pending_merge, _pending_deme_evals, _depth, _total_evals, _explored_ids
     g = _num(gen)
     s = _gs(g)
     members = s["members"]
@@ -322,51 +371,82 @@ def flush_gen(gen, problem_type, complexity_ratio, max_gen, n_eval,
     pens = [m["cscore"]["penalized_score"] for m in members
             if isinstance(m["cscore"]["penalized_score"], (int, float))]
     best = max(pens) if pens else None
-
     cur_ids = {m["program_id"] for m in members}
-    new_ids = sorted(cur_ids - _prev_member_ids)
-    culled_ids = sorted(_prev_member_ids - cur_ids)
-    id_to_expr = {m["program_id"]: m["expr"] for m in members}
-
     probs = _boltzmann([m["cscore"]["penalized_score"] for m in members])
 
-    # consume + VALIDATE buffered selection (must be one of this gen's candidates)
-    selected_id = None
-    selection_status = "no_selection"
+    # consume + VALIDATE buffered selection
+    selected_id, selection_status = None, "no_selection"
     sel = _pending_selection
     _pending_selection = None
     if sel is not None:
         if sel["program_id"] in cur_ids:
-            selected_id = sel["program_id"]; selection_status = "ok"
+            selected_id, selection_status = sel["program_id"], "ok"
         else:
-            selected_id = "MISMATCH"; selection_status = "mismatch"
+            selected_id, selection_status = "MISMATCH", "mismatch"
 
-    # consume buffered post-merge metapop (Tier A post_deme_close event)
-    ts = int(time.time() * 1000)
-    post_deme_close_evt = None
+    # consume buffered merge (post-merge ids + pipeline counts)
+    post_ids, counts = set(), {}
     if _pending_merge is not None:
-        post = set(_pending_merge["post_ids"])
-        c = _pending_merge["counts"]
-        post_deme_close_evt = {
-            "event_type": "post_deme_close", "generation": g, "timestamp_ms": ts,
-            "metapop_size_before": len(cur_ids),
-            "metapop_size_after": len(post),
-            "members_added": sorted(post - cur_ids),
-            "members_removed": sorted(cur_ids - post),
-            "candidates_produced": c.get("candidates_produced"),
-            "duplicates_dropped":  c.get("duplicates_dropped"),
-            "dominated_removed":   c.get("dominated_removed"),
-        }
+        post_ids = set(_pending_merge["post_ids"])
+        counts = _pending_merge["counts"]
         _pending_merge = None
 
-    knobs = s["knobs"]
-    neighborhood = sum(max(_num(k["multiplicity"]) - 1, 0)
-                       for k in knobs if isinstance(k["multiplicity"], (int, float)))
+    ts = int(time.time() * 1000)
 
-    _total_evals += _num(s["deme_instances"]) or 0
+    # lineage_diff: within-step merge transition (the sequence across gens = lineage tree)
+    lineage_diff = {
+        "seed_exemplar_id": selected_id,
+        "new_programs": sorted(post_ids - cur_ids),
+        "culled": sorted(cur_ids - post_ids),
+    }
 
-    # Annotate each member with whether it was previously selected (explored flag).
-    # Checked BEFORE adding this gen's pick so "explored" honestly means "prior gen".
+    # --- per-deme records (1 element FS-off; N under FS+nDeme>1) ---
+    demes, evals_gen = [], 0
+    for did in s["deme_order"]:
+        d = s["demes"][did]
+        kb = {"logical": 0, "strategy": 0, "other": 0}
+        for k in d["knobs"]:
+            kb[k["kind"]] = kb.get(k["kind"], 0) + 1
+        nbh = sum(max(_num(k["multiplicity"]) - 1, 0) for k in d["knobs"]
+                  if isinstance(k["multiplicity"], (int, float)))
+        ev = d["evaluations"] if d["evaluations"] is not None else (_num(d["instances"]) or 0)
+        evals_gen += ev or 0
+        demes.append({
+            "deme_id": did, "exemplar_program_id": selected_id,
+            "exemplar_expr": d["deme_tree"],
+            "knobs": d["knobs"], "knob_count": len(d["knobs"]),
+            "knob_type_breakdown": kb,
+            "sampled_pair_count": (kb["logical"] if _flat(problem_type) == "boolean" else None),
+            "neighborhood_size": nbh,
+            "instances_evaluated": d["instances"], "evaluations": d["evaluations"],
+            "operator_inclusion_set": None,
+            "pair_sampling_candidates": None,
+        })
+    _total_evals += evals_gen
+
+    # generation-level merge summary (mergeDemes runs once over ALL demes)
+    merge_summary = {
+        "candidates_produced": counts.get("candidates_produced"),
+        "duplicates_dropped": counts.get("duplicates_dropped"),
+        "dominated_count_removed": counts.get("dominated_removed"),
+        "cull_candidates": None,
+    }
+
+    # lineage depth: child = seed depth + 1
+    seed_depth = _depth.get(selected_id, 0)
+    for pid in lineage_diff["new_programs"]:
+        _depth.setdefault(pid, seed_depth + 1)
+    for m in members:
+        _depth.setdefault(m["program_id"], 0)
+
+    # derive complexity_ratio if extractor gave null: ratio = complexity / complexity_penalty
+    cratio = _cr_or_none(complexity_ratio)
+    if cratio is None:
+        for m in members:
+            cpx, cpen = m["complexity"], m["cscore"]["complexity_penalty"]
+            if isinstance(cpx, (int, float)) and isinstance(cpen, (int, float)) and cpen:
+                cratio = cpx / cpen; break
+
     members_out = [{**m, "explored": m["program_id"] in _explored_ids} for m in members]
 
     post_selection_evt = None
@@ -379,31 +459,14 @@ def flush_gen(gen, problem_type, complexity_ratio, max_gen, n_eval,
             "event_type": "post_selection", "generation": g, "timestamp_ms": ts,
             "chosen_program_id": selected_id,
             "native_boltzmann_probability": (probs[rank]
-                                              if rank is not None and rank < len(probs)
-                                              else None),
-            "selected_rank": rank,
-            "llm_utility": None,
+                                              if rank is not None and rank < len(probs) else None),
+            "selected_rank": rank, "llm_utility": None,
             "selection_status": selection_status,
         }
 
-    breakdown = {"logical": 0, "strategy": 0, "other": 0}
-    for k in knobs:
-        m = _num(k.get("multiplicity"))
-        breakdown["logical" if m == 3 else "strategy" if m == 2 else "other"] += 1
-
-    post_representation_evt = {
-        "event_type": "post_representation", "generation": g, "timestamp_ms": ts,
-        "exemplar_program_id": selected_id,
-        "knob_count": len(knobs),
-        "knob_type_breakdown": breakdown,
-        "neighborhood_size": neighborhood,
-        "sampled_pair_count": (breakdown["logical"]
-                               if _flat(problem_type) == "boolean" else None),
-    }
-
     run_parameters = {
         "problem_type": _flat(problem_type),
-        "complexity_ratio": _cr_or_none(complexity_ratio), "max_gen": _num(max_gen),
+        "complexity_ratio": cratio, "max_gen": _num(max_gen),
         "n_eval": _num(n_eval), "max_cands_per_deme": _num(max_cands_per_deme),
         "min_pool_size": _num(min_pool_size),
         "complexity_temperature": _num(complexity_temperature),
@@ -413,26 +476,14 @@ def flush_gen(gen, problem_type, complexity_ratio, max_gen, n_eval,
 
     state_doc = {
         "schema_version": _VERSION, "run_seq": _run_seq, "generation": g,
-        "timestamp_ms": ts,
-        "total_evaluations": _total_evals,
+        "timestamp_ms": ts, "total_evaluations": _total_evals,
         "metapopulation": {
             "size": len(members_out), "best_penalized_score": best, "members": members_out,
         },
-        "current_deme": {
-            "deme_id": s["deme_id"], "exemplar_expr": s["deme_tree"],
-            "knobs": knobs, "knob_count": len(knobs),
-            "neighborhood_size": neighborhood,
-            "instances_evaluated": s["deme_instances"],
-        },
-        "lineage": {
-            "new_members": [{"program_id": pid, "expr": id_to_expr.get(pid)} for pid in new_ids],
-            "culled_program_ids": culled_ids,
-        },
-        "moses_native_events": {
-            "post_selection": post_selection_evt,
-            "post_representation": post_representation_evt,
-            "post_deme_close": post_deme_close_evt,
-        },
+        "demes": demes,
+        "merge_summary": merge_summary,
+        "lineage_diff": lineage_diff,
+        "moses_native_events": {"post_selection": post_selection_evt},
         "run_parameters": run_parameters,
     }
 
@@ -440,9 +491,11 @@ def flush_gen(gen, problem_type, complexity_ratio, max_gen, n_eval,
         "schema_version": _VERSION, "run_seq": _run_seq, "generation": g,
         "problem_type": _flat(problem_type),
         "exemplar_candidates": [
-            {"program_id": m["program_id"], "program_expr": m["expr"],
+            {"program_id": m["program_id"], "tree_str": m["tree_str"],
              "penalized_score": m["cscore"]["penalized_score"],
-             "cscore": m["cscore"], "complexity": m["complexity"]}
+             "complexity": m["complexity"],
+             "raw_score": m["cscore"]["raw_score"],
+             "lineage_depth": _depth.get(m["program_id"])}
             for m in members
         ],
         "selected_program_id": selected_id,
@@ -452,23 +505,20 @@ def flush_gen(gen, problem_type, complexity_ratio, max_gen, n_eval,
             else {"buffered_id": sel["program_id"], "buffered_tree": sel["tree"],
                   "candidate_ids": sorted(cur_ids)}
         ),
-        "complexity_ratio": {"current_value": _cr_or_none(complexity_ratio)},
+        "complexity_ratio": {"current_value": cratio},
     }
 
     _write_json(os.path.join(_cur_state_dir, f"step-{g}.json"), state_doc)
     _write_json(os.path.join(_cur_action_dir, f"step-{g}.json"), action_doc)
-
     _NFH.write(json.dumps({
         "run_seq": _run_seq, "generation": g, "size": len(members),
-        "best_penalized_score": best, "knob_count": len(knobs),
+        "best_penalized_score": best,
         "ts_ms": int(time.time() * 1000),
     }) + "\n")
 
-    _prev_member_ids = cur_ids
     if selection_status == "ok":
         _explored_ids.add(selected_id)
 
-    # MUST be last: ready sentinel (compound name avoids cross-run collision).
     ready = os.path.join(_READY_DIR, f"run-{_run_seq}-step-{g}")
     with open(ready, "w", encoding="utf-8") as fh:
         fh.write(f"{int(time.time()*1000)}\n")
