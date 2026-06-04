@@ -50,26 +50,21 @@
 (= (sbEmitAllMembers $g $os)
    (let* (($n (eval (metapopSize $os)))) (sbEmitMembers $g $os 0 $n)))
 
-;; --- knob loop: eval-bind each knob field, THEN py-call ---------------------
-(= (sbEmitKnobs $g Nil) 0)
-(= (sbEmitKnobs $g (Cons $k $rest))
+;; --- per-deme emit: iterate optimized-deme tuple, keying knobs + meta by demeId -----
+(= (sbEmitDemeKnobs $g $demeId Nil) 0)
+(= (sbEmitDemeKnobs $g $demeId (Cons $k $rest))
    (let* (
-     ($loc  (eval (knobLoc     $k)))
-     ($mul  (eval (knobMultip  $k)))
-     ($def  (eval (knobDefault $k)))
-     ($_    (py-call (state_builder.add_knob $g $loc $mul $def)))
-   )
-   (sbEmitKnobs $g $rest)))
-(= (sbEmitAllKnobs $g $rep)
-   (let* (($ks (eval (knobsOfRep $rep)))) (sbEmitKnobs $g $ks)))
+     ($loc (eval (knobLoc $k))) ($mul (eval (knobMultip $k))) ($def (eval (knobDefault $k)))
+     ($_  (py-call (state_builder.add_knob $g $demeId $loc $mul $def)))
+   ) (sbEmitDemeKnobs $g $demeId $rest)))
 
-;; --- deme meta + flush: eval-bind the tree, THEN py-call -------------------
-(= (sbSetDeme $g $demeId $rep $instances)
+(= (sbEmitDeme $g $deme)
    (let* (
-     ($tree (eval (repTree $rep)))
-     ($_    (py-call (state_builder.set_deme_meta $g $demeId $tree $instances)))
-   )
-   0))
+     ((mkDeme $rep $sInst $demeId) $deme)
+     ($inst (eval (List.length (second $sInst))))
+     ($_ (sbEmitDemeKnobs $g $demeId (eval (knobsOfRep $rep))))
+     ($_ (let $tr (eval (repTree $rep)) (py-call (state_builder.set_deme $g $demeId $tr $inst))))
+   ) 0))
 
 ;; flush_gen takes 12 positional args IN THIS ORDER (matches state_builder.py):
 ;;   gen problem_type complexity_ratio max_gen n_eval max_cands_per_deme
@@ -80,8 +75,11 @@
               $maxCandsPerDeme $minPoolSize $complexityTemperature $nToKeep $capCoef
               $nDeme $optimizer)))
 
-;; --- post_deme_close Tier A: capture post-merge metapop ids for the diff ----
-;; Reuses memberByIdx / memberTree / metapopSize — no new extractors.
+;; --- post_deme_close Tier A/B ----------------------------------------------
+;; sbBeginMerge MUST be called BEFORE mergeDemes so the in-merge set_merge_count
+;; probes land in an open buffer. sbEmitAllMerged only WALKS the post-merge pop.
+(= (sbBeginMerge) (py-call (state_builder.begin_merge)))
+
 (= (sbEmitMergedPop $os $i $n)
    (if (>= $i $n) 0
        (let* (($x  (memberByIdx $os $i))
@@ -89,22 +87,31 @@
               ($_  (py-call (state_builder.add_merged_member $tr))))
          (sbEmitMergedPop $os (+ $i 1) $n))))
 (= (sbEmitAllMerged $os)
-   (let* (($_ (py-call (state_builder.begin_merge)))
-          ($n (eval (metapopSize $os))))
+   (let* (($n (eval (metapopSize $os))))
      (sbEmitMergedPop $os 0 $n)))
 
 ;; --- one-call convenience: emit a full generation --------------------------
-;; Order: begin -> members -> knobs -> deme meta -> flush. Caller supplies the
-;; metapop, the deme's $rep/$demeId/$instances, and the run-parameter scalars.
-(= (sbEmitGeneration $g $metaPop $demeId $rep $instances
+;; sbEmitGeneration takes the WHOLE optimized-deme tuple and iterates via sbEmitDeme.
+(= (sbEmitGeneration $g $metaPop $optimizedDemes
                      $problemType $complexityRatio $maxGen $nEval $maxCandsPerDeme
                      $minPoolSize $complexityTemperature $nToKeep $capCoef $nDeme $optimizer)
    (let* (
      ($_ (sbBeginGen $g))
      ($_ (sbEmitAllMembers $g $metaPop))
-     ($_ (sbEmitAllKnobs $g $rep))
-     ($_ (sbSetDeme $g $demeId $rep $instances))
+     ($_ (let $r (map-atom $optimizedDemes $deme (sbEmitDeme $g $deme)) 0))
      ($_ (sbFlushGen $g $problemType $complexityRatio $maxGen $nEval $maxCandsPerDeme
                      $minPoolSize $complexityTemperature $nToKeep $capCoef $nDeme $optimizer))
    )
    0))
+
+;; Terminal snapshot — full ProgramRecords of the FINAL post-merge metapop.
+;; Reuses sbBeginGen + sbEmitAllMembers; writes terminal.json (no sentinel).
+(= (sbEmitTerminal $g $metaPop $problemType $complexityRatio $maxGen $nEval $maxCandsPerDeme
+                   $minPoolSize $complexityTemperature $nToKeep $capCoef $nDeme $optimizer)
+   (let* (
+     ($_ (sbBeginGen $g))
+     ($_ (sbEmitAllMembers $g $metaPop))
+     ($_ (py-call (state_builder.flush_terminal $g $problemType $complexityRatio $maxGen $nEval
+                    $maxCandsPerDeme $minPoolSize $complexityTemperature $nToKeep $capCoef
+                    $nDeme $optimizer)))
+   ) 0))

@@ -95,6 +95,7 @@
     ;; ($_ (println! (Rep: (mkRep (mkKbMap (mkDscKbMp $dscKbMp) (mkDscMp $dscMp)) $updatedTree))))
     ;; ($_ (println! "Optimizing Deme"))
     (($inst $optimDeme $state) (optimizeDemes $deme $context (mkInst $generatedList) $optimize))
+    ($_ (py-call (state_builder.set_deme_evals $demeId (index-atom $state 8))))   ;; <-- per-deme fitness-call count
 )
 $optimDeme
 ))
@@ -128,8 +129,7 @@ $optimDeme
        ($optimizedDemes (case $context
                         ((($prune-exemplar $fs-algo $truthTableBScore $itable) (trace! "expand  deme returnn" (expandDeme $metaPop $nExpansion $nDeme $prune-exemplar $fs-algo $truthTableBScore $optimize $itable mi)))
                         (($nGames $opponentPolicy $complexityRatio) (trace! "expand deme return" (expandDeme $metaPop $nExpansion $nDeme $nGames $opponentPolicy $complexityRatio $maxScore $optimize))))))
-       (((mkDeme $rep $sInst $demeId)) $optimizedDemes)
-       ($_ (println! (OptimizedDeme: (List.length (second $sInst)))))
+       ($_ (sbBeginMerge))                                   ;; <-- open merge buffer BEFORE mergeDemes
        ($updatedMetaPop (case $context 
                         ((($prune-exemplar $fs-algo $truthTableBScore $itable) (trace! "Merging Deme" (mergeDemes $optimizedDemes $nEval $maxCandsPerDeme $minPoolSize $complexityTemperature $itable $metaPop $nToKeep $capCoef $genCount)))
                         (($nGames $opponentPolicy $complexityRatio) (trace! "Merging Deme" (mergeDemes $optimizedDemes $nEval $maxCandsPerDeme $minPoolSize $complexityTemperature ($nGames $opponentPolicy) $metaPop $nToKeep $capCoef $genCount))))))
@@ -146,11 +146,15 @@ $optimDeme
           (case $context
             ((($prune-exemplar $fs-algo $truthTableBScore $itable) ("boolean" ()))
              (($nGames $opponentPolicy $cr)                        ("strategy" $cr)))))
-       ($demeSize (eval (List.length (second $sInst))))
        ($_ (sbEmitAllMerged $updatedMetaPop))
-       ($_ (sbEmitGeneration $genIndex $metaPop $demeId $rep $demeSize
+       ($_ (sbEmitGeneration $genIndex $metaPop $optimizedDemes
                              $problemType $complexityRatio $maxGen $nEval $maxCandsPerDeme
                              $minPoolSize $complexityTemperature $nToKeep $capCoef $nDeme $optimize))
+       ($_ (if (== $maxGen 1)
+               (sbEmitTerminal (+ $genIndex 1) $updatedMetaPop $problemType $complexityRatio
+                               $maxGen $nEval $maxCandsPerDeme $minPoolSize $complexityTemperature
+                               $nToKeep $capCoef $nDeme $optimize)
+               0))
        ;; ---------------------------------------------------------------------
        ($resultCandi (if (<= $maxCandOutput (OS.length $updatedMetaPop)) (OS.getTopN $maxCandOutput $updatedMetaPop) $updatedMetaPop))
        ($_ (cut))
