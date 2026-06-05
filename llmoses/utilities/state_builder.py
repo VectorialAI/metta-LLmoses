@@ -65,6 +65,7 @@ _depth = {}               # program_id -> lineage depth (reset per run)
 _total_evals = 0           # cumulative true fitness calls across all gens in the current run
 _explored_ids = set()      # program_ids selected in a prior gen (reset per run; "explored" flag)
 _problem_spec = None       # {input_labels, arity} — set once per run by set_problem_spec
+_last_complexity_ratio = None  # derived cratio from flush_gen; reused by flush_terminal
 
 # Boltzmann selection constants — mirror exemplar-selection.metta COMPXY_TEMP / INV_TEMP
 _COMPXY_TEMP = 6.0
@@ -215,7 +216,7 @@ def sb_run_dir():
 
 def new_run():
     """Open a fresh per-run subdir. Call once at the top of each runMoses."""
-    global _run_seq, _cur_state_dir, _cur_action_dir, _pending_selection, _pending_merge, _pending_deme_evals, _depth, _total_evals, _explored_ids, _problem_spec
+    global _run_seq, _cur_state_dir, _cur_action_dir, _pending_selection, _pending_merge, _pending_deme_evals, _depth, _total_evals, _explored_ids, _problem_spec, _last_complexity_ratio
     _run_seq += 1
     _cur_state_dir = os.path.join(_STATE_DIR, f"run-{_run_seq}")
     _cur_action_dir = os.path.join(_ACTION_DIR, f"run-{_run_seq}")
@@ -228,6 +229,7 @@ def new_run():
     _total_evals = 0
     _explored_ids = set()
     _problem_spec = None
+    _last_complexity_ratio = None
     return _run_seq
 
 
@@ -283,7 +285,7 @@ def set_deme(gen, deme_id, deme_tree, instances):
 def begin_merge():
     """post_deme_close Tier A: open a fresh merge buffer before walking $updatedMetaPop."""
     global _pending_merge
-    _pending_merge = {"post_ids": [], "counts": {}}
+    _pending_merge = {"post_ids": [], "counts": {}, "cull_candidates": []}
     return 0
 
 
@@ -302,6 +304,23 @@ def set_merge_count(name, value):
     if _pending_merge is not None:
         k = _flat(name); c = _pending_merge["counts"]
         c[k] = (c.get(k) or 0) + (_num(value) or 0)
+    return 0
+
+
+def add_cull_candidate(expr, tree, bscore, cscore):
+    """A merge survivor (mkExemplar from removeDominated) entering the resize cull.
+    Already scored in demeToTrees, so bscore is present — surfacing, not recompute."""
+    if _pending_merge is None:
+        return 0
+    cs = [_num(v) for v in (cscore if isinstance(cscore, list) else [cscore])]
+    while len(cs) < 5:
+        cs.append(None)
+    _pending_merge["cull_candidates"].append({
+        "program_id": _pid(expr_to_str(tree)),
+        "tree_str": expr_to_str(expr),
+        "bscore": [_num(v) for v in cons_to_list(bscore)],
+        "penalized_score": cs[4], "complexity": cs[1], "raw_score": cs[0],
+    })
     return 0
 
 
@@ -364,7 +383,10 @@ def flush_terminal(gen, problem_type, complexity_ratio, max_gen, n_eval,
                            "best_penalized_score": best, "members": members_out},
         "problem_spec": _problem_spec,
         "run_parameters": {
-            "problem_type": _flat(problem_type), "complexity_ratio": _cr_or_none(complexity_ratio),
+            "problem_type": _flat(problem_type),
+            "complexity_ratio": (_cr_or_none(complexity_ratio)
+                                 if _cr_or_none(complexity_ratio) is not None
+                                 else _last_complexity_ratio),
             "max_gen": _num(max_gen), "n_eval": _num(n_eval),
             "max_cands_per_deme": _num(max_cands_per_deme), "min_pool_size": _num(min_pool_size),
             "complexity_temperature": _num(complexity_temperature), "n_to_keep": _num(n_to_keep),
@@ -403,11 +425,12 @@ def flush_gen(gen, problem_type, complexity_ratio, max_gen, n_eval,
         else:
             selected_id, selection_status = "MISMATCH", "mismatch"
 
-    # consume buffered merge (post-merge ids + pipeline counts)
-    post_ids, counts = set(), {}
+    # consume buffered merge (post-merge ids + pipeline counts + cull candidates)
+    post_ids, counts, cull_cands = set(), {}, []
     if _pending_merge is not None:
-        post_ids = set(_pending_merge["post_ids"])
-        counts = _pending_merge["counts"]
+        post_ids   = set(_pending_merge["post_ids"])
+        counts     = _pending_merge["counts"]
+        cull_cands = _pending_merge.get("cull_candidates", [])
         _pending_merge = None
 
     ts = int(time.time() * 1000)
@@ -444,11 +467,17 @@ def flush_gen(gen, problem_type, complexity_ratio, max_gen, n_eval,
     _total_evals += evals_gen
 
     # generation-level merge summary (mergeDemes runs once over ALL demes)
+    pool_ids = cur_ids | {c["program_id"] for c in cull_cands}
     merge_summary = {
-        "candidates_produced": counts.get("candidates_produced"),
-        "duplicates_dropped": counts.get("duplicates_dropped"),
+        "candidates_produced":     counts.get("candidates_produced"),
+        "duplicates_dropped":      counts.get("duplicates_dropped"),
         "dominated_count_removed": counts.get("dominated_removed"),
-        "cull_candidates": None,
+        "resize_cull": {
+            "incumbents":   sorted(cur_ids),
+            "new_entrants": cull_cands,
+            "survivors":    sorted(post_ids),
+            "culled":       sorted(pool_ids - post_ids),
+        },
     }
 
     # lineage depth: child = seed depth + 1
@@ -459,12 +488,14 @@ def flush_gen(gen, problem_type, complexity_ratio, max_gen, n_eval,
         _depth.setdefault(m["program_id"], 0)
 
     # derive complexity_ratio if extractor gave null: ratio = complexity / complexity_penalty
+    global _last_complexity_ratio
     cratio = _cr_or_none(complexity_ratio)
     if cratio is None:
         for m in members:
             cpx, cpen = m["complexity"], m["cscore"]["complexity_penalty"]
             if isinstance(cpx, (int, float)) and isinstance(cpen, (int, float)) and cpen:
                 cratio = cpx / cpen; break
+    _last_complexity_ratio = cratio
 
     members_out = [{**m, "explored": m["program_id"] in _explored_ids} for m in members]
 
