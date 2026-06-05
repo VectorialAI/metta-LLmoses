@@ -149,6 +149,11 @@ $optimDeme
           (case $context
             ((($prune-exemplar $fs-algo $truthTableBScore $itable) ("boolean" ()))
              (($nGames $opponentPolicy $cr)                        ("strategy" $cr)))))
+       ;; emit per-candidate neighborhood size before flush_gen consumes it
+       ($_ (case $context
+             ((($prune-exemplar $fs-algo $truthTableBScore $itable)
+               (sbEmitAllMemberNbh $metaPop $itable mi))
+              (($nGames $opponentPolicy $cr) 0))))
        ($_ (sbEmitAllMerged $updatedMetaPop))
        ($_ (sbEmitGeneration $genIndex $metaPop $optimizedDemes
                              $problemType $complexityRatio $maxGen $nEval $maxCandsPerDeme

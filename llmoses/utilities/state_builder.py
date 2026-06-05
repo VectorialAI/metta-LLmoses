@@ -66,6 +66,7 @@ _total_evals = 0           # cumulative true fitness calls across all gens in th
 _explored_ids = set()      # program_ids selected in a prior gen (reset per run; "explored" flag)
 _problem_spec = None       # {input_labels, arity} — set once per run by set_problem_spec
 _last_complexity_ratio = None  # derived cratio from flush_gen; reused by flush_terminal
+_cand_nbh = {}             # program_id -> neighborhood_size; populated per-gen, cleared in flush_gen
 
 # Boltzmann selection constants — mirror exemplar-selection.metta COMPXY_TEMP / INV_TEMP
 _COMPXY_TEMP = 6.0
@@ -216,7 +217,7 @@ def sb_run_dir():
 
 def new_run():
     """Open a fresh per-run subdir. Call once at the top of each runMoses."""
-    global _run_seq, _cur_state_dir, _cur_action_dir, _pending_selection, _pending_merge, _pending_deme_evals, _depth, _total_evals, _explored_ids, _problem_spec, _last_complexity_ratio
+    global _run_seq, _cur_state_dir, _cur_action_dir, _pending_selection, _pending_merge, _pending_deme_evals, _depth, _total_evals, _explored_ids, _problem_spec, _last_complexity_ratio, _cand_nbh
     _run_seq += 1
     _cur_state_dir = os.path.join(_STATE_DIR, f"run-{_run_seq}")
     _cur_action_dir = os.path.join(_ACTION_DIR, f"run-{_run_seq}")
@@ -230,6 +231,7 @@ def new_run():
     _explored_ids = set()
     _problem_spec = None
     _last_complexity_ratio = None
+    _cand_nbh = {}
     return _run_seq
 
 
@@ -307,20 +309,28 @@ def set_merge_count(name, value):
     return 0
 
 
-def add_cull_candidate(expr, tree, bscore, cscore):
+def add_cull_candidate(expr, tree, bscore, raw, cpx, pen):
     """A merge survivor (mkExemplar from removeDominated) entering the resize cull.
-    Already scored in demeToTrees, so bscore is present — surfacing, not recompute."""
+    raw/cpx/pen are scalars extracted by named cscore accessors in MeTTa, so
+    there is no field-alignment ambiguity from the raw mkCscore atom."""
     if _pending_merge is None:
         return 0
-    cs = [_num(v) for v in (cscore if isinstance(cscore, list) else [cscore])]
-    while len(cs) < 5:
-        cs.append(None)
     _pending_merge["cull_candidates"].append({
-        "program_id": _pid(expr_to_str(tree)),
-        "tree_str": expr_to_str(expr),
-        "bscore": [_num(v) for v in cons_to_list(bscore)],
-        "penalized_score": cs[4], "complexity": cs[1], "raw_score": cs[0],
+        "program_id":      _pid(expr_to_str(tree)),
+        "tree_str":        expr_to_str(expr),
+        "bscore":          [_num(v) for v in cons_to_list(bscore)],
+        "raw_score":       _num(raw),
+        "complexity":      _num(cpx),
+        "penalized_score": _num(pen),
     })
+    return 0
+
+
+def set_candidate_neighborhood(tree, n):
+    """Record the dist-1 neighborhood size for a candidate, keyed by the same
+    program_id (_pid(expr_to_str(tree))) that add_member uses so lookups align.
+    Populated per-gen before flush_gen; cleared at end of flush_gen."""
+    _cand_nbh[_pid(expr_to_str(tree))] = _num(n)
     return 0
 
 
@@ -404,7 +414,7 @@ def flush_gen(gen, problem_type, complexity_ratio, max_gen, n_eval,
     post_deme_close metapop diff; DemeRecord absorbs knob_type_breakdown,
     sampled_pair_count, and the merge counts; post_selection is the only
     surviving nested event."""
-    global _pending_selection, _pending_merge, _pending_deme_evals, _depth, _total_evals, _explored_ids
+    global _pending_selection, _pending_merge, _pending_deme_evals, _depth, _total_evals, _explored_ids, _cand_nbh
     g = _num(gen)
     s = _gs(g)
     members = s["members"]
@@ -546,7 +556,8 @@ def flush_gen(gen, problem_type, complexity_ratio, max_gen, n_eval,
              "penalized_score": m["cscore"]["penalized_score"],
              "complexity": m["complexity"],
              "raw_score": m["cscore"]["raw_score"],
-             "lineage_depth": _depth.get(m["program_id"])}
+             "lineage_depth": _depth.get(m["program_id"]),
+             "neighborhood_size": _cand_nbh.get(m["program_id"])}
             for m in members
         ],
         "selected_program_id": selected_id,
@@ -561,6 +572,7 @@ def flush_gen(gen, problem_type, complexity_ratio, max_gen, n_eval,
 
     _write_json(os.path.join(_cur_state_dir, f"step-{g}.json"), state_doc)
     _write_json(os.path.join(_cur_action_dir, f"step-{g}.json"), action_doc)
+    _cand_nbh.clear()   # neighborhood data consumed; reset for next generation
     _NFH.write(json.dumps({
         "run_seq": _run_seq, "generation": g, "size": len(members),
         "best_penalized_score": best,
