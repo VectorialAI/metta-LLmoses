@@ -1,5 +1,12 @@
 ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
-;;                 Merge Demes                       ;;
+;;            LLMOSES – Merge Demes                  ;;
+;;                                                   ;;
+;; Fork of deme/merge-demes.metta with one change:   ;;
+;;   sbEmitCullCands is wrapped in (eval ...) so that ;;
+;;   runtime dispatch finds the definition that lives ;;
+;;   in llmoses/wrapper/state-builder.metta, which is ;;
+;;   loaded AFTER this file and would otherwise be    ;;
+;;   compiled to a no-op (true) by MeTTaLog.          ;;
 ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
 
 ;; Removes adjacent duplicate ScoredInstances from a sorted list, keeping up to $topCnd unique instances.
@@ -39,26 +46,13 @@
 (= (keepTopUniqueCandidates $rep (mkSInstSet $sortedSInstList) $nEval $maxCandsPerDeme)
  (let*
  (
-    ;; ($instExpr (List.listToExpr $sortedSInstList))
-    ;; ($uniqueSortedInstExpr (unique-atom $instExpr))
-    ;; ($uniqueSortedInstList (exprToList $uniqueSortedInstExpr))
-    ;; ($lenSInstList (List.length $uniqueSortedInstList))
     ($lenSInstList (List.length $sortedSInstList))
     ($_ (println! (nEval: $nEval LenSInstList: $lenSInstList)))
     ($topCnd (min-atom ($nEval $lenSInstList)))
     ($_ (println! (TopCnd: $topCnd)))
     ($uTopCnd (if (>= $maxCandsPerDeme 0) (min-atom ($topCnd $maxCandsPerDeme)) $topCnd))
     ($_ (println! (Keep $uTopCnd Unique instances from (List.length $sortedSInstList))))
-    ;; ($_ (println! ""))
-    ;; ($_ (println! (Before removing duplicates)))
-    ;; ($exprList (List.listToExpr $sortedSInstList))
-    ;; ($bmr (map-atom $exprList $inst (let (mkSInst $x) $inst (println! (Tree: (preOrder (getCandidate $rep (Pair.first $x))) Inst: (List.listToExpr (second (Pair.first $x))))))))
-    ;; ($uniqueTopCandidates (removeDupInsts $uniqueSortedInstList $uTopCnd))
     ($uniqueTopCandidates (removeDupInsts $rep $sortedSInstList $uTopCnd))
-    ;; ($uExprList (List.listToExpr $uniqueTopCandidates))
-    ;; ($_ (println! ""))
-    ;; ($_ (println! (After removing duplicates)))
-    ;; ($amr (map-atom $uExprList $inst (let (mkSInst $x) $inst (println! (preOrder (getCandidate $rep (Pair.first $x)))))))
  )
  $uniqueTopCandidates
  ))
@@ -101,9 +95,7 @@
        ($topInst (List.head $sInstList))
        ($topScore (getSInstScore $topInst))
        ($topPenScore (getPenScore $topScore))
-       ;; ($_ (println! (TopPenScore: $topPenScore)))
        ($botSc (- $topPenScore (usefulScoreRange $complexityTemperature)))
-       ;; ($_ (println! (UsefullscoreRange: $botSc)))
        ($filteredSInstList (filterDemeByScore $sInstList (- $demeSize 1) $botSc)))     
        $filteredSInstList))))
 
@@ -117,23 +109,19 @@
 (= (demeToTrees (mkDeme $rep (mkSInstSet (Cons $si $sil)) $demeId) $scoringContext)
 (let*
     (
-        ;; ($_ (println! (===Inside DemeToTrees===)))
         ($cscore (getSInstScore $si))
         ($inst (getInst $si))
-        ;; ($_ (println! (Representation: $rep)))
-        ;; ($_ (println! (Instance: $inst)))
         ($tree (getCandidate $rep $inst))
-        ;; ($_ (println! (Tree: (preOrder $tree))))
         ($_ (println! (ScoringContext: $scoringContext)))
         ($bscore (case $scoringContext
                     (((mkITable $rows $labels) (scoreTree $scoringContext $tree &bscoreCache))
                      (($nGames $opponentPolicy) (scoreStrategyTree $tree $nGames $opponentPolicy &strategyScoreCache)))))
         ($scoredTree (mkExemplar $tree $demeId $cscore $bscore))
-        ;; ($_ (println! (Returning...)))
     )
     (Cons $scoredTree (demeToTrees (mkDeme $rep (mkSInstSet $sil) $demeId) $scoringContext))
     )
 )
+
 ;; Filters a list of Exemplars, keeping only those not already in the metaPop (ordered set).
 ;; Params:
 ;;   (List (Exemplar $a)): List of exemplars to filter.
@@ -148,14 +136,6 @@
 )
 
 ;; Determines if one BehavioralScore dominates another by comparing their score lists.
-;; Params:
-;;   $bscore1: First bscore 
-;;   $bscore2: Second score
-;; Return: True if $bscore1 dominates, 
-;;         False if $bscore2 dominates, 
-;;         Indeterminate otherwise.
-;; x dominates y if:
-;; for all i x_i >= y_i and there exists i such that x_i > y_i
 ; (: dominates (-> BehavioralScore BehavioralScore Atom))
 (= (dominates (mkBScore Nil) (mkBScore Nil)) Indeterminate)
 (= (dominates (mkBScore Nil) (mkBScore (Cons $by $bys))) False)
@@ -178,9 +158,6 @@
            (dominatesRec (mkBScore $bxs) (mkBScore $bys) $res))))
 
 ;; Removes dominated exemplars from a list based on their BehavioralScores.
-;; Params:
-;;   (List (Exemplar $a)): List of exemplars to filter.
-;; Return: (List (Exemplar $a)): List of non-dominated exemplars.
 ; (: removeDominated (-> (List (Exemplar $a)) (List (Exemplar $a))))
 (= (removeDominated Nil) Nil)
 (= (removeDominated (Cons $exemplar Nil)) (Cons $exemplar Nil))
@@ -188,91 +165,54 @@
    (removeDominatedRec $exemplar (Cons $next $rest) Nil))
 
 ;; Helper: Compares an exemplar with others, accumulating non-dominated exemplars.
-;; Params:
-;;   $exemplar: Current exemplar to compare.
-;;   (List (Exemplar $a)): Remaining exemplars to process.
-;;   $acc: Accumulator for non-dominated exemplars.
-;; Return: List including $exemplar and non-dominated others.
 ; (: removeDominatedRec (-> (Exemplar $a) (List (Exemplar $a)) (List (Exemplar $a)) (List (Exemplar $a))))
 (= (removeDominatedRec $exemplar Nil $acc)
    (Cons $exemplar $acc))
 (= (removeDominatedRec $exemplar (Cons $other $rest) $acc)
    (let $domResult (dominates (getExemplarBScore $exemplar) (getExemplarBScore $other))
-      ;; (trace! (if (== $domResult True) Dominated $domResult)
-      (if (== $domResult True) ;; Could also be Indeterminate that's why we use explicit == comparison
+      (if (== $domResult True)
           (removeDominatedRec $exemplar $rest $acc)
           (if (== $domResult False)
               (removeDominated (Cons $other $rest))
               (removeDominatedRec $exemplar $rest (Cons $other $acc))))
-      ;; )
       ))
 
-;; Merges a list of exemplars into the metapopulation, maintaining order based on exemplar comparison.
-;; Assumes the exemplars are already filtered so it directly inserts them to the metapopulation
-;; Params:
-;;   (List (Exemplar $a)): List of exemplars to merge 
-;;   $metapop: Ordered set to merge into.
-;; Return: $updatedMetaPop: Updated ordered set with merged exemplars.
+;; Merges a list of exemplars into the metapopulation.
 ; (: mergeCandidates (-> (List (Exemplar $a)) (OS (Exemplar $a)) (OS (Exemplar $a))))
 (= (mergeCandidates Nil $metapop) $metapop)
 (= (mergeCandidates (Cons $x $xs) $metapop)
    (let $updatedMetaPop (OS.insert compareExemplar $x $metapop)
       (mergeCandidates $xs $updatedMetaPop)))
 
-;; Merges a deme's candidates into a metapopulation, processing through sorting, deduplication, trimming, tree conversion, filtering, dominance removal, merging, and resizing.
-;; Params:
-;;   $demes: List of demes to process.
-;;   $nEval: Number of evaluations for candidate selection.
-;;   $maxCandsPerDeme: Maximum candidates per deme.
-;;   $minPoolSize: Minimum deme size to retain.
-;;   $complexityTemperature: Parameter for score range in trimming.
-;;   $scoringContext: Either (mkITable $rows $labels) for Boolean or ($nGames $opponentPolicy) for Strategy
-;;   $metapop: Ordered set of existing exemplars.
-;;   $nToKeep: Target size for resized metapopulation.
-;;   $capCoef: Capacity coefficient for resizing.
-;;   $genCount: Generation count for resizing.
-;; Return: Updated and resized metapopulation.
+;; Merges a deme's candidates into a metapopulation.
+;; LLMOSES change: (eval (sbEmitCullCands ...)) forces runtime dispatch so that
+;; the definition in state-builder.metta (loaded after this file) is found.
 ; (: mergeDemes (-> Expression Number Number Number Number (ITable $a) (OS (Exemplar $a)) Number Number Number (OS (Exemplar $a))))
 (= (mergeDemes $demes $nEval $maxCandsPerDeme $minPoolSize $complexityTemperature $scoringContext $metapop $nToKeep $capCoef $genCount)
     (if (== $demes ()) $metapop
         (let*
         (
-            ;; ($_ (println! ("")))
-            ;; ($_ (println! ("--------------------------------")))
-            ;; ($_ (println! (===== MergeDemes Starting =====)))
             (($headDeme $tailDeme) (decons-atom $demes))
             ((mkDeme $rep $sInstList $demeId) $headDeme)
-            ($sortedSInstList (sortDeme $sInstList)) ;; sorting the instances inside the deme by decreasing order
+            ($sortedSInstList (sortDeme $sInstList))
             ($_ (println! (Demesize: (List.length (second $sortedSInstList)))))
-            ;; ($demeExpr (List.listToExpr (second $sortedSInstList)))
-            ;; ($_ (println! (UniqueDemeSize: (length (unique-atom $demeExpr)))))
-            ($unqCandidates (keepTopUniqueCandidates $rep $sortedSInstList $nEval $maxCandsPerDeme))  ;;remove duplicates and limits the size by keeping the top scoring
+            ($unqCandidates (keepTopUniqueCandidates $rep $sortedSInstList $nEval $maxCandsPerDeme))
             ($_ (println! (KeptUniqueTopCandidates NewSize: (List.length $unqCandidates))))
-            ($trimmedDeme (trimDownDeme $unqCandidates $minPoolSize $complexityTemperature))  ;; further trims the deme
-            ;; ($_ (println! (DemeToTrees Starting...)))
+            ($trimmedDeme (trimDownDeme $unqCandidates $minPoolSize $complexityTemperature))
             ($_ (println! (TrimmedDownDeme: (List.length $trimmedDeme))))
-            ($potCandidates (demeToTrees (mkDeme $rep (mkSInstSet $trimmedDeme) $demeId) $scoringContext)) ;;convert instances to trees
+            ($potCandidates (demeToTrees (mkDeme $rep (mkSInstSet $trimmedDeme) $demeId) $scoringContext))
             ($_ (println! (Before getNewCandidates: (List.length $potCandidates))))
             ($_ (py-call (state_builder.set_merge_count "candidates_produced" (List.length $potCandidates))))
-            ;; ($_ (println! (Metapop: $metapop)))
-            ;; ($_ (println! ("--")))
-            ($candidates (getNewCandidates $potCandidates $metapop)) ;;which aren't found in the meta pop
-            ;; ($_ (println! (NewCandidates: (List.length $candidates))))
+            ($candidates (getNewCandidates $potCandidates $metapop))
             ($_ (py-call (state_builder.set_merge_count "duplicates_dropped" (- (List.length $potCandidates) (List.length $candidates)))))
-            ($removedDominated (removeDominated $candidates))  ;;removeDominated
-            ;; ($_ (println! (Removed Dominated: $removedDominated)))
+            ($removedDominated (removeDominated $candidates))
             ($_ (py-call (state_builder.set_merge_count "dominated_removed" (- (List.length $candidates) (List.length $removedDominated)))))
-            ($_ (sbEmitCullCands $removedDominated))           ;; <-- cull-candidate window
+            ($_ (eval (sbEmitCullCands $removedDominated)))    ;; <-- LLMOSES: eval forces runtime dispatch
             ($_ (println! (Going to merge (List.length $removedDominated) Instances)))
-            ($updatedMetaPop (mergeCandidates $removedDominated $metapop))  ;;merge candidates into metapop
-            ;; ($_ (println! (merged Candidate: $updatedMetaPop)))
+            ($updatedMetaPop (mergeCandidates $removedDominated $metapop))
             ($_ (println! (Metapop size before resize: (OS.length $updatedMetaPop))))
-            ($resizedMetapop (resizeMetapop $updatedMetaPop $nToKeep $minPoolSize $complexityTemperature $capCoef $genCount))  ;;resize the metapop
+            ($resizedMetapop (resizeMetapop $updatedMetaPop $nToKeep $minPoolSize $complexityTemperature $capCoef $genCount))
             ($_ (println! (Metapop size after resize: (OS.length $resizedMetapop))))
-            ; ($resizedMetapop (if (<= $nToKeep (OS.length $updatedMetaPop)) (OS.getTopN $nToKeep $updatedMetaPop) $updatedMetaPop)) ;; select top nToKeep candidates
-            ;; ($_ (println! (Resized Metapop: $resizedMetapop)))
-            ;; ($_ (println! ("--------------------------------")))
-            ;; ($_ (println! ("")))
         )
             (if (== $tailDeme ()) $resizedMetapop
                 (mergeDemes $tailDeme $nEval $maxCandsPerDeme $minPoolSize $complexityTemperature $scoringContext $resizedMetapop $nToKeep $capCoef $genCount)

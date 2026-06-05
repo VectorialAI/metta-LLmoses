@@ -85,6 +85,18 @@
 ;; probes land in an open buffer. sbEmitAllMerged only WALKS the post-merge pop.
 (= (sbBeginMerge) (py-call (state_builder.begin_merge)))
 
+;; Walk $removedDominated (mkExemplar list) and buffer each as a cull candidate.
+;; Called at the probe site in merge-demes.metta, buffer open from sbBeginMerge.
+(= (sbEmitCullCands Nil) 0)
+(= (sbEmitCullCands (Cons $ex $rest))
+   (let* (
+     ($tree   (eval (getExemplarTree  $ex)))
+     ($expr   (eval (preOrder $tree)))
+     ($bscore (eval (getExemplarBScore $ex)))
+     ($cscore (eval (getExemplarCscore $ex)))
+     ($_      (py-call (state_builder.add_cull_candidate $expr $tree $bscore $cscore)))
+   ) (sbEmitCullCands $rest)))
+
 (= (sbEmitMergedPop $os $i $n)
    (if (>= $i $n) 0
        (let* (($x  (memberByIdx $os $i))
