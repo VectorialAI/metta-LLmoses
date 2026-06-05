@@ -87,14 +87,19 @@
 
 ;; Walk $removedDominated (mkExemplar list) and buffer each as a cull candidate.
 ;; Called at the probe site in merge-demes.metta, buffer open from sbBeginMerge.
+;; cscore fields extracted via named accessors (getScore / getComp / getPenScore)
+;; so the three scalars cross as ints/floats rather than as a raw mkCscore atom.
 (= (sbEmitCullCands Nil) 0)
 (= (sbEmitCullCands (Cons $ex $rest))
    (let* (
-     ($tree   (eval (getExemplarTree  $ex)))
+     ($tree   (eval (getExemplarTree   $ex)))
      ($expr   (eval (preOrder $tree)))
-     ($bscore (eval (getExemplarBScore $ex)))
-     ($cscore (eval (getExemplarCscore $ex)))
-     ($_      (py-call (state_builder.add_cull_candidate $expr $tree $bscore $cscore)))
+     ($bscore (eval (getExemplarBScore  $ex)))
+     ($cscore (eval (getExemplarCscore  $ex)))
+     ($raw    (eval (getScore    $cscore)))
+     ($cpx    (eval (getComp     $cscore)))
+     ($pen    (eval (getPenScore $cscore)))
+     ($_ (py-call (state_builder.add_cull_candidate $expr $tree $bscore $raw $cpx $pen)))
    ) (sbEmitCullCands $rest)))
 
 (= (sbEmitMergedPop $os $i $n)
@@ -106,6 +111,42 @@
 (= (sbEmitAllMerged $os)
    (let* (($n (eval (metapopSize $os))))
      (sbEmitMergedPop $os 0 $n)))
+
+;; --- per-candidate neighborhood size walk ----------------------------------
+;; dist-1 neighborhood = Σ(multip−1) over the rep's discrete knob map.
+;; createRepresentation is called with fs-algo=None so no FS overhead; the
+;; scorerType (mi for boolean) is needed to build the correct knob types.
+(= (sumNbhMMap NilMMap) 0)
+(= (sumNbhMMap (ConsMMap ((mkDiscSpec $m) $knob) $rest))
+   (+ (- $m 1) (sumNbhMMap $rest)))
+
+(= (repNeighborhood (mkRep (mkKbMap (mkDscKbMp $dscKbMp) (mkDscMp $dscMp)) $t))
+   (sumNbhMMap $dscMp))
+
+;; createRepresentation returns a one-tuple ((mkRep ...)); car-atom peels it.
+(= (treeNeighborhood $tree $itable $scorerType)
+   (let $reps (createRepresentation 1 $tree $itable None False () $scorerType)
+     (repNeighborhood (car-atom $reps))))
+
+;; Emit one candidate's neighborhood; $tree is the full raw tree (Python hashes it
+;; with the same _pid(expr_to_str(tree)) used in add_member, so keys align).
+(= (sbEmitCandNbh $tree $itable $scorerType)
+   (let $n (eval (treeNeighborhood $tree $itable $scorerType))
+     (py-call (state_builder.set_candidate_neighborhood $tree $n))))
+
+(= (sbEmitMemberNbh $os $i $n $itable $scorerType)
+   (if (>= $i $n) 0
+     (let* (($x    (memberByIdx $os $i))
+            ($tree (eval (memberTree $x)))
+            ($_    (sbEmitCandNbh $tree $itable $scorerType)))
+       (sbEmitMemberNbh $os (+ $i 1) $n $itable $scorerType))))
+
+;; Walk the pre-cull metapop and emit a neighborhood_size for each member.
+;; Called from runMosesLoop (boolean context only) BEFORE sbEmitGeneration
+;; so the data lands in _cand_nbh before flush_gen builds the action doc.
+(= (sbEmitAllMemberNbh $os $itable $scorerType)
+   (let* (($n (eval (metapopSize $os))))
+     (sbEmitMemberNbh $os 0 $n $itable $scorerType)))
 
 ;; --- one-call convenience: emit a full generation --------------------------
 ;; sbEmitGeneration takes the WHOLE optimized-deme tuple and iterates via sbEmitDeme.
