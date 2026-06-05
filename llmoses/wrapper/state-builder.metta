@@ -25,6 +25,11 @@
 (= (sbBeginGen $g)      (py-call (state_builder.begin_gen $g)))
 (= (sbGetTotalEvals)    (py-call (state_builder.get_total_evals)))
 
+;; --- input feature spec: emit once per run from the ITable ----------------
+;; Boolean problems have $itable in context; strategy problems pass 0 (no-op).
+(= (sbSetProblemSpec $itable)
+   (py-call (state_builder.set_problem_spec (eval (getArgLabels $itable)))))
+
 ;; --- post_selection hook: buffer the selected exemplar's tree -------------
 ;; Called from inside expandDeme right after $tree is bound. Passes the FULL
 ;; raw tree (so its program_id matches a member/candidate id). Buffered in

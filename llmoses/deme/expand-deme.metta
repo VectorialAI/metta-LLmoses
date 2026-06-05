@@ -111,7 +111,10 @@ $optimDeme
 ;; then delegates to the internal loop with $totalGen pinned.
 (= (runMoses $maxGen $maxScore $maxCandOutput $metaPop $nExpansion $nDeme $context $optimize $nEval $maxCandsPerDeme $minPoolSize $complexityTemperature $nToKeep $capCoef $genCount)
    (let* (($totalGen $maxGen)
-          ($_ (sbNewRun)))
+          ($_ (sbNewRun))
+          ($_ (case $context
+                ((($pe $fs $ttbs $itable) (sbSetProblemSpec $itable))
+                 ($_ 0)))))
         (runMosesLoop $maxGen $totalGen $maxScore $maxCandOutput $metaPop $nExpansion $nDeme $context $optimize $nEval $maxCandsPerDeme $minPoolSize $complexityTemperature $nToKeep $capCoef $genCount)))
 
 ;; Internal loop — carries $totalGen (the original budget, never modified) so
