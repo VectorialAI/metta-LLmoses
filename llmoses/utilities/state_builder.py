@@ -64,6 +64,7 @@ _pending_deme_evals = {}   # deme_id -> currentNInstances (from expandDemeHelper
 _depth = {}               # program_id -> lineage depth (reset per run)
 _total_evals = 0           # cumulative true fitness calls across all gens in the current run
 _explored_ids = set()      # program_ids selected in a prior gen (reset per run; "explored" flag)
+_problem_spec = None       # {input_labels, arity} — set once per run by set_problem_spec
 
 # Boltzmann selection constants — mirror exemplar-selection.metta COMPXY_TEMP / INV_TEMP
 _COMPXY_TEMP = 6.0
@@ -214,7 +215,7 @@ def sb_run_dir():
 
 def new_run():
     """Open a fresh per-run subdir. Call once at the top of each runMoses."""
-    global _run_seq, _cur_state_dir, _cur_action_dir, _pending_selection, _pending_merge, _pending_deme_evals, _depth, _total_evals, _explored_ids
+    global _run_seq, _cur_state_dir, _cur_action_dir, _pending_selection, _pending_merge, _pending_deme_evals, _depth, _total_evals, _explored_ids, _problem_spec
     _run_seq += 1
     _cur_state_dir = os.path.join(_STATE_DIR, f"run-{_run_seq}")
     _cur_action_dir = os.path.join(_ACTION_DIR, f"run-{_run_seq}")
@@ -226,6 +227,7 @@ def new_run():
     _depth = {}
     _total_evals = 0
     _explored_ids = set()
+    _problem_spec = None
     return _run_seq
 
 
@@ -322,6 +324,22 @@ def set_deme_evals(deme_id, n):
     return 0
 
 
+def set_problem_spec(labels, arity=None):
+    """Input feature space — the domain the pair-sampling / FS / operator-inclusion
+    action spaces are defined over. From getArgLabels (mkITable ...).
+    Called once at run start; persists into every state_doc for that run."""
+    global _problem_spec
+    raw = cons_to_list(labels)
+    if not raw:
+        raw = list(labels) if isinstance(labels, list) else [labels]
+    lbls = [_flat(x) for x in raw]
+    _problem_spec = {
+        "input_labels": lbls,
+        "arity": (_num(arity) if arity is not None else len(lbls)),
+    }
+    return 0
+
+
 def get_total_evals():
     """Return cumulative true fitness calls in the current run (reset by new_run)."""
     return _total_evals
@@ -344,6 +362,7 @@ def flush_terminal(gen, problem_type, complexity_ratio, max_gen, n_eval,
         "timestamp_ms": int(time.time() * 1000), "total_evaluations": _total_evals,
         "metapopulation": {"size": len(members_out),
                            "best_penalized_score": best, "members": members_out},
+        "problem_spec": _problem_spec,
         "run_parameters": {
             "problem_type": _flat(problem_type), "complexity_ratio": _cr_or_none(complexity_ratio),
             "max_gen": _num(max_gen), "n_eval": _num(n_eval),
@@ -484,6 +503,7 @@ def flush_gen(gen, problem_type, complexity_ratio, max_gen, n_eval,
         "merge_summary": merge_summary,
         "lineage_diff": lineage_diff,
         "moses_native_events": {"post_selection": post_selection_evt},
+        "problem_spec": _problem_spec,
         "run_parameters": run_parameters,
     }
 
