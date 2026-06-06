@@ -262,7 +262,6 @@
             ($removedDominated (removeDominated $candidates))  ;;removeDominated
             ;; ($_ (println! (Removed Dominated: $removedDominated)))
             ($_ (py-call (state_builder.set_merge_count "dominated_removed" (- (List.length $candidates) (List.length $removedDominated)))))
-            ($_ (sbEmitCullCands $removedDominated))           ;; <-- cull-candidate window
             ($_ (println! (Going to merge (List.length $removedDominated) Instances)))
             ($updatedMetaPop (mergeCandidates $removedDominated $metapop))  ;;merge candidates into metapop
             ;; ($_ (println! (merged Candidate: $updatedMetaPop)))

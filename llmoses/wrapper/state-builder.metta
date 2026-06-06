@@ -114,8 +114,9 @@
 
 ;; --- per-candidate neighborhood size walk ----------------------------------
 ;; dist-1 neighborhood = Σ(multip−1) over the rep's discrete knob map.
-;; createRepresentation is called with fs-algo=None so no FS overhead; the
-;; scorerType (mi for boolean) is needed to build the correct knob types.
+;; When FS is on, createRepresentation may produce multiple reps (one per
+;; feature-set candidate); non-determinism means treeNeighborhood returns one
+;; $n per rep, and sbEmitCandNbh emits each — Python accumulates a list.
 (= (sumNbhMMap NilMMap) 0)
 (= (sumNbhMMap (ConsMMap ((mkDiscSpec $m) $knob) $rest))
    (+ (- $m 1) (sumNbhMMap $rest)))
@@ -123,30 +124,32 @@
 (= (repNeighborhood (mkRep (mkKbMap (mkDscKbMp $dscKbMp) (mkDscMp $dscMp)) $t))
    (sumNbhMMap $dscMp))
 
-;; createRepresentation returns a one-tuple ((mkRep ...)); car-atom peels it.
-(= (treeNeighborhood $tree $itable $scorerType)
-   (let $reps (createRepresentation 1 $tree $itable None False () $scorerType)
+;; createRepresentation returns a one-tuple ((mkRep ...)) per feature-set;
+;; car-atom peels the outer tuple. With FS on, let binds $reps to each result
+;; non-deterministically so repNeighborhood fires once per feature-set.
+(= (treeNeighborhood $tree $itable $algo $prune $enforced $scorerType)
+   (let $reps (createRepresentation 1 $tree $itable $algo $prune $enforced $scorerType)
      (repNeighborhood (car-atom $reps))))
 
-;; Emit one candidate's neighborhood; $tree is the full raw tree (Python hashes it
-;; with the same _pid(expr_to_str(tree)) used in add_member, so keys align).
-(= (sbEmitCandNbh $tree $itable $scorerType)
-   (let $n (eval (treeNeighborhood $tree $itable $scorerType))
+;; Emit one candidate's neighborhood size(s); non-determinism from
+;; treeNeighborhood is resolved by Python appending to a list per program_id.
+(= (sbEmitCandNbh $tree $itable $algo $prune $enforced $scorerType)
+   (let $n (eval (treeNeighborhood $tree $itable $algo $prune $enforced $scorerType))
      (py-call (state_builder.set_candidate_neighborhood $tree $n))))
 
-(= (sbEmitMemberNbh $os $i $n $itable $scorerType)
+(= (sbEmitMemberNbh $os $i $n $itable $algo $prune $enforced $scorerType)
    (if (>= $i $n) 0
      (let* (($x    (memberByIdx $os $i))
             ($tree (eval (memberTree $x)))
-            ($_    (sbEmitCandNbh $tree $itable $scorerType)))
-       (sbEmitMemberNbh $os (+ $i 1) $n $itable $scorerType))))
+            ($_    (sbEmitCandNbh $tree $itable $algo $prune $enforced $scorerType)))
+       (sbEmitMemberNbh $os (+ $i 1) $n $itable $algo $prune $enforced $scorerType))))
 
-;; Walk the pre-cull metapop and emit a neighborhood_size for each member.
-;; Called from runMosesLoop (boolean context only) BEFORE sbEmitGeneration
-;; so the data lands in _cand_nbh before flush_gen builds the action doc.
-(= (sbEmitAllMemberNbh $os $itable $scorerType)
+;; Walk the pre-cull metapop and emit neighborhood size(s) for each member.
+;; Called from runMosesLoop (boolean context only) BEFORE sbEmitGeneration.
+;; Strategy context passes 0 (no-op) since there is no feature table.
+(= (sbEmitAllMemberNbh $os $itable $algo $prune $enforced $scorerType)
    (let* (($n (eval (metapopSize $os))))
-     (sbEmitMemberNbh $os 0 $n $itable $scorerType)))
+     (sbEmitMemberNbh $os 0 $n $itable $algo $prune $enforced $scorerType)))
 
 ;; --- one-call convenience: emit a full generation --------------------------
 ;; sbEmitGeneration takes the WHOLE optimized-deme tuple and iterates via sbEmitDeme.

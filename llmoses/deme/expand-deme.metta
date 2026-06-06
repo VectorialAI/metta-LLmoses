@@ -150,9 +150,10 @@ $optimDeme
             ((($prune-exemplar $fs-algo $truthTableBScore $itable) ("boolean" ()))
              (($nGames $opponentPolicy $cr)                        ("strategy" $cr)))))
        ;; emit per-candidate neighborhood size before flush_gen consumes it
+       ;; pass the actual algo/prune/enforced so FS-on produces multi-rep neighborhoods
        ($_ (case $context
              ((($prune-exemplar $fs-algo $truthTableBScore $itable)
-               (sbEmitAllMemberNbh $metaPop $itable mi))
+               (sbEmitAllMemberNbh $metaPop $itable $fs-algo $prune-exemplar () mi))
               (($nGames $opponentPolicy $cr) 0))))
        ($_ (sbEmitAllMerged $updatedMetaPop))
        ($_ (sbEmitGeneration $genIndex $metaPop $optimizedDemes

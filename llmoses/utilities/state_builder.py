@@ -327,10 +327,15 @@ def add_cull_candidate(expr, tree, bscore, raw, cpx, pen):
 
 
 def set_candidate_neighborhood(tree, n):
-    """Record the dist-1 neighborhood size for a candidate, keyed by the same
+    """Record the dist-1 neighborhood size(s) for a candidate. When FS is on,
+    createRepresentation may produce multiple reps (one per feature set);
+    each rep emits its own n so we accumulate a list. Keyed by the same
     program_id (_pid(expr_to_str(tree))) that add_member uses so lookups align.
-    Populated per-gen before flush_gen; cleared at end of flush_gen."""
-    _cand_nbh[_pid(expr_to_str(tree))] = _num(n)
+    With fs-algo=None there will be exactly one emission, giving a single-element list."""
+    pid = _pid(expr_to_str(tree))
+    if pid not in _cand_nbh:
+        _cand_nbh[pid] = []
+    _cand_nbh[pid].append(_num(n))
     return 0
 
 
