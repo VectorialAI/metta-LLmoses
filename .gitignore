@@ -10,7 +10,6 @@ logs/
 Dockerfile
 .dockerignore
 run_moses_demo.sh
-run_strategy_state_test.sh
 Makefile
 llmoses-tests
 llmoses-tests/*
