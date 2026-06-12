@@ -21,11 +21,6 @@
 (= (optimizeDemes $deme $context $inst $optimize)
    ($optimize $deme $context $inst))
 
-;; Extracts default specification from a knob
-; (: getKnobDefault (-> $knob Number))
-(= (getKnobDefault (mkLSK (mkDiscKnob $knob $multip $curr (mkDiscSpec $def) $dis))) $def)
-(= (getKnobDefault (mkSSK (mkDiscKnob $knob $multip $curr (mkDiscSpec $def) $dis))) $def)
-
 ;; Runs one deme-creation and optimization step, then merges the optimized deme into the metapopulation.
 ;; Params:
 ;;   $metaPop: The current metapopulation.
@@ -72,6 +67,7 @@
       (
          ($exemplar (trace! "Selecting Exemplar" (selectExemplar $metaPop)))
          ($tree (trace! "getting exemplar tree" (getExemplarTree $exemplar)))
+         ($_ (sbSetSelection $tree))
          ($demeIds (trace! "creating deme IDs" (createDemeIds $nExpansion $nDeme)))
          ($demes (trace! "Creating Deme" (createDeme $nDeme $demeIds $tree)))
          ($gameContext ($nGames $opponentPolicy $complexityRatio $targetCScore))
@@ -111,10 +107,18 @@ $optimDeme
 ;; then delegates to the internal loop with $totalGen pinned.
 (= (runMoses $maxGen $maxScore $maxCandOutput $metaPop $nExpansion $nDeme $context $optimize $nEval $maxCandsPerDeme $minPoolSize $complexityTemperature $nToKeep $capCoef $genCount)
    (let* (($totalGen $maxGen)
-          ($_ (sbNewRun))
           ($_ (case $context
-                ((($pe $fs $ttbs $itable) (sbSetProblemSpec $itable))
-                 ($_ 0)))))
+                ((($pe $fs $ttbs $itable)
+                  (sbBeginRunBoolean
+                     $maxGen $nEval $maxCandsPerDeme $minPoolSize $complexityTemperature
+                     $nToKeep $capCoef $nDeme $optimize
+                     $itable))
+                 (($nGames $opponentPolicy $cr)
+                  (sbBeginRunStrategy
+                     $maxGen $nEval $maxCandsPerDeme $minPoolSize $complexityTemperature
+                     $nToKeep $capCoef $nDeme $optimize
+                     $nGames $opponentPolicy $cr))
+                 ($_x 0)))))
         (runMosesLoop $maxGen $totalGen $maxScore $maxCandOutput $metaPop $nExpansion $nDeme $context $optimize $nEval $maxCandsPerDeme $minPoolSize $complexityTemperature $nToKeep $capCoef $genCount)))
 
 ;; Internal loop — carries $totalGen (the original budget, never modified) so
@@ -141,29 +145,16 @@ $optimDeme
        ;; ($_ (println! (Top Exemplar before expansion: $top)))
        ($topScore (getExemplarCscore $top))
        ;; ($_ (println! (topscore: $topScore)))
-       ;; --- LLMOSES: per-context emit params, then full state-builder emit ---
-       ;; complexity_ratio exists ONLY on the game/strategy context (its 3-tuple).
-       ;; The boolean 4-tuple context has no such parameter, so it emits () —
-       ;; absent, not a fabricated default — keeping captured state honest.
-       (($problemType $complexityRatio)
-          (case $context
-            ((($prune-exemplar $fs-algo $truthTableBScore $itable) ("boolean" ()))
-             (($nGames $opponentPolicy $cr)                        ("strategy" $cr)))))
-       ;; emit per-candidate neighborhood size before flush_gen consumes it
-       ;; pass the actual algo/prune/enforced so FS-on produces multi-rep neighborhoods
+       ;; --- LLMOSES state-builder emit (run params pre-buffered by sbBeginRun*) ---
        ($_ (case $context
              ((($prune-exemplar $fs-algo $truthTableBScore $itable)
                (sbEmitAllMemberNbh $metaPop $itable $fs-algo $prune-exemplar () mi))
-              (($nGames $opponentPolicy $cr) 0))))
+              (($nGames $opponentPolicy $cr) (sbEmitAllMemberNbhStrategy $metaPop)))))
        ($_ (sbEmitAllMerged $updatedMetaPop))
-       ($_ (sbEmitGeneration $genIndex $metaPop $optimizedDemes
-                             $problemType $complexityRatio $maxGen $nEval $maxCandsPerDeme
-                             $minPoolSize $complexityTemperature $nToKeep $capCoef $nDeme $optimize))
-       ($_ (if (== $maxGen 1)
-               (sbEmitTerminal (+ $genIndex 1) $updatedMetaPop $problemType $complexityRatio
-                               $maxGen $nEval $maxCandsPerDeme $minPoolSize $complexityTemperature
-                               $nToKeep $capCoef $nDeme $optimize)
-               0))
+       ($_emit (sbEmitGeneration $genIndex $metaPop $optimizedDemes))
+       ($_term (if (== $maxGen 1)
+                   (sbEmitTerminal (+ $genIndex 1) $updatedMetaPop)
+                   0))
        ;; ---------------------------------------------------------------------
        ($resultCandi (if (<= $maxCandOutput (OS.length $updatedMetaPop)) (OS.getTopN $maxCandOutput $updatedMetaPop) $updatedMetaPop))
        ($_ (cut))

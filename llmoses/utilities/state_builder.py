@@ -67,6 +67,7 @@ _explored_ids = set()      # program_ids selected in a prior gen (reset per run;
 _problem_spec = None       # {input_labels, arity} — set once per run by set_problem_spec
 _last_complexity_ratio = None  # derived cratio from flush_gen; reused by flush_terminal
 _cand_nbh = {}             # program_id -> neighborhood_size; populated per-gen, cleared in flush_gen
+_pending_run_params = {}   # name -> raw value; persists across gens, reset by new_run
 
 # Boltzmann selection constants — mirror exemplar-selection.metta COMPXY_TEMP / INV_TEMP
 _COMPXY_TEMP = 6.0
@@ -159,6 +160,27 @@ def _cr_or_none(x):
     return _num(x)
 
 
+_ABSENT_ATOMS = {"", "None", "()", "Nil"}
+
+def _present_atom(x):
+    s = _flat(x)
+    return None if s in _ABSENT_ATOMS else s
+
+def _effective_problem_type(raw_problem_type=None):
+    """Resolve the canonical problem-type string from the buffered run param,
+    falling back to _problem_spec. Returns None if genuinely unknown."""
+    p = _present_atom(raw_problem_type)
+    if p is not None:
+        return p
+    if isinstance(_problem_spec, dict):
+        p = _present_atom(_problem_spec.get("problem_type"))
+        if p is not None:
+            return p
+        if "input_labels" in _problem_spec:
+            return "boolean"
+    return None
+
+
 def _boltzmann(pen_scores):
     """Reproduce normalizeProbs + the sum in selectExemplar.
     w_i = exp((s_i - best) * INV_TEMP) / sum(w), aligned to input order.
@@ -215,9 +237,16 @@ def sb_run_dir():
     return _RUN_DIR
 
 
+def probe(tag):
+    """Bisection breadcrumb: appends a tag to probe.log in the run dir."""
+    with open(os.path.join(_RUN_DIR, "probe.log"), "a", encoding="utf-8") as fh:
+        fh.write(f"{int(time.time()*1000)} {_flat(tag)}\n")
+    return 0
+
+
 def new_run():
     """Open a fresh per-run subdir. Call once at the top of each runMoses."""
-    global _run_seq, _cur_state_dir, _cur_action_dir, _pending_selection, _pending_merge, _pending_deme_evals, _depth, _total_evals, _explored_ids, _problem_spec, _last_complexity_ratio, _cand_nbh
+    global _run_seq, _cur_state_dir, _cur_action_dir, _pending_selection, _pending_merge, _pending_deme_evals, _depth, _total_evals, _explored_ids, _problem_spec, _last_complexity_ratio, _cand_nbh, _pending_run_params
     _run_seq += 1
     _cur_state_dir = os.path.join(_STATE_DIR, f"run-{_run_seq}")
     _cur_action_dir = os.path.join(_ACTION_DIR, f"run-{_run_seq}")
@@ -232,6 +261,7 @@ def new_run():
     _problem_spec = None
     _last_complexity_ratio = None
     _cand_nbh = {}
+    _pending_run_params = {}
     return _run_seq
 
 
@@ -264,13 +294,16 @@ def add_member(gen, expr, tree, cscore, bscore):
     return 0
 
 
-def add_knob(gen, deme_id, loc, multip, default):
+_KIND_BY_TAG = {"LSK": "logical", "SSK": "strategy", "CSK": "contin"}
+
+def add_knob(gen, deme_id, loc, multip, default, tag=None):
     """One call per deme knob, keyed by deme_id for multi-deme support."""
     s = _gs(gen); did = _demeid(deme_id); d = _dslot(s, did)
     m = _num(unwrap_atom(multip)); lz = unwrap_atom(loc)
+    kind = _KIND_BY_TAG.get(_flat(tag)) or _knob_kind(m)   # tag wins; multiplicity is fallback only
     d["knobs"].append({
         "knob_id": lz if isinstance(lz, (int, float)) else _flat(lz),
-        "multiplicity": m, "kind": _knob_kind(m), "default_setting": _num(default),
+        "multiplicity": m, "kind": kind, "default_setting": _num(default),
     })
     return 0
 
@@ -379,12 +412,45 @@ def get_total_evals():
     return _total_evals
 
 
-def flush_terminal(gen, problem_type, complexity_ratio, max_gen, n_eval,
-                   max_cands_per_deme, min_pool_size, complexity_temperature,
-                   n_to_keep, cap_coef, n_deme, optimizer):
+def set_run_param(name, value):
+    """Buffer one named run parameter. Persists until overwritten or new_run;
+    NOT cleared by flush_gen, so flush_terminal sees the same values without re-set."""
+    _pending_run_params[_flat(name)] = value
+    return 0
+
+
+def set_problem_spec_strategy(moves, n_games, opponent_policy, complexity_ratio):
+    """Strategy analog of set_problem_spec. Moves arrive as a marshalled flat list
+    of symbols (bare MeTTa tuple, not a Cons spine)."""
+    global _problem_spec
+    mv = moves if isinstance(moves, list) else [moves]
+    _problem_spec = {
+        "problem_type": "strategy",
+        "moves": [_flat(m) for m in mv],
+        "n_games": _num(n_games),
+        "opponent_policy": _flat(opponent_policy),
+        "complexity_ratio": _num(complexity_ratio),
+    }
+    return 0
+
+
+def flush_terminal(gen):
     """Final post-merge metapopulation -> terminal.json. Offline/experiment use;
     no ready/ sentinel (not an agent step)."""
     g = _num(gen)
+    rp = _pending_run_params
+    problem_type           = rp.get("problem_type")
+    complexity_ratio       = rp.get("complexity_ratio")
+    max_gen                = rp.get("max_gen")
+    n_eval                 = rp.get("n_eval")
+    max_cands_per_deme     = rp.get("max_cands_per_deme")
+    min_pool_size          = rp.get("min_pool_size")
+    complexity_temperature = rp.get("complexity_temperature")
+    n_to_keep              = rp.get("n_to_keep")
+    cap_coef               = rp.get("cap_coef")
+    n_deme                 = rp.get("n_deme")
+    optimizer              = rp.get("optimizer")
+    ptype = _effective_problem_type(problem_type)
     s = _gs(g)
     members = s["members"]
     pens = [m["cscore"]["penalized_score"] for m in members
@@ -398,7 +464,7 @@ def flush_terminal(gen, problem_type, complexity_ratio, max_gen, n_eval,
                            "best_penalized_score": best, "members": members_out},
         "problem_spec": _problem_spec,
         "run_parameters": {
-            "problem_type": _flat(problem_type),
+            "problem_type": ptype,
             "complexity_ratio": (_cr_or_none(complexity_ratio)
                                  if _cr_or_none(complexity_ratio) is not None
                                  else _last_complexity_ratio),
@@ -412,15 +478,26 @@ def flush_terminal(gen, problem_type, complexity_ratio, max_gen, n_eval,
     return 0
 
 
-def flush_gen(gen, problem_type, complexity_ratio, max_gen, n_eval,
-              max_cands_per_deme, min_pool_size, complexity_temperature,
-              n_to_keep, cap_coef, n_deme, optimizer):
+def flush_gen(gen):
     """v0.5: tree_str ProgramRecords; lineage_diff replaces lineage + the
     post_deme_close metapop diff; DemeRecord absorbs knob_type_breakdown,
     sampled_pair_count, and the merge counts; post_selection is the only
     surviving nested event."""
     global _pending_selection, _pending_merge, _pending_deme_evals, _depth, _total_evals, _explored_ids, _cand_nbh
     g = _num(gen)
+    rp = _pending_run_params
+    problem_type           = rp.get("problem_type")
+    complexity_ratio       = rp.get("complexity_ratio")
+    max_gen                = rp.get("max_gen")
+    n_eval                 = rp.get("n_eval")
+    max_cands_per_deme     = rp.get("max_cands_per_deme")
+    min_pool_size          = rp.get("min_pool_size")
+    complexity_temperature = rp.get("complexity_temperature")
+    n_to_keep              = rp.get("n_to_keep")
+    cap_coef               = rp.get("cap_coef")
+    n_deme                 = rp.get("n_deme")
+    optimizer              = rp.get("optimizer")
+    ptype = _effective_problem_type(problem_type)
     s = _gs(g)
     members = s["members"]
 
@@ -473,7 +550,7 @@ def flush_gen(gen, problem_type, complexity_ratio, max_gen, n_eval,
             "exemplar_expr": d["deme_tree"],
             "knobs": d["knobs"], "knob_count": len(d["knobs"]),
             "knob_type_breakdown": kb,
-            "sampled_pair_count": (kb["logical"] if _flat(problem_type) == "boolean" else None),
+            "sampled_pair_count": (kb["logical"] if ptype == "boolean" else None),
             "neighborhood_size": nbh,
             "instances_evaluated": d["instances"], "evaluations": d["evaluations"],
             "operator_inclusion_set": None,
@@ -530,7 +607,7 @@ def flush_gen(gen, problem_type, complexity_ratio, max_gen, n_eval,
         }
 
     run_parameters = {
-        "problem_type": _flat(problem_type),
+        "problem_type": ptype,
         "complexity_ratio": cratio, "max_gen": _num(max_gen),
         "n_eval": _num(n_eval), "max_cands_per_deme": _num(max_cands_per_deme),
         "min_pool_size": _num(min_pool_size),
@@ -555,7 +632,7 @@ def flush_gen(gen, problem_type, complexity_ratio, max_gen, n_eval,
 
     action_doc = {
         "schema_version": _VERSION, "run_seq": _run_seq, "generation": g,
-        "problem_type": _flat(problem_type),
+        "problem_type": ptype,
         "exemplar_candidates": [
             {"program_id": m["program_id"], "tree_str": m["tree_str"],
              "penalized_score": m["cscore"]["penalized_score"],

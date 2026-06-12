@@ -20,6 +20,8 @@
 ;; Canary: prints the run dir at import if PYTHONPATH resolves the module.
 !(py-call (state_builder.sb_run_dir))
 
+(= (sbProbe $tag) (py-call (state_builder.probe $tag)))
+
 ;; --- direct delegators (scalars already; mirror emitGen/emitNewRun) ---------
 (= (sbNewRun)           (py-call (state_builder.new_run)))
 (= (sbBeginGen $g)      (py-call (state_builder.begin_gen $g)))
@@ -59,8 +61,9 @@
 (= (sbEmitDemeKnobs $g $demeId Nil) 0)
 (= (sbEmitDemeKnobs $g $demeId (Cons $k $rest))
    (let* (
-     ($loc (eval (knobLoc $k))) ($mul (eval (knobMultip $k))) ($def (eval (knobDefault $k)))
-     ($_  (py-call (state_builder.add_knob $g $demeId $loc $mul $def)))
+     ($loc (eval (knobLoc $k))) ($mul (eval (knobMultip $k)))
+     ($def (eval (knobDefault $k))) ($tag (eval (knobTag $k)))
+     ($_k  (py-call (state_builder.add_knob $g $demeId $loc $mul $def $tag)))
    ) (sbEmitDemeKnobs $g $demeId $rest)))
 
 (= (sbEmitDeme $g $deme)
@@ -71,14 +74,26 @@
      ($_ (let $tr (eval (repTree $rep)) (py-call (state_builder.set_deme $g $demeId $tr $inst))))
    ) 0))
 
-;; flush_gen takes 12 positional args IN THIS ORDER (matches state_builder.py):
-;;   gen problem_type complexity_ratio max_gen n_eval max_cands_per_deme
-;;   min_pool_size complexity_temperature n_to_keep cap_coef n_deme optimizer
-(= (sbFlushGen $g $problemType $complexityRatio $maxGen $nEval $maxCandsPerDeme
-               $minPoolSize $complexityTemperature $nToKeep $capCoef $nDeme $optimizer)
-   (py-call (state_builder.flush_gen $g $problemType $complexityRatio $maxGen $nEval
-              $maxCandsPerDeme $minPoolSize $complexityTemperature $nToKeep $capCoef
-              $nDeme $optimizer)))
+;; Named run-parameter buffering (replaces the 12-arg positional sbFlushGen).
+;; Values persist in Python until new_run; flush_terminal reuses them without re-set.
+(= (sbSetRunParam $name $value)
+   (py-call (state_builder.set_run_param $name $value)))
+
+(= (sbSetRunParams $problemType $complexityRatio $maxGen $nEval $maxCandsPerDeme
+                   $minPoolSize $complexityTemperature $nToKeep $capCoef $nDeme $optimizer)
+   (let* (
+     ($_p1  (sbSetRunParam "problem_type" $problemType))
+     ($_p2  (sbSetRunParam "complexity_ratio" $complexityRatio))
+     ($_p3  (sbSetRunParam "max_gen" $maxGen))
+     ($_p4  (sbSetRunParam "n_eval" $nEval))
+     ($_p5  (sbSetRunParam "max_cands_per_deme" $maxCandsPerDeme))
+     ($_p6  (sbSetRunParam "min_pool_size" $minPoolSize))
+     ($_p7  (sbSetRunParam "complexity_temperature" $complexityTemperature))
+     ($_p8  (sbSetRunParam "n_to_keep" $nToKeep))
+     ($_p9  (sbSetRunParam "cap_coef" $capCoef))
+     ($_p10 (sbSetRunParam "n_deme" $nDeme))
+     ($_p11 (sbSetRunParam "optimizer" $optimizer))
+   ) 0))
 
 ;; --- post_deme_close Tier A/B ----------------------------------------------
 ;; sbBeginMerge MUST be called BEFORE mergeDemes so the in-merge set_merge_count
@@ -153,26 +168,84 @@
 
 ;; --- one-call convenience: emit a full generation --------------------------
 ;; sbEmitGeneration takes the WHOLE optimized-deme tuple and iterates via sbEmitDeme.
-(= (sbEmitGeneration $g $metaPop $optimizedDemes
-                     $problemType $complexityRatio $maxGen $nEval $maxCandsPerDeme
-                     $minPoolSize $complexityTemperature $nToKeep $capCoef $nDeme $optimizer)
+;; Run parameters are pre-buffered via sbSetRunParams; flush_gen reads them from Python.
+(= (sbEmitGeneration $g $metaPop $optimizedDemes)
    (let* (
-     ($_ (sbBeginGen $g))
-     ($_ (sbEmitAllMembers $g $metaPop))
-     ($_ (let $r (map-atom $optimizedDemes $deme (sbEmitDeme $g $deme)) 0))
-     ($_ (sbFlushGen $g $problemType $complexityRatio $maxGen $nEval $maxCandsPerDeme
-                     $minPoolSize $complexityTemperature $nToKeep $capCoef $nDeme $optimizer))
-   )
-   0))
+     ($_g1 (sbBeginGen $g))
+     ($_g2 (sbEmitAllMembers $g $metaPop))
+     ($_g3 (let $r (map-atom $optimizedDemes $deme (sbEmitDeme $g $deme)) 0))
+     ($_g4 (py-call (state_builder.flush_gen $g)))
+   ) 0))
 
 ;; Terminal snapshot — full ProgramRecords of the FINAL post-merge metapop.
 ;; Reuses sbBeginGen + sbEmitAllMembers; writes terminal.json (no sentinel).
-(= (sbEmitTerminal $g $metaPop $problemType $complexityRatio $maxGen $nEval $maxCandsPerDeme
-                   $minPoolSize $complexityTemperature $nToKeep $capCoef $nDeme $optimizer)
+;; Run parameters are pre-buffered via sbSetRunParams; flush_terminal reads them.
+(= (sbEmitTerminal $g $metaPop)
    (let* (
-     ($_ (sbBeginGen $g))
-     ($_ (sbEmitAllMembers $g $metaPop))
-     ($_ (py-call (state_builder.flush_terminal $g $problemType $complexityRatio $maxGen $nEval
-                    $maxCandsPerDeme $minPoolSize $complexityTemperature $nToKeep $capCoef
-                    $nDeme $optimizer)))
+     ($_t1 (sbBeginGen $g))
+     ($_t2 (sbEmitAllMembers $g $metaPop))
+     ($_t3 (py-call (state_builder.flush_terminal $g)))
+   ) 0))
+
+;; Strategy problem spec: no itable exists; the action-space domain is the hardcoded
+;; move vocabulary (getAllGameMoves, representation/add-logical-knobs.metta L11)
+;; plus the game parameters from the context tuple.
+(= (sbSetProblemSpecStrategy $nGames $opponentPolicy $complexityRatio)
+   (let* (($moves (eval (getAllGameMoves))))
+     (py-call (state_builder.set_problem_spec_strategy $moves $nGames $opponentPolicy $complexityRatio))))
+
+;; Strategy neighborhood: 2-arg createRepresentation (game path) returns the rep
+;; tuple from the collapse in representation.metta; nDeme=1 -> one-tuple, same
+;; car-atom peel as the boolean path. SSK multiplicity is uniformly 2, so
+;; repNeighborhood's Σ(multip−1) = knob count = exact Hamming-1 size.
+(= (strategyTreeNeighborhood $tree)
+   (let $reps (createRepresentation 1 $tree)
+     (repNeighborhood (car-atom $reps))))
+
+(= (sbEmitCandNbhStrategy $tree)
+   (let $n (eval (strategyTreeNeighborhood $tree))
+     (py-call (state_builder.set_candidate_neighborhood $tree $n))))
+
+(= (sbEmitMemberNbhStrategy $os $i $n)
+   (if (>= $i $n) 0
+     (let* (($x    (memberByIdx $os $i))
+            ($tree (eval (memberTree $x)))
+            ($_nb  (sbEmitCandNbhStrategy $tree)))
+       (sbEmitMemberNbhStrategy $os (+ $i 1) $n))))
+
+(= (sbEmitAllMemberNbhStrategy $os)
+   (let* (($n (eval (metapopSize $os))))
+     (sbEmitMemberNbhStrategy $os 0 $n)))
+
+;; Explicit boolean run initializer — call instead of sbNewRun + sbSetProblemSpec.
+;; Combines new_run, problem-spec, and run-param buffering in one call.
+;; Use for the 4-field context: ($prune $fsAlgo $truthTableBScore $itable)
+(= (sbBeginRunBoolean
+      $maxGen $nEval $maxCandsPerDeme $minPoolSize $complexityTemperature
+      $nToKeep $capCoef $nDeme $optimizer
+      $itable)
+   (let* (
+     ($_0 (sbNewRun))
+     ($_1 (sbSetProblemSpec $itable))
+     ($_2 (sbSetRunParams
+             "boolean" ()
+             $maxGen $nEval $maxCandsPerDeme
+             $minPoolSize $complexityTemperature
+             $nToKeep $capCoef $nDeme $optimizer))
+   ) 0))
+
+;; Explicit strategy run initializer — call instead of sbNewRun + sbSetProblemSpecStrategy.
+;; Use for the 3-field context: ($nGames $opponentPolicy $complexityRatio)
+(= (sbBeginRunStrategy
+      $maxGen $nEval $maxCandsPerDeme $minPoolSize $complexityTemperature
+      $nToKeep $capCoef $nDeme $optimizer
+      $nGames $opponentPolicy $complexityRatio)
+   (let* (
+     ($_0 (sbNewRun))
+     ($_1 (sbSetProblemSpecStrategy $nGames $opponentPolicy $complexityRatio))
+     ($_2 (sbSetRunParams
+             "strategy" $complexityRatio
+             $maxGen $nEval $maxCandsPerDeme
+             $minPoolSize $complexityTemperature
+             $nToKeep $capCoef $nDeme $optimizer))
    ) 0))
