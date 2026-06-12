@@ -146,10 +146,6 @@ $optimDeme
        ($topScore (getExemplarCscore $top))
        ;; ($_ (println! (topscore: $topScore)))
        ;; --- LLMOSES state-builder emit (run params pre-buffered by sbBeginRun*) ---
-       ($_ (case $context
-             ((($prune-exemplar $fs-algo $truthTableBScore $itable)
-               (sbEmitAllMemberNbh $metaPop $itable $fs-algo $prune-exemplar () mi))
-              (($nGames $opponentPolicy $cr) (sbEmitAllMemberNbhStrategy $metaPop)))))
        ($_ (sbEmitAllMerged $updatedMetaPop))
        ($_emit (sbEmitGeneration $genIndex $metaPop $optimizedDemes))
        ($_term (if (== $maxGen 1)

@@ -122,7 +122,20 @@
     )
 )
 
-;; Filters a list of Exemplars, keeping only those not already in the metaPop (ordered set).
+;; ── LLMOSES dedup guard ─────────────────────────────────────────────────────
+;; getNewCandidates' stock test is OS.isMember = full structural == INCLUDING
+;; demeId, so the same program arriving from two feature-set demes (identical
+;; tree, different demeId) reads as "new" and gets inserted twice.
+;; This can't be fixed with an ordering comparator: compareExemplar is
+;; non-antisymmetric on cscore ties (returns G both directions for distinct trees
+;; at equal score), and genericCompare is non-antisymmetric on symbols (distinct
+;; node symbols also compare G both ways) — neither yields a safe total order on
+;; trees, so OS.insert's E-dedup can be skipped past a non-adjacent twin. Exact
+;; tree equality is the only trustworthy primitive, so we dedup on that.
+(= (osHasTree $tree NilOS) False)
+(= (osHasTree $tree (ConsOS $x $rest))
+   (if (== $tree (getExemplarTree $x)) True (osHasTree $tree $rest)))
+;; Filters a sorted list of Exemplars, keeping only those not already in the metaPop (ordered set).
 ;; Params:
 ;;   (List (Exemplar $a)): List of exemplars to filter.
 ;;   $metaPop: Ordered set of existing exemplars.
@@ -130,10 +143,10 @@
 ; (: getNewCandidates (-> (List (Exemplar $a)) (OS (Exemplar $a)) (List (Exemplar $a))))
 (= (getNewCandidates Nil $metaPop) Nil)
 (= (getNewCandidates (Cons $xmp $xmpl) $metaPop)
-     (if (OS.isMember $xmp $metaPop)
-        (getNewCandidates $xmpl $metaPop)
-        (let $updatedMetaPop (OS.insert compareExemplar $xmp $metaPop) (Cons $xmp (getNewCandidates $xmpl $updatedMetaPop))))
-)
+   (if (osHasTree (getExemplarTree $xmp) $metaPop)
+       (getNewCandidates $xmpl $metaPop)
+       (let $updatedMetaPop (OS.insert compareExemplar $xmp $metaPop)
+            (Cons $xmp (getNewCandidates $xmpl $updatedMetaPop)))))
 
 ;; Determines if one BehavioralScore dominates another by comparing their score lists.
 ; (: dominates (-> BehavioralScore BehavioralScore Atom))

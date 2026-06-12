@@ -66,7 +66,7 @@ _total_evals = 0           # cumulative true fitness calls across all gens in th
 _explored_ids = set()      # program_ids selected in a prior gen (reset per run; "explored" flag)
 _problem_spec = None       # {input_labels, arity} — set once per run by set_problem_spec
 _last_complexity_ratio = None  # derived cratio from flush_gen; reused by flush_terminal
-_cand_nbh = {}             # program_id -> neighborhood_size; populated per-gen, cleared in flush_gen
+_nbh_by_pid = {}           # program_id -> last-expansion neighborhood (sum over its FS demes); persists per run
 _pending_run_params = {}   # name -> raw value; persists across gens, reset by new_run
 
 # Boltzmann selection constants — mirror exemplar-selection.metta COMPXY_TEMP / INV_TEMP
@@ -246,7 +246,7 @@ def probe(tag):
 
 def new_run():
     """Open a fresh per-run subdir. Call once at the top of each runMoses."""
-    global _run_seq, _cur_state_dir, _cur_action_dir, _pending_selection, _pending_merge, _pending_deme_evals, _depth, _total_evals, _explored_ids, _problem_spec, _last_complexity_ratio, _cand_nbh, _pending_run_params
+    global _run_seq, _cur_state_dir, _cur_action_dir, _pending_selection, _pending_merge, _pending_deme_evals, _depth, _total_evals, _explored_ids, _problem_spec, _last_complexity_ratio, _nbh_by_pid, _pending_run_params
     _run_seq += 1
     _cur_state_dir = os.path.join(_STATE_DIR, f"run-{_run_seq}")
     _cur_action_dir = os.path.join(_ACTION_DIR, f"run-{_run_seq}")
@@ -260,7 +260,7 @@ def new_run():
     _explored_ids = set()
     _problem_spec = None
     _last_complexity_ratio = None
-    _cand_nbh = {}
+    _nbh_by_pid = {}
     _pending_run_params = {}
     return _run_seq
 
@@ -359,19 +359,6 @@ def add_cull_candidate(expr, tree, bscore, raw, cpx, pen):
     return 0
 
 
-def set_candidate_neighborhood(tree, n):
-    """Record the dist-1 neighborhood size(s) for a candidate. When FS is on,
-    createRepresentation may produce multiple reps (one per feature set);
-    each rep emits its own n so we accumulate a list. Keyed by the same
-    program_id (_pid(expr_to_str(tree))) that add_member uses so lookups align.
-    With fs-algo=None there will be exactly one emission, giving a single-element list."""
-    pid = _pid(expr_to_str(tree))
-    if pid not in _cand_nbh:
-        _cand_nbh[pid] = []
-    _cand_nbh[pid].append(_num(n))
-    return 0
-
-
 def set_selection(tree):
     """post_selection hook: record the exemplar selectExemplar chose THIS gen.
     Called from inside expandDeme with the FULL raw tree — same value the member
@@ -441,7 +428,7 @@ def flush_terminal(gen):
     rp = _pending_run_params
     problem_type           = rp.get("problem_type")
     complexity_ratio       = rp.get("complexity_ratio")
-    max_gen                = rp.get("max_gen")
+    gens_remaining         = rp.get("max_gen")
     n_eval                 = rp.get("n_eval")
     max_cands_per_deme     = rp.get("max_cands_per_deme")
     min_pool_size          = rp.get("min_pool_size")
@@ -468,7 +455,7 @@ def flush_terminal(gen):
             "complexity_ratio": (_cr_or_none(complexity_ratio)
                                  if _cr_or_none(complexity_ratio) is not None
                                  else _last_complexity_ratio),
-            "max_gen": _num(max_gen), "n_eval": _num(n_eval),
+            "generations_remaining": _num(gens_remaining), "n_eval": _num(n_eval),
             "max_cands_per_deme": _num(max_cands_per_deme), "min_pool_size": _num(min_pool_size),
             "complexity_temperature": _num(complexity_temperature), "n_to_keep": _num(n_to_keep),
             "cap_coef": _num(cap_coef), "n_deme": _num(n_deme), "optimizer": _flat(optimizer),
@@ -483,12 +470,12 @@ def flush_gen(gen):
     post_deme_close metapop diff; DemeRecord absorbs knob_type_breakdown,
     sampled_pair_count, and the merge counts; post_selection is the only
     surviving nested event."""
-    global _pending_selection, _pending_merge, _pending_deme_evals, _depth, _total_evals, _explored_ids, _cand_nbh
+    global _pending_selection, _pending_merge, _pending_deme_evals, _depth, _total_evals, _explored_ids, _nbh_by_pid
     g = _num(gen)
     rp = _pending_run_params
     problem_type           = rp.get("problem_type")
     complexity_ratio       = rp.get("complexity_ratio")
-    max_gen                = rp.get("max_gen")
+    gens_remaining         = rp.get("max_gen")
     n_eval                 = rp.get("n_eval")
     max_cands_per_deme     = rp.get("max_cands_per_deme")
     min_pool_size          = rp.get("min_pool_size")
@@ -535,7 +522,7 @@ def flush_gen(gen):
     }
 
     # --- per-deme records (1 element FS-off; N under FS+nDeme>1) ---
-    demes, evals_gen = [], 0
+    demes, evals_gen, sel_nbh_total = [], 0, 0
     for did in s["deme_order"]:
         d = s["demes"][did]
         kb = {"logical": 0, "strategy": 0, "other": 0}
@@ -543,6 +530,7 @@ def flush_gen(gen):
             kb[k["kind"]] = kb.get(k["kind"], 0) + 1
         nbh = sum(max(_num(k["multiplicity"]) - 1, 0) for k in d["knobs"]
                   if isinstance(k["multiplicity"], (int, float)))
+        sel_nbh_total += nbh
         ev = d["evaluations"] if d["evaluations"] is not None else (_num(d["instances"]) or 0)
         evals_gen += ev or 0
         demes.append({
@@ -557,6 +545,10 @@ def flush_gen(gen):
             "pair_sampling_candidates": None,
         })
     _total_evals += evals_gen
+    # memoize this gen's expanded exemplar neighborhood (summed across its FS demes),
+    # carried forward so later gens report it for incumbents not re-expanded.
+    if selected_id is not None and s["deme_order"]:
+        _nbh_by_pid[selected_id] = sel_nbh_total
 
     # generation-level merge summary (mergeDemes runs once over ALL demes)
     pool_ids = cur_ids | {c["program_id"] for c in cull_cands}
@@ -608,7 +600,7 @@ def flush_gen(gen):
 
     run_parameters = {
         "problem_type": ptype,
-        "complexity_ratio": cratio, "max_gen": _num(max_gen),
+        "complexity_ratio": cratio, "generations_remaining": _num(gens_remaining),
         "n_eval": _num(n_eval), "max_cands_per_deme": _num(max_cands_per_deme),
         "min_pool_size": _num(min_pool_size),
         "complexity_temperature": _num(complexity_temperature),
@@ -639,7 +631,7 @@ def flush_gen(gen):
              "complexity": m["complexity"],
              "raw_score": m["cscore"]["raw_score"],
              "lineage_depth": _depth.get(m["program_id"]),
-             "neighborhood_size": _cand_nbh.get(m["program_id"])}
+             "neighborhood_size": _nbh_by_pid.get(m["program_id"])}
             for m in members
         ],
         "selected_program_id": selected_id,
@@ -654,7 +646,6 @@ def flush_gen(gen):
 
     _write_json(os.path.join(_cur_state_dir, f"step-{g}.json"), state_doc)
     _write_json(os.path.join(_cur_action_dir, f"step-{g}.json"), action_doc)
-    _cand_nbh.clear()   # neighborhood data consumed; reset for next generation
     _NFH.write(json.dumps({
         "run_seq": _run_seq, "generation": g, "size": len(members),
         "best_penalized_score": best,
