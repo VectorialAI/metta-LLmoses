@@ -18,14 +18,32 @@
 (= (removeDupInsts $rep Nil $topCnd) Nil)
 (= (removeDupInsts $rep (Cons $x Nil) $topCnd)
    (if (> $topCnd 0) (Cons $x Nil) Nil))
+;; LLMOSES regression: candidate materialization dispatcher. A contin rep is
+;; recognized structurally by an mkCSK head on the first DscMp knob; it routes
+;; to getContinCandidate (build-contin.metta — loaded after this file, hence
+;; the eval for runtime dispatch). Everything else keeps the stock
+;; getCandidate. Needed because the stock getCandidate walks knob NodeIds that
+;; contin reps don't carry and would silently return the bare template for
+;; every instance, deduping distinct contin candidates on score ties.
+;; case dispatch (first matching arm wins): getCandidate also SUCCEEDS on a
+;; contin rep (returning the bare template), so an equation pair would yield
+;; two results for every regression instance instead of falling through.
+(= (repCandidate $rep $inst)
+   (case $rep
+     (((mkRep (mkKbMap $kbm (mkDscMp (ConsMMap ($spec (mkCSK $dk $cspec)) $restKnobs))) $tree)
+       (eval (getContinCandidate $rep $inst)))
+      ($_other (getCandidate $rep $inst)))))
+
+;; LLMOSES regression change: the score-tie tree comparison goes through
+;; repCandidate (above) instead of calling getCandidate directly.
 (= (removeDupInsts $rep (Cons (mkSInst $x) (Cons (mkSInst $y) $rest)) $topCnd)
    (let $lengthOfTail (List.length (Cons (mkSInst $y) $rest))
    (if (> $topCnd 0)
        (if (isApproxEq (getPenScore (Pair.second $x)) (getPenScore (Pair.second $y))) ;; They maybe identical
            (let*
               (
-                ($tr1 (getCandidate $rep (Pair.first $x)))
-                ($tr2 (getCandidate $rep (Pair.first $y)))
+                ($tr1 (eval (repCandidate $rep (Pair.first $x))))
+                ($tr2 (eval (repCandidate $rep (Pair.first $y))))
                 ;; ($_ (println! (Tree1: (preOrder $tr1) Tree2: (preOrder $tr2))))
               )
               (if (== $tr1 $tr2)
@@ -106,6 +124,22 @@
 ;; Return: (List (Exemplar $a)) - List of exemplars with scored trees.
 ; (: demeToTrees (-> Deme (ITable $a) (List (Exemplar $a))))
 (= (demeToTrees (mkDeme $rep (mkSInstSet Nil) $demeId) $scoringContext) Nil)
+;; LLMOSES regression arm — MUST precede the generic equation below: the
+;; generic body materializes through getCandidate (wrong for contin reps,
+;; see repCandidate above) and its scoring case has no regression pattern.
+;; eval on getContinCandidate/scoreTreeRegression forces runtime dispatch.
+(= (demeToTrees (mkDeme $rep (mkSInstSet (Cons $si $sil)) $demeId) (mkRegressionBScore $compRatio $size $table))
+(let*
+    (
+        ($cscore (getSInstScore $si))
+        ($inst (getInst $si))
+        ($tree (eval (getContinCandidate $rep $inst)))
+        ($bscore (eval (scoreTreeRegression $table $tree &regressionScoreCache)))
+        ($scoredTree (mkExemplar $tree $demeId $cscore $bscore))
+    )
+    (Cons $scoredTree (demeToTrees (mkDeme $rep (mkSInstSet $sil) $demeId) (mkRegressionBScore $compRatio $size $table)))
+    )
+)
 (= (demeToTrees (mkDeme $rep (mkSInstSet (Cons $si $sil)) $demeId) $scoringContext)
 (let*
     (

@@ -63,7 +63,8 @@
    (let* (
      ($loc (eval (knobLoc $k))) ($mul (eval (knobMultip $k)))
      ($def (eval (knobDefault $k))) ($tag (eval (knobTag $k)))
-     ($_k  (py-call (state_builder.add_knob $g $demeId $loc $mul $def $tag)))
+     ($cnt (eval (knobContin $k)))   ;; (group mean step expansion depth) for CSK; () otherwise
+     ($_k  (py-call (state_builder.add_knob $g $demeId $loc $mul $def $tag $cnt)))
    ) (sbEmitDemeKnobs $g $demeId $rest)))
 
 (= (sbEmitDeme $g $deme)
@@ -80,7 +81,8 @@
    (py-call (state_builder.set_run_param $name $value)))
 
 (= (sbSetRunParams $problemType $complexityRatio $maxGen $nEval $maxCandsPerDeme
-                   $minPoolSize $complexityTemperature $nToKeep $capCoef $nDeme $optimizer)
+                   $minPoolSize $complexityTemperature $nToKeep $capCoef $nDeme $optimizer
+                   $hillClimbMaxEvals)
    (let* (
      ($_p1  (sbSetRunParam "problem_type" $problemType))
      ($_p2  (sbSetRunParam "complexity_ratio" $complexityRatio))
@@ -93,6 +95,7 @@
      ($_p9  (sbSetRunParam "cap_coef" $capCoef))
      ($_p10 (sbSetRunParam "n_deme" $nDeme))
      ($_p11 (sbSetRunParam "optimizer" $optimizer))
+     ($_p12 (sbSetRunParam "hill_climb_max_evaluations" $hillClimbMaxEvals))
    ) 0))
 
 ;; --- post_deme_close Tier A/B ----------------------------------------------
@@ -192,7 +195,39 @@
              "boolean" ()
              $maxGen $nEval $maxCandsPerDeme
              $minPoolSize $complexityTemperature
-             $nToKeep $capCoef $nDeme $optimizer))
+             $nToKeep $capCoef $nDeme $optimizer
+             10000))
+   ) 0))
+
+;; Regression problem spec: input labels from the numeric ITable plus the
+;; contin knob-template parameters (continDepth / continStepSize /
+;; continExpansion live in llmoses/representation/build-contin.metta, loaded
+;; only by regression runs — eval defers dispatch so boolean/strategy loads
+;; of this file stay clean).
+(= (sbSetProblemSpecRegression $itable)
+   (let* (
+     ($labels (eval (getArgLabels $itable)))
+     ($depth (eval (continDepth)))
+     ($step (eval (continStepSize)))
+     ($expansion (eval (continExpansion)))
+   )
+   (py-call (state_builder.set_problem_spec_regression $labels $depth $step $expansion))))
+
+;; Explicit regression run initializer — call instead of sbNewRun + sbSetProblemSpec.
+;; Use for the 2-field context: ((mkRegressionBScore $cc $sz $tbl) $itable)
+(= (sbBeginRunRegression
+      $maxGen $nEval $maxCandsPerDeme $minPoolSize $complexityTemperature
+      $nToKeep $capCoef $nDeme $optimizer
+      $itable $complexityRatio)
+   (let* (
+     ($_0 (sbNewRun))
+     ($_1 (sbSetProblemSpecRegression $itable))
+     ($_2 (sbSetRunParams
+             "regression" $complexityRatio
+             $maxGen $nEval $maxCandsPerDeme
+             $minPoolSize $complexityTemperature
+             $nToKeep $capCoef $nDeme $optimizer
+             10000))
    ) 0))
 
 ;; Explicit strategy run initializer — call instead of sbNewRun + sbSetProblemSpecStrategy.
@@ -208,5 +243,6 @@
              "strategy" $complexityRatio
              $maxGen $nEval $maxCandsPerDeme
              $minPoolSize $complexityTemperature
-             $nToKeep $capCoef $nDeme $optimizer))
+             $nToKeep $capCoef $nDeme $optimizer
+             10000))
    ) 0))

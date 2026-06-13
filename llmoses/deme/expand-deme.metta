@@ -17,6 +17,13 @@
 ;; Strategy version - unpacks game parameters and calls hillClimbing with mkParams
 (= (optimizeDemes $deme ($nGames $opponentPolicy $complexityRatio $targetCScore) $inst $optimize)
    ($optimize $deme $targetCScore $inst (mkParams applyStrategyBasedScore ($nGames $opponentPolicy $complexityRatio))))
+;; LLMOSES regression version — 2-tuple context with the tagged bscorer head.
+;; Must precede the boolean catch-all: the 2-tuple unifies with $context but
+;; with nothing else (boolean's mkTruthTableBScore term is 4 elements; the
+;; strategy tuple is 4). Passes the tagged term as the bscorer and selects the
+;; applyRegressionBasedScore hillClimbing arm (llmoses hill-climbing fork).
+(= (optimizeDemes $deme ((mkRegressionBScore $compRatio $size $table) $itable) $inst $optimize)
+   ($optimize $deme (mkRegressionBScore $compRatio $size $table) $inst (mkParams applyRegressionBasedScore ())))
 ;; Boolean version - passes context as-is
 (= (optimizeDemes $deme $context $inst $optimize)
    ($optimize $deme $context $inst))
@@ -74,6 +81,23 @@
       )
       (map-atom $demes $deme (expandDemeHelper $deme $gameContext $optimize))))
 
+;; LLMOSES regression overload — 6 parameters (arity-distinct from the boolean
+;; 9-arg and strategy 8-arg overloads). Reuses the boolean shape minus FS:
+;; createContinDeme (build-contin.metta) builds the linear-template contin
+;; representation directly from the exemplar tree and the numeric ITable.
+(= (expandDeme $metaPop $nExpansion $nDeme (mkRegressionBScore $compRatio $size $table) $itable $optimize)
+   (let*
+      (
+         ($exemplar (trace! "Selecting Exemplar" (selectExemplar $metaPop)))
+         ($tree (trace! "getting exemplar tree" (getExemplarTree $exemplar)))
+         ($_ (println! (SelectedTree: (preOrder $tree))))
+         ($_ (sbSetSelection $tree))
+         ($demeIds (trace! "creating deme IDs" (createDemeIds $nExpansion $nDeme)))
+         ($demes (trace! "Creating Contin Deme" (eval (createContinDeme $nDeme $demeIds $tree $itable))))
+         ($regressionContext ((mkRegressionBScore $compRatio $size $table) $itable))
+      )
+      (map-atom $demes $deme (expandDemeHelper $deme $regressionContext $optimize))))
+
 ;; Unified helper for both Boolean and Strategy domains
 ;; Optimizes each deme in the list using the provided optimizer and context
 ;; Params:
@@ -86,7 +110,7 @@
 (
     ($lengthOfDscKbMp (Map.length $dscKbMp))
     ;; ($generatedList (List.generate $lengthOfDscKbMp 0))
-    ($generatedList (createInitialInstance $dscMp))
+    ($generatedList (initialInstanceForRep (mkRep (mkKbMap (mkDscKbMp $dscKbMp) (mkDscMp $dscMp)) $updatedTree) $demeId $dscMp))
     ($deme (mkDeme (mkRep (mkKbMap (mkDscKbMp $dscKbMp) (mkDscMp $dscMp)) $updatedTree) $sInstList $demeId))
     ;; ($_ (println! (Rep: (mkRep (mkKbMap (mkDscKbMp $dscKbMp) (mkDscMp $dscMp)) $updatedTree))))
     ;; ($_ (println! "Optimizing Deme"))
@@ -118,6 +142,11 @@ $optimDeme
                      $maxGen $nEval $maxCandsPerDeme $minPoolSize $complexityTemperature
                      $nToKeep $capCoef $nDeme $optimize
                      $nGames $opponentPolicy $cr))
+                 (((mkRegressionBScore $compRatio $sz $tbl) $itable)
+                  (sbBeginRunRegression
+                     $maxGen $nEval $maxCandsPerDeme $minPoolSize $complexityTemperature
+                     $nToKeep $capCoef $nDeme $optimize
+                     $itable $compRatio))
                  ($_x 0)))))
         (runMosesLoop $maxGen $totalGen $maxScore $maxCandOutput $metaPop $nExpansion $nDeme $context $optimize $nEval $maxCandsPerDeme $minPoolSize $complexityTemperature $nToKeep $capCoef $genCount)))
 
@@ -135,10 +164,12 @@ $optimDeme
        ($genIndex (+ (- $totalGen $maxGen) 1))
        ($optimizedDemes (case $context
                         ((($prune-exemplar $fs-algo $truthTableBScore $itable) (trace! "expand  deme returnn" (expandDeme $metaPop $nExpansion $nDeme $prune-exemplar $fs-algo $truthTableBScore $optimize $itable mi)))
+                        (((mkRegressionBScore $compRatio $sz $tbl) $regItable) (trace! "expand regression deme return" (expandDeme $metaPop $nExpansion $nDeme (mkRegressionBScore $compRatio $sz $tbl) $regItable $optimize)))
                         (($nGames $opponentPolicy $complexityRatio) (trace! "expand deme return" (expandDeme $metaPop $nExpansion $nDeme $nGames $opponentPolicy $complexityRatio $maxScore $optimize))))))
        ($_ (sbBeginMerge))                                   ;; <-- open merge buffer BEFORE mergeDemes
        ($updatedMetaPop (case $context 
                         ((($prune-exemplar $fs-algo $truthTableBScore $itable) (trace! "Merging Deme" (mergeDemes $optimizedDemes $nEval $maxCandsPerDeme $minPoolSize $complexityTemperature $itable $metaPop $nToKeep $capCoef $genCount)))
+                        (((mkRegressionBScore $compRatio $sz $tbl) $regItable) (trace! "Merging Regression Deme" (mergeDemes $optimizedDemes $nEval $maxCandsPerDeme $minPoolSize $complexityTemperature (mkRegressionBScore $compRatio $sz $tbl) $metaPop $nToKeep $capCoef $genCount)))
                         (($nGames $opponentPolicy $complexityRatio) (trace! "Merging Deme" (mergeDemes $optimizedDemes $nEval $maxCandsPerDeme $minPoolSize $complexityTemperature ($nGames $opponentPolicy) $metaPop $nToKeep $capCoef $genCount))))))
        ;; ($_ (println! (Updated MetaPop: $updatedMetaPop)))
        ($top (OS.getByIdx 0 $metaPop))

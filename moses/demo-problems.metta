@@ -190,6 +190,30 @@
    (Cons A0 (Cons A1 (Cons D0 (Cons D1 (Cons D2 (Cons D3 (Cons Out Nil)))))))))
 
 
+;; sr — simple regression (polynomial symbolic regression, contin problem type).
+;; Target: y = 2*X + 1 over X in {0..3}.
+(= (simpleRegression)
+   (mkITable
+     (Cons (Cons 0 (Cons 1 Nil))
+     (Cons (Cons 1 (Cons 3 Nil))
+     (Cons (Cons 2 (Cons 5 Nil))
+     (Cons (Cons 3 (Cons 7 Nil)) Nil))))
+     (Cons X (Cons Y Nil))))
+
+;; cp / ann-cp — learn a supplied Combo program. Classic MOSES -Hcp turns a
+;; target program into a truth table and tries to recover it. We use majority3
+;; (OR (AND A B) (AND A C) (AND B C)) as the canonical supplied program.
+(= (cpDemoTable) (majority3))
+
+;; Classic MOSES -H demo key -> problem table (boolean demos + cp target).
+(= (demoProblem pa)  parity3)
+(= (demoProblem dj)  disjunction3)
+(= (demoProblem maj) majority3)
+(= (demoProblem mux) mux3)
+(= (demoProblem sr)  simpleRegression)
+(= (demoProblem cp)  cpDemoTable)
+(= (demoProblem annCp) cpDemoTable)
+
 (= (getBestPossibleCscore $cpxPen $problem)
    (let $bestCpx
       (case $problem
@@ -201,6 +225,7 @@
             (majority5   30) ;; (OR (AND X1 X2 X3) (AND X1 X2 X4) (AND X1 X2 X5) (AND X1 X3 X4) (AND X1 X3 X5) (AND X1 X4 X5) (AND X2 X3 X4) (AND X2 X3 X5) (AND X2 X4 X5) (AND X3 X4 X5))
             (mux3         4) ;; (OR (AND (NOT Addr) D0) (AND Addr D1))
             (mux6        12) ;; (OR (AND (NOT A0) (AND (NOT A1) D0)) (AND (NOT A0) A1 D1) (AND A0 (NOT A1) D2) (AND A0 A1 D3))
+            (cpDemoTable  6) ;; cp target: majority3
           )
       )
       (updatePenalizedScore (mkCscore 0 $bestCpx (* (getComplexityCoef $cpxPen) $bestCpx) 0.0 (* -1 (pow-math 10 308))) False))

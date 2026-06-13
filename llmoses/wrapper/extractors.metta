@@ -43,6 +43,7 @@
 ;; since extractors now loads first. mkCSK equation joins here in Track B.
 (= (getKnobDefault (mkLSK (mkDiscKnob $knob $multip $curr (mkDiscSpec $def) $dis))) $def)
 (= (getKnobDefault (mkSSK (mkDiscKnob $knob $multip $curr (mkDiscSpec $def) $dis))) $def)
+(= (getKnobDefault (mkCSK (mkDiscKnob $knob $multip $curr (mkDiscSpec $def) $dis) $continSpec)) $def)
 
 ;; --- DEME fields: NOT extracted here; runMosesLoop already binds $rep/$sInst/$demeId.
 
@@ -50,3 +51,11 @@
 ;; (Multiplicity-based kind inference breaks when contin trit knobs land: multip 3 = LSK = CSK trit.)
 (= (knobTag (mkLSK $dk)) LSK)
 (= (knobTag (mkSSK $dk)) SSK)
+(= (knobTag (mkCSK $dk $cspec)) CSK)
+
+;; Contin metadata bundle for state emission: (group mean step_size expansion depth)
+;; for trit knobs; () for the discrete families (Python coerces () -> null).
+(= (knobContin (mkCSK $dk (mkContinSpec $mean $stepSize $expansion $depth $group)))
+   ($group $mean $stepSize $expansion $depth))
+(= (knobContin (mkLSK $dk)) ())
+(= (knobContin (mkSSK $dk)) ())
