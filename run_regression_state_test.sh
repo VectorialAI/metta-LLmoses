@@ -415,6 +415,16 @@ archive_state_case() {
 
   validate_case_json "$case_name" "$expected_gens" "$expected_demes"
 
+  local require_evolution=0
+  case "$case_name" in
+    multigen-multideme|merge-cull-pressure) require_evolution=1 ;;
+  esac
+  local inv_args=()
+  [[ "$require_evolution" -eq 1 ]] && inv_args+=(--require-evolution)
+  python3 "$REPO/scripts/validate_llmoses_state.py" \
+    --run-dir "$state_case" --action-dir "$action_case" \
+    "${inv_args[@]}" || return 1
+
   rm -rf "$state_run" "$action_run"
   find "$RUN_DIR/ready" -maxdepth 1 -type f -name 'run-*-step-*' -delete 2>/dev/null || true
   echo "Archived state:  $state_case"
