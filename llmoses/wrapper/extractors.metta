@@ -40,13 +40,12 @@
 
 ;; Relocated from the expand-deme fork so the wrapper files can load before
 ;; expand-deme. expand-deme's own createInitialInstance use resolves fine,
-;; since extractors now loads first. mkCSK equation joins here in Track B.
+;; since extractors now loads first.
 (= (getKnobDefault (mkLSK (mkDiscKnob $knob $multip $curr (mkDiscSpec $def) $dis))) $def)
 (= (getKnobDefault (mkSSK (mkDiscKnob $knob $multip $curr (mkDiscSpec $def) $dis))) $def)
 
 ;; --- DEME fields: NOT extracted here; runMosesLoop already binds $rep/$sInst/$demeId.
 
 ;; Constructor tag: discriminates knob family without relying on multiplicity.
-;; (Multiplicity-based kind inference breaks when contin trit knobs land: multip 3 = LSK = CSK trit.)
 (= (knobTag (mkLSK $dk)) LSK)
 (= (knobTag (mkSSK $dk)) SSK)

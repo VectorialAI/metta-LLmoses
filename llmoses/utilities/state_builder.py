@@ -294,7 +294,7 @@ def add_member(gen, expr, tree, cscore, bscore):
     return 0
 
 
-_KIND_BY_TAG = {"LSK": "logical", "SSK": "strategy", "CSK": "contin"}
+_KIND_BY_TAG = {"LSK": "logical", "SSK": "strategy"}
 
 def add_knob(gen, deme_id, loc, multip, default, tag=None):
     """One call per deme knob, keyed by deme_id for multi-deme support."""
@@ -399,6 +399,20 @@ def get_total_evals():
     return _total_evals
 
 
+_HC_MAX_EVALS_DEFAULT = 10000
+
+
+def get_hill_climb_max_evals():
+    """Per-deme hill-climbing fitness-eval cap for this run (fixed at init).
+    Defaults to 10000 (OpenCog Classic default) when not explicitly set."""
+    v = _pending_run_params.get("hill_climb_max_evaluations")
+    if v is not None:
+        n = _num(v)
+        if n is not None:
+            return int(n)
+    return _HC_MAX_EVALS_DEFAULT
+
+
 def set_run_param(name, value):
     """Buffer one named run parameter. Persists until overwritten or new_run;
     NOT cleared by flush_gen, so flush_terminal sees the same values without re-set."""
@@ -428,8 +442,8 @@ def flush_terminal(gen):
     rp = _pending_run_params
     problem_type           = rp.get("problem_type")
     complexity_ratio       = rp.get("complexity_ratio")
-    gens_remaining         = rp.get("max_gen")
     n_eval                 = rp.get("n_eval")
+    hill_climb_max_evals   = rp.get("hill_climb_max_evaluations")
     max_cands_per_deme     = rp.get("max_cands_per_deme")
     min_pool_size          = rp.get("min_pool_size")
     complexity_temperature = rp.get("complexity_temperature")
@@ -443,10 +457,15 @@ def flush_terminal(gen):
     pens = [m["cscore"]["penalized_score"] for m in members
             if isinstance(m["cscore"]["penalized_score"], (int, float))]
     best = max(pens) if pens else None
+    hc_max = get_hill_climb_max_evals()
+    if hill_climb_max_evals is not None:
+        hc_max = _num(hill_climb_max_evals) or hc_max
     members_out = [{**m, "explored": m["program_id"] in _explored_ids} for m in members]
     doc = {
         "schema_version": _VERSION, "run_seq": _run_seq, "record_type": "terminal",
-        "timestamp_ms": int(time.time() * 1000), "total_evaluations": _total_evals,
+        "timestamp_ms": int(time.time() * 1000),
+        "total_hill_climb_evaluations": _total_evals,
+        "total_evaluations": _total_evals,
         "metapopulation": {"size": len(members_out),
                            "best_penalized_score": best, "members": members_out},
         "problem_spec": _problem_spec,
@@ -455,7 +474,8 @@ def flush_terminal(gen):
             "complexity_ratio": (_cr_or_none(complexity_ratio)
                                  if _cr_or_none(complexity_ratio) is not None
                                  else _last_complexity_ratio),
-            "generations_remaining": _num(gens_remaining), "n_eval": _num(n_eval),
+            "n_eval": _num(n_eval),
+            "hill_climb_max_evaluations": hc_max,
             "max_cands_per_deme": _num(max_cands_per_deme), "min_pool_size": _num(min_pool_size),
             "complexity_temperature": _num(complexity_temperature), "n_to_keep": _num(n_to_keep),
             "cap_coef": _num(cap_coef), "n_deme": _num(n_deme), "optimizer": _flat(optimizer),
@@ -475,8 +495,8 @@ def flush_gen(gen):
     rp = _pending_run_params
     problem_type           = rp.get("problem_type")
     complexity_ratio       = rp.get("complexity_ratio")
-    gens_remaining         = rp.get("max_gen")
     n_eval                 = rp.get("n_eval")
+    hill_climb_max_evals   = rp.get("hill_climb_max_evaluations")
     max_cands_per_deme     = rp.get("max_cands_per_deme")
     min_pool_size          = rp.get("min_pool_size")
     complexity_temperature = rp.get("complexity_temperature")
@@ -540,7 +560,9 @@ def flush_gen(gen):
             "knob_type_breakdown": kb,
             "sampled_pair_count": (kb["logical"] if ptype == "boolean" else None),
             "neighborhood_size": nbh,
-            "instances_evaluated": d["instances"], "evaluations": d["evaluations"],
+            "instances_evaluated": d["instances"],
+            "hill_climb_evaluations": d["evaluations"],
+            "evaluations": d["evaluations"],
             "operator_inclusion_set": None,
             "pair_sampling_candidates": None,
         })
@@ -598,10 +620,16 @@ def flush_gen(gen):
             "selection_status": selection_status,
         }
 
+    hc_max = get_hill_climb_max_evals()
+    if hill_climb_max_evals is not None:
+        hc_max = _num(hill_climb_max_evals) or hc_max
+
     run_parameters = {
         "problem_type": ptype,
-        "complexity_ratio": cratio, "generations_remaining": _num(gens_remaining),
-        "n_eval": _num(n_eval), "max_cands_per_deme": _num(max_cands_per_deme),
+        "complexity_ratio": cratio,
+        "n_eval": _num(n_eval),
+        "hill_climb_max_evaluations": hc_max,
+        "max_cands_per_deme": _num(max_cands_per_deme),
         "min_pool_size": _num(min_pool_size),
         "complexity_temperature": _num(complexity_temperature),
         "n_to_keep": _num(n_to_keep), "cap_coef": _num(cap_coef),
@@ -610,7 +638,10 @@ def flush_gen(gen):
 
     state_doc = {
         "schema_version": _VERSION, "run_seq": _run_seq, "generation": g,
-        "timestamp_ms": ts, "total_evaluations": _total_evals,
+        "timestamp_ms": ts,
+        "hill_climb_evaluations_this_generation": evals_gen,
+        "total_hill_climb_evaluations": _total_evals,
+        "total_evaluations": _total_evals,
         "metapopulation": {
             "size": len(members_out), "best_penalized_score": best, "members": members_out,
         },

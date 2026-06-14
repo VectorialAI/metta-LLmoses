@@ -80,7 +80,8 @@
    (py-call (state_builder.set_run_param $name $value)))
 
 (= (sbSetRunParams $problemType $complexityRatio $maxGen $nEval $maxCandsPerDeme
-                   $minPoolSize $complexityTemperature $nToKeep $capCoef $nDeme $optimizer)
+                   $minPoolSize $complexityTemperature $nToKeep $capCoef $nDeme $optimizer
+                   $hillClimbMaxEvals)
    (let* (
      ($_p1  (sbSetRunParam "problem_type" $problemType))
      ($_p2  (sbSetRunParam "complexity_ratio" $complexityRatio))
@@ -93,6 +94,7 @@
      ($_p9  (sbSetRunParam "cap_coef" $capCoef))
      ($_p10 (sbSetRunParam "n_deme" $nDeme))
      ($_p11 (sbSetRunParam "optimizer" $optimizer))
+     ($_p12 (sbSetRunParam "hill_climb_max_evaluations" $hillClimbMaxEvals))
    ) 0))
 
 ;; --- post_deme_close Tier A/B ----------------------------------------------
@@ -192,7 +194,8 @@
              "boolean" ()
              $maxGen $nEval $maxCandsPerDeme
              $minPoolSize $complexityTemperature
-             $nToKeep $capCoef $nDeme $optimizer))
+             $nToKeep $capCoef $nDeme $optimizer
+             10000))
    ) 0))
 
 ;; Explicit strategy run initializer — call instead of sbNewRun + sbSetProblemSpecStrategy.
@@ -208,5 +211,6 @@
              "strategy" $complexityRatio
              $maxGen $nEval $maxCandsPerDeme
              $minPoolSize $complexityTemperature
-             $nToKeep $capCoef $nDeme $optimizer))
+             $nToKeep $capCoef $nDeme $optimizer
+             10000))
    ) 0))
