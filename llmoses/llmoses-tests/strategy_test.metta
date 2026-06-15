@@ -90,8 +90,8 @@
      (mkExemplar
        (mkTree (mkNode PRIORITIZED-OR) Nil)
        (mkDemeId "0")
-       (eval (worstCscore))
-       (mkBScore (Cons -10000.0 Nil)))
+       (mkCscore -1000.0 0 0.0 0.0 -1000.0)
+       (mkBScore (Cons -1000.0 Nil)))
      NilOS))
 
 ;; Non-empty strategy metapop used as the stable low-cost seed.
@@ -281,6 +281,23 @@
    (let* (($result (runMoses 2 (mkCscore 5.0 5 1.43 0.0 3.57) 2 (strategyMetaPop)
                              0 2 (5 random-player 3.5) hillClimbing
                              30 2 1 1.0 2 0.004 1000))
+          ($size (eval (OS.length $result))))
+     $size))
+
+;; Deep lineage test: starts from an empty strategy seed (bare PRIORITIZED-OR,
+;; worst cscore) to force genuine multi-generation evolution.
+;; Gen 1 produces 1-2 move programs (depth 1); gen 2 expands the best gen-1
+;; program to produce richer programs (depth 2) which outscore gen-1 because
+;; more moves = better win rate against a random opponent.
+;; n_games=20 prevents scoring saturation: with 5 games, even 1-move programs
+;; can win 5/5 (ceiling hit), so gen-2 programs can never dominate.  With 20
+;; games, 1-move programs win ~14/20 while 2-move programs win ~18/20, giving
+;; gen-2 programs a strictly higher penalized score and allowing them to enter
+;; the metapop at depth 2.  maxScore=100 is unreachable so all 5 gens run.
+(= (strategyStateDeepLineage)
+   (let* (($result (runMoses 5 (mkCscore 100.0 0 0 0.0 100) 5 (emptyStrategyMetaPop)
+                             0 2 (20 random-player 3.5) hillClimbing
+                             500 5 2 1.0 5 0.004 1000))
           ($size (eval (OS.length $result))))
      $size))
 

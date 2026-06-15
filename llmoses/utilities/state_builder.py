@@ -66,7 +66,6 @@ _total_evals = 0           # cumulative true fitness calls across all gens in th
 _explored_ids = set()      # program_ids selected in a prior gen (reset per run; "explored" flag)
 _problem_spec = None       # {input_labels, arity} — set once per run by set_problem_spec
 _last_complexity_ratio = None  # derived cratio from flush_gen; reused by flush_terminal
-_nbh_by_pid = {}           # program_id -> last-expansion neighborhood (sum over its FS demes); persists per run
 _pending_run_params = {}   # name -> raw value; persists across gens, reset by new_run
 
 # Boltzmann selection constants — mirror exemplar-selection.metta COMPXY_TEMP / INV_TEMP
@@ -246,7 +245,7 @@ def probe(tag):
 
 def new_run():
     """Open a fresh per-run subdir. Call once at the top of each runMoses."""
-    global _run_seq, _cur_state_dir, _cur_action_dir, _pending_selection, _pending_merge, _pending_deme_evals, _depth, _total_evals, _explored_ids, _problem_spec, _last_complexity_ratio, _nbh_by_pid, _pending_run_params
+    global _run_seq, _cur_state_dir, _cur_action_dir, _pending_selection, _pending_merge, _pending_deme_evals, _depth, _total_evals, _explored_ids, _problem_spec, _last_complexity_ratio, _pending_run_params
     _run_seq += 1
     _cur_state_dir = os.path.join(_STATE_DIR, f"run-{_run_seq}")
     _cur_action_dir = os.path.join(_ACTION_DIR, f"run-{_run_seq}")
@@ -260,7 +259,6 @@ def new_run():
     _explored_ids = set()
     _problem_spec = None
     _last_complexity_ratio = None
-    _nbh_by_pid = {}
     _pending_run_params = {}
     return _run_seq
 
@@ -490,7 +488,7 @@ def flush_gen(gen):
     post_deme_close metapop diff; DemeRecord absorbs knob_type_breakdown,
     sampled_pair_count, and the merge counts; post_selection is the only
     surviving nested event."""
-    global _pending_selection, _pending_merge, _pending_deme_evals, _depth, _total_evals, _explored_ids, _nbh_by_pid
+    global _pending_selection, _pending_merge, _pending_deme_evals, _depth, _total_evals, _explored_ids
     g = _num(gen)
     rp = _pending_run_params
     problem_type           = rp.get("problem_type")
@@ -542,7 +540,7 @@ def flush_gen(gen):
     }
 
     # --- per-deme records (1 element FS-off; N under FS+nDeme>1) ---
-    demes, evals_gen, sel_nbh_total = [], 0, 0
+    demes, evals_gen = [], 0
     for did in s["deme_order"]:
         d = s["demes"][did]
         kb = {"logical": 0, "strategy": 0, "other": 0}
@@ -550,7 +548,6 @@ def flush_gen(gen):
             kb[k["kind"]] = kb.get(k["kind"], 0) + 1
         nbh = sum(max(_num(k["multiplicity"]) - 1, 0) for k in d["knobs"]
                   if isinstance(k["multiplicity"], (int, float)))
-        sel_nbh_total += nbh
         ev = d["evaluations"] if d["evaluations"] is not None else (_num(d["instances"]) or 0)
         evals_gen += ev or 0
         demes.append({
@@ -562,15 +559,10 @@ def flush_gen(gen):
             "neighborhood_size": nbh,
             "instances_evaluated": d["instances"],
             "hill_climb_evaluations": d["evaluations"],
-            "evaluations": d["evaluations"],
             "operator_inclusion_set": None,
             "pair_sampling_candidates": None,
         })
     _total_evals += evals_gen
-    # memoize this gen's expanded exemplar neighborhood (summed across its FS demes),
-    # carried forward so later gens report it for incumbents not re-expanded.
-    if selected_id is not None and s["deme_order"]:
-        _nbh_by_pid[selected_id] = sel_nbh_total
 
     # generation-level merge summary (mergeDemes runs once over ALL demes)
     pool_ids = cur_ids | {c["program_id"] for c in cull_cands}
@@ -616,7 +608,7 @@ def flush_gen(gen):
             "chosen_program_id": selected_id,
             "native_boltzmann_probability": (probs[rank]
                                               if rank is not None and rank < len(probs) else None),
-            "selected_rank": rank, "llm_utility": None,
+            "selected_position": rank, "llm_utility": None,
             "selection_status": selection_status,
         }
 
@@ -661,8 +653,7 @@ def flush_gen(gen):
              "penalized_score": m["cscore"]["penalized_score"],
              "complexity": m["complexity"],
              "raw_score": m["cscore"]["raw_score"],
-             "lineage_depth": _depth.get(m["program_id"]),
-             "neighborhood_size": _nbh_by_pid.get(m["program_id"])}
+             "lineage_depth": _depth.get(m["program_id"])}
             for m in members
         ],
         "selected_program_id": selected_id,

@@ -87,6 +87,7 @@ STATE_CASES=(
   empty-seed
   merge-cull-smoke
   merge-cull-pressure
+  deep-lineage
 )
 
 metta_func() {
@@ -110,6 +111,7 @@ state_func() {
     empty-seed)           echo "strategyStateEmptySeed" ;;
     merge-cull-smoke)     echo "strategyStateMergeCullSmoke" ;;
     merge-cull-pressure)  echo "strategyStateMergeCullPressure" ;;
+    deep-lineage)         echo "strategyStateDeepLineage" ;;
     *) return 1 ;;
   esac
 }
@@ -119,6 +121,7 @@ state_expected_gens() {
     single) echo 1 ;;
     multigen-multideme) echo 3 ;;
     empty-seed|merge-cull-smoke|merge-cull-pressure) echo 2 ;;
+    deep-lineage) echo 5 ;;
     *) return 1 ;;
   esac
 }
@@ -126,7 +129,7 @@ state_expected_gens() {
 state_expected_demes() {
   case "$1" in
     single) echo 1 ;;
-    multigen-multideme|empty-seed|merge-cull-smoke|merge-cull-pressure) echo 2 ;;
+    multigen-multideme|empty-seed|merge-cull-smoke|merge-cull-pressure|deep-lineage) echo 2 ;;
     *) return 1 ;;
   esac
 }
@@ -251,6 +254,7 @@ if not action_dir.is_dir(): fail(f"missing archived action dir {action_dir}")
 if not ready_dir.is_dir(): fail(f"missing archived ready dir {ready_dir}")
 
 steps = []
+actions = []
 for g in range(1, expected_gens + 1):
     sp = state_dir / f"step-{g}.json"
     ap = action_dir / f"step-{g}.json"
@@ -259,6 +263,7 @@ for g in range(1, expected_gens + 1):
     with sp.open() as fh: s = json.load(fh)
     with ap.open() as fh: a = json.load(fh)
     steps.append(s)
+    actions.append(a)
     if s.get("generation") != g: fail(f"state generation mismatch in step-{g}")
     if a.get("generation") != g: fail(f"action generation mismatch in step-{g}")
     if s.get("problem_spec", {}).get("problem_type") != "strategy": fail(f"problem_spec not strategy in step-{g}")
@@ -294,8 +299,6 @@ for g in range(1, expected_gens + 1):
         fail(f"bad selection_status in step-{g}: {post.get('selection_status')}")
     cands = a.get("exemplar_candidates", [])
     if not cands: fail(f"no action exemplar_candidates in step-{g}")
-    if not any(c.get("neighborhood_size") is not None for c in cands):
-        fail(f"no candidate neighborhood_size emitted in step-{g}")
 
 terminal = state_dir / "terminal.json"
 if not terminal.exists(): fail(f"missing terminal {terminal}")
@@ -303,6 +306,14 @@ with terminal.open() as fh: t = json.load(fh)
 if t.get("record_type") != "terminal": fail("terminal record_type mismatch")
 if t.get("problem_spec", {}).get("problem_type") != "strategy": fail("terminal problem_spec not strategy")
 if t.get("run_parameters", {}).get("problem_type") != "strategy": fail("terminal run_parameters not strategy")
+if case == "deep-lineage":
+    max_depth = max(
+        (c.get("lineage_depth") or 0)
+        for a in actions
+        for c in a.get("exemplar_candidates", [])
+    )
+    if max_depth < 2:
+        fail(f"deep-lineage: expected at least one candidate with lineage_depth>=2 across all steps, max was {max_depth}")
 ready_files = list(ready_dir.glob("run-*-step-*"))
 if len(ready_files) < expected_gens: fail(f"expected at least {expected_gens} ready sentinels, got {len(ready_files)}")
 print(f"PASS_SCHEMA: {case} ({expected_gens} steps, {len(ready_files)} ready sentinels)")

@@ -157,29 +157,6 @@
    (let* (($moves (eval (getAllGameMoves))))
      (py-call (state_builder.set_problem_spec_strategy $moves $nGames $opponentPolicy $complexityRatio))))
 
-;; Strategy neighborhood: 2-arg createRepresentation (game path) returns the rep
-;; tuple from the collapse in representation.metta; nDeme=1 -> one-tuple, same
-;; car-atom peel as the boolean path. SSK multiplicity is uniformly 2, so
-;; repNeighborhood's Σ(multip−1) = knob count = exact Hamming-1 size.
-(= (strategyTreeNeighborhood $tree)
-   (let $reps (createRepresentation 1 $tree)
-     (repNeighborhood (car-atom $reps))))
-
-(= (sbEmitCandNbhStrategy $tree)
-   (let $n (eval (strategyTreeNeighborhood $tree))
-     (py-call (state_builder.set_candidate_neighborhood $tree $n))))
-
-(= (sbEmitMemberNbhStrategy $os $i $n)
-   (if (>= $i $n) 0
-     (let* (($x    (memberByIdx $os $i))
-            ($tree (eval (memberTree $x)))
-            ($_nb  (sbEmitCandNbhStrategy $tree)))
-       (sbEmitMemberNbhStrategy $os (+ $i 1) $n))))
-
-(= (sbEmitAllMemberNbhStrategy $os)
-   (let* (($n (eval (metapopSize $os))))
-     (sbEmitMemberNbhStrategy $os 0 $n)))
-
 ;; Explicit boolean run initializer — call instead of sbNewRun + sbSetProblemSpec.
 ;; Combines new_run, problem-spec, and run-param buffering in one call.
 ;; Use for the 4-field context: ($prune $fsAlgo $truthTableBScore $itable)
