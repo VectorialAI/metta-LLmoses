@@ -1,0 +1,100 @@
+;; llmoses/llmoses-tests/demos_test.metta — classic MOSES demo key runners.
+;;
+;; Covers boolean demos (pa, dj, maj, mux) and combo-program recovery (cp,
+;; annCp) via runDemoProblem. The sr (simple regression) demo is exercised by
+;; regression_test.metta / run_regression_state_test.sh instead — contin
+;; scoring uses a different runMoses overload than boolean truth tables.
+;;
+;; Run via:  ./run_moses_demo.sh demo <key>
+;; Keys: pa | dj | maj | mux | cp | ann-cp | ttt | ttt-mm
+;;
+;; Smoke/pressure JSON regression for boolean fixtures:
+;;   ./run_boolean_smoke_test.sh state single
+
+!(import! &self utilities/general-helpers)
+!(import! &self llmoses/utilities/general-helpers)
+!(import! &self utilities/list-methods)
+!(import! &self utilities/pair)
+!(import! &self utilities/map)
+!(import! &self utilities/ordered-multimap)
+!(import! &self utilities/ordered-set)
+!(import! &self utilities/ordered-multiset)
+!(import! &self utilities/nodeId)
+!(import! &self utilities/lazy-random-selector)
+!(import! &self utilities/lru-cache)
+!(import! &self reduct/boolean-reduct/rte-helpers)
+!(import! &self reduct/boolean-reduct/cut-unnecessary-or)
+!(import! &self reduct/boolean-reduct/cut-unnecessary-and)
+!(import! &self reduct/boolean-reduct/n-ary-propagate-not)
+!(import! &self reduct/boolean-reduct/n-ary-gather-junctors)
+!(import! &self reduct/boolean-reduct/delete-inconsistent-handle)
+!(import! &self reduct/boolean-reduct/zero-constraint-subsumption)
+!(import! &self reduct/boolean-reduct/one-constraint-subsumption)
+!(import! &self reduct/boolean-reduct/promote-common-constraints)
+!(import! &self reduct/boolean-reduct/reduce-to-elegance)
+!(import! &self utilities/tree)
+!(import! &self scoring/cacheSpace)
+!(import! &self scoring/fitness)
+!(import! &self scoring/bscore)
+!(import! &self llmoses/scoring/cscore)
+!(import! &self llmoses/scoring/complexity-based-scorer)
+!(import! &self feature-selection/feature-selection-helpers)
+!(import! &self llmoses/feature-selection/similarity-scorers)
+!(import! &self llmoses/feature-selection/select-top-features)
+!(import! &self feature-selection/simple)
+!(import! &self feature-selection/smd)
+!(import! &self feature-selection/incremental)
+!(import! &self feature-selection/hc)
+!(import! &self feature-selection/random-feature-selection)
+!(import! &self feature-selection/feature-selection-main)
+!(import! &self representation/knob-representation)
+!(import! &self representation/lsk)
+!(import! &self representation/logical-probe)
+!(import! &self representation/logical-canonize)
+!(import! &self representation/add-logical-knobs)
+!(import! &self representation/build-logical)
+!(import! &self representation/build-knobs)
+!(import! &self representation/knob-mapper)
+!(import! &self llmoses/representation/create-representation)
+!(import! &self representation/instance)
+!(import! &self optimization/hillclimbing/cross-top-one-helpers)
+!(import! &self optimization/hillclimbing/cross-top-one)
+!(import! &self optimization/hillclimbing/hill-climbing-helpers)
+!(import! &self deme/create-deme)
+!(import! &self llmoses/moses/neighborhood-sampling)
+!(import! &self metapopulation/exemplar-type)
+!(import! &self metapopulation/exemplar-selection)
+!(import! &self metapopulation/metapopulation)
+!(import! &self deme/deme-id-creation)
+!(import! &self llmoses/deme/score-deme)
+!(import! &self llmoses/deme/merge-demes)
+!(import! &self llmoses/wrapper/extractors)
+!(import! &self llmoses/wrapper/state-builder)
+!(import! &self llmoses/representation/sample-logical-perms)
+!(import! &self llmoses/representation/representation)
+!(import! &self llmoses/deme/expand-deme)
+!(import! &self llmoses/moses/demo-problems)
+
+(= (mapG $f NilOS) NilOS)
+(= (mapG $f Nil) Nil)
+(= (mapG $f ($ctor $x $xs)) ($ctor ($f $x) (mapG $f $xs)))
+(= (cleanedExemplar (mkExemplar $tree $demeId $cscore (mkBScore $bscore)))
+   ((preOrder $tree) (List.sum $bscore)))
+
+;; Default smoke parameters: short run, 2 demes, smd FS.
+(= (classicDemoSeed) 0)
+(= (classicDemoMaxGen) 8)
+(= (classicDemoNDeme) 2)
+(= (classicDemoFsAlgo) smd)
+
+;; Run one classic boolean demo by key (pa | dj | maj | mux | cp | annCp).
+(= (runClassicDemo $key)
+   (let* (
+     ($problem (demoProblem $key))
+     ($_ (if (== $key annCp)
+            (println! (ann-cp-note: ANN-scoring-not-yet-ported — running parity4-boolean-smoke))
+            ()))
+     ($result (runDemoProblem (classicDemoSeed) (classicDemoMaxGen)
+                             (classicDemoNDeme) (classicDemoFsAlgo) $problem))
+   )
+   $result))

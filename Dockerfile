@@ -118,7 +118,8 @@ RUN mkdir -p /workspace/metta-moses/llmoses/outputs/logs \
 
 #Saving myself some typing
 RUN chmod +x run_moses_demo.sh
-RUN chmod +x run_strategy_state_test.sh
+RUN chmod +x run_boolean_smoke_test.sh
+RUN chmod +x run_strategy_smoke_test.sh
 #RUN chmod +x run_regression_state_test.sh
 
 # Default: run the full metta-moses test suite exactly as CI does.

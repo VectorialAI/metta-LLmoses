@@ -1,7 +1,7 @@
 """LLMOSES state builder — list-marshalling accumulator (v0.4).
 
-Receives extractor outputs across py-call. The marshalling was PROBED, not
-assumed: MeTTaLog hands Python native values recursively —
+Receives extractor outputs across py-call. MeTTaLog hands Python native values
+recursively —
   bare Number          -> int / float
   (mkX $payload)       -> ['mkX', <payload>]            (atom: [name, payload])
   (Cons h t) / Nil     -> ['Cons', h, t] / 'Nil'        (list spine)
@@ -24,7 +24,15 @@ import json
 import time
 import hashlib
 
-_VERSION = "0.4-mvp"
+_VERSION = "0.5-mvp"
+
+# Per problem_type: which action-space levers are live (agent should not score inactive dims).
+_ACTIVE_LEVERS = {
+    "boolean": ["exemplar_selection", "culling", "pair_sampling",
+                "complexity_ratio", "comparator_hook"],
+    "strategy": ["exemplar_selection", "culling", "pair_sampling",
+                 "complexity_ratio", "comparator_hook"],
+}
 
 # --- path resolution (same contract as llmoses_emitter.py) -----------------
 _THIS_DIR = os.path.dirname(os.path.abspath(__file__))      # .../llmoses/utilities
@@ -67,6 +75,9 @@ _explored_ids = set()      # program_ids selected in a prior gen (reset per run;
 _problem_spec = None       # {input_labels, arity} — set once per run by set_problem_spec
 _last_complexity_ratio = None  # derived cratio from flush_gen; reused by flush_terminal
 _pending_run_params = {}   # name -> raw value; persists across gens, reset by new_run
+_pending_pair_sampling = []  # [{rep_index, operator, enumerated_combinations, ...}]
+_active_rep_index = 0
+_score_complexity_history = []  # per-gen trajectory for score_vs_complexity_trend
 
 # Boltzmann selection constants — mirror exemplar-selection.metta COMPXY_TEMP / INV_TEMP
 _COMPXY_TEMP = 6.0
@@ -74,7 +85,7 @@ _INV_TEMP = 100.0 / _COMPXY_TEMP
 
 
 # ===========================================================================
-# Marshalling unwrap helpers — matched to the PROBED shapes (see module docstring)
+# Marshalling unwrap helpers — matched to the marshalled shapes above.
 # ===========================================================================
 def _is_nil(x):
     return x == "Nil" or x == ["Nil"]
@@ -180,6 +191,139 @@ def _effective_problem_type(raw_problem_type=None):
     return None
 
 
+def _pearson(xs, ys):
+    pairs = [(x, y) for x, y in zip(xs, ys)
+             if isinstance(x, (int, float)) and isinstance(y, (int, float))]
+    n = len(pairs)
+    if n < 2:
+        return None
+    mx = sum(p[0] for p in pairs) / n
+    my = sum(p[1] for p in pairs) / n
+    num = sum((p[0] - mx) * (p[1] - my) for p in pairs)
+    dx = sum((p[0] - mx) ** 2 for p in pairs)
+    dy = sum((p[1] - my) ** 2 for p in pairs)
+    if dx <= 0 or dy <= 0:
+        return None
+    return num / (dx * dy) ** 0.5
+
+
+def _trend_label(delta_score, delta_complexity):
+    if delta_score is None or delta_complexity is None:
+        return None
+    if abs(delta_score) < 1e-9 and abs(delta_complexity) < 1e-9:
+        return "stable"
+    if delta_score > 0 and delta_complexity > 0:
+        return "score_up_complexity_up"
+    if delta_score > 0 and delta_complexity < 0:
+        return "score_up_complexity_down"
+    if delta_score < 0 and delta_complexity > 0:
+        return "score_down_complexity_up"
+    if delta_score < 0 and delta_complexity < 0:
+        return "score_down_complexity_down"
+    if delta_score > 0:
+        return "score_up_complexity_flat"
+    if delta_score < 0:
+        return "score_down_complexity_flat"
+    return "complexity_shift"
+
+
+def _compute_score_vs_complexity_trend(members, g):
+    pens, cpxs = [], []
+    for m in members:
+        ps = m["cscore"]["penalized_score"]
+        cx = m["complexity"]
+        if isinstance(ps, (int, float)) and isinstance(cx, (int, float)):
+            pens.append(ps)
+            cpxs.append(cx)
+    corr = _pearson(cpxs, pens)
+    best = max(pens) if pens else None
+    mean_cpx = (sum(cpxs) / len(cpxs)) if cpxs else None
+    _score_complexity_history.append({
+        "generation": g, "best_penalized_score": best,
+        "mean_complexity": mean_cpx, "correlation": corr,
+    })
+    out = {"correlation_this_generation": corr}
+    if len(_score_complexity_history) >= 2:
+        prev = _score_complexity_history[-2]
+        ds = ((best or 0) - (prev["best_penalized_score"] or 0)
+              if best is not None and prev["best_penalized_score"] is not None else None)
+        dc = ((mean_cpx or 0) - (prev["mean_complexity"] or 0)
+              if mean_cpx is not None and prev["mean_complexity"] is not None else None)
+        out["gen_over_gen"] = {
+            "delta_best_penalized_score": ds,
+            "delta_mean_complexity": dc,
+            "label": _trend_label(ds, dc),
+        }
+    return out
+
+
+def _group_indices(entry):
+    """Extract index list from one marshalled pair/triplet entry."""
+    if isinstance(entry, (list, tuple)):
+        if len(entry) >= 2 and entry[0] != "Cons":
+            return [_num(x) for x in entry if _num(x) is not None]
+        if len(entry) == 3 and entry[0] == "Cons":
+            out, cur = [], entry
+            while isinstance(cur, list) and len(cur) == 3 and cur[0] == "Cons":
+                out.append(_num(cur[1]))
+                cur = cur[2]
+            return [x for x in out if x is not None]
+    return []
+
+
+def _group_list_to_records(idx_groups, arg_labels):
+    """Turn marshalled idx-group list + labels into JSON-friendly combination records."""
+    groups_raw = cons_to_list(idx_groups) if not isinstance(idx_groups, list) else idx_groups
+    labels = cons_to_list(arg_labels) if not isinstance(arg_labels, list) else arg_labels
+    out = []
+    for i, entry in enumerate(groups_raw):
+        indices = _group_indices(entry)
+        if len(indices) < 2:
+            continue
+        arity = len(indices)
+        lbls = []
+        for a in indices:
+            if isinstance(a, int) and a < len(labels):
+                lbls.append(_flat(labels[a]))
+            else:
+                lbls.append(str(a))
+        out.append({
+            "combination_index": i, "indices": indices, "labels": lbls, "arity": arity,
+        })
+    return out
+
+
+def _picked_indices(picked):
+    raw = cons_to_list(picked) if not isinstance(picked, list) else picked
+    return [_num(x) for x in raw if _num(x) is not None]
+
+
+def _build_run_parameters(cratio_override=None):
+    """Assemble run_parameters dict from buffered _pending_run_params."""
+    rp = _pending_run_params
+    ptype = _effective_problem_type(rp.get("problem_type"))
+    cratio = cratio_override if cratio_override is not None else _cr_or_none(rp.get("complexity_ratio"))
+    if cratio is None:
+        cratio = _last_complexity_ratio
+    hc_max = get_hill_climb_max_evals()
+    hill_climb_max_evals = rp.get("hill_climb_max_evaluations")
+    if hill_climb_max_evals is not None:
+        hc_max = _num(hill_climb_max_evals) or hc_max
+    return {
+        "problem_type": ptype,
+        "complexity_ratio": cratio,
+        "n_eval": _num(rp.get("n_eval")),
+        "hill_climb_max_evaluations": hc_max,
+        "max_cands_per_deme": _num(rp.get("max_cands_per_deme")),
+        "min_pool_size": _num(rp.get("min_pool_size")),
+        "complexity_temperature": _num(rp.get("complexity_temperature")),
+        "n_to_keep": _num(rp.get("n_to_keep")),
+        "cap_coef": _num(rp.get("cap_coef")),
+        "n_deme": _num(rp.get("n_deme")),
+        "optimizer": _flat(rp.get("optimizer")),
+    }
+
+
 def _boltzmann(pen_scores):
     """Reproduce normalizeProbs + the sum in selectExemplar.
     w_i = exp((s_i - best) * INV_TEMP) / sum(w), aligned to input order.
@@ -237,7 +381,7 @@ def sb_run_dir():
 
 
 def probe(tag):
-    """Bisection breadcrumb: appends a tag to probe.log in the run dir."""
+    """Temporary bisection breadcrumb: appends a tag to probe.log in the run dir."""
     with open(os.path.join(_RUN_DIR, "probe.log"), "a", encoding="utf-8") as fh:
         fh.write(f"{int(time.time()*1000)} {_flat(tag)}\n")
     return 0
@@ -245,7 +389,10 @@ def probe(tag):
 
 def new_run():
     """Open a fresh per-run subdir. Call once at the top of each runMoses."""
-    global _run_seq, _cur_state_dir, _cur_action_dir, _pending_selection, _pending_merge, _pending_deme_evals, _depth, _total_evals, _explored_ids, _problem_spec, _last_complexity_ratio, _pending_run_params
+    global _run_seq, _cur_state_dir, _cur_action_dir, _pending_selection, _pending_merge
+    global _pending_deme_evals, _depth, _total_evals, _explored_ids, _problem_spec
+    global _last_complexity_ratio, _pending_run_params, _pending_pair_sampling
+    global _active_rep_index, _score_complexity_history
     _run_seq += 1
     _cur_state_dir = os.path.join(_STATE_DIR, f"run-{_run_seq}")
     _cur_action_dir = os.path.join(_ACTION_DIR, f"run-{_run_seq}")
@@ -260,6 +407,9 @@ def new_run():
     _problem_spec = None
     _last_complexity_ratio = None
     _pending_run_params = {}
+    _pending_pair_sampling = []
+    _active_rep_index = 0
+    _score_complexity_history = []
     return _run_seq
 
 
@@ -386,6 +536,7 @@ def set_problem_spec(labels, arity=None):
         raw = list(labels) if isinstance(labels, list) else [labels]
     lbls = [_flat(x) for x in raw]
     _problem_spec = {
+        "problem_type": "boolean",
         "input_labels": lbls,
         "arity": (_num(arity) if arity is not None else len(lbls)),
     }
@@ -415,6 +566,61 @@ def set_run_param(name, value):
     """Buffer one named run parameter. Persists until overwritten or new_run;
     NOT cleared by flush_gen, so flush_terminal sees the same values without re-set."""
     _pending_run_params[_flat(name)] = value
+    return 0
+
+
+def begin_pair_sampling():
+    """Reset per-generation combination-sampling buffer. Call at expandDeme before createDeme."""
+    global _pending_pair_sampling, _active_rep_index
+    _pending_pair_sampling = []
+    _active_rep_index = 0
+    return 0
+
+
+def set_pair_sampling_rep_index(idx):
+    """Tag the active representation index during collapse (game / multi-rep boolean)."""
+    global _active_rep_index
+    _active_rep_index = _num(idx) or 0
+    return 0
+
+
+def inc_pair_sampling_rep_index():
+    """Advance rep index between boolean feature-set / rep builds."""
+    global _active_rep_index
+    _active_rep_index += 1
+    return 0
+
+
+def add_pair_sampling(op, idx_groups, picked, arg_labels):
+    """Buffer one combination-sampling menu + MOSES draw (pairs or triplets)."""
+    enumerated = _group_list_to_records(idx_groups, arg_labels)
+    picked_idx = _picked_indices(picked)
+    sampled = [enumerated[i] for i in picked_idx
+               if isinstance(i, int) and 0 <= i < len(enumerated)]
+    _pending_pair_sampling.append({
+        "rep_index": _active_rep_index,
+        "operator": _flat(op),
+        "enumerated_combinations": enumerated,
+        "sampled_indices": picked_idx,
+        "sampled_combinations": sampled,
+    })
+    return 0
+
+
+def emit_run_config():
+    """Write run_config.json preamble (static config) before evolution starts."""
+    ptype = _effective_problem_type(_pending_run_params.get("problem_type"))
+    doc = {
+        "schema_version": _VERSION,
+        "run_seq": _run_seq,
+        "record_type": "run_config",
+        "timestamp_ms": int(time.time() * 1000),
+        "problem_spec": _problem_spec,
+        "run_parameters": _build_run_parameters(),
+        "active_levers": _ACTIVE_LEVERS.get(ptype, []),
+        "comparator_hook_available": True,
+    }
+    _write_json(os.path.join(_cur_state_dir, "run_config.json"), doc)
     return 0
 
 
@@ -483,26 +689,23 @@ def flush_terminal(gen):
     return 0
 
 
+# v0.5: per-step state is dynamic-only; static config lives in run_config.json.
 def flush_gen(gen):
-    """v0.5: tree_str ProgramRecords; lineage_diff replaces lineage + the
-    post_deme_close metapop diff; DemeRecord absorbs knob_type_breakdown,
-    sampled_pair_count, and the merge counts; post_selection is the only
-    surviving nested event."""
-    global _pending_selection, _pending_merge, _pending_deme_evals, _depth, _total_evals, _explored_ids
     g = _num(gen)
-    rp = _pending_run_params
-    problem_type           = rp.get("problem_type")
-    complexity_ratio       = rp.get("complexity_ratio")
-    n_eval                 = rp.get("n_eval")
-    hill_climb_max_evals   = rp.get("hill_climb_max_evaluations")
-    max_cands_per_deme     = rp.get("max_cands_per_deme")
-    min_pool_size          = rp.get("min_pool_size")
-    complexity_temperature = rp.get("complexity_temperature")
-    n_to_keep              = rp.get("n_to_keep")
-    cap_coef               = rp.get("cap_coef")
-    n_deme                 = rp.get("n_deme")
-    optimizer              = rp.get("optimizer")
-    ptype = _effective_problem_type(problem_type)
+    probe(f"flush_gen:ENTER g={g}")
+    try:
+        return _flush_gen_impl(g)
+    except Exception as e:
+        import traceback
+        probe(f"flush_gen:EXC {type(e).__name__}: {e}")
+        probe("flush_gen:TB " + traceback.format_exc().replace("\n", " | "))
+        raise
+
+
+def _flush_gen_impl(g):
+    global _pending_selection, _pending_merge, _pending_deme_evals, _depth
+    global _total_evals, _explored_ids, _pending_pair_sampling, _last_complexity_ratio
+    ptype = _effective_problem_type(_pending_run_params.get("problem_type"))
     s = _gs(g)
     members = s["members"]
 
@@ -512,7 +715,6 @@ def flush_gen(gen):
     cur_ids = {m["program_id"] for m in members}
     probs = _boltzmann([m["cscore"]["penalized_score"] for m in members])
 
-    # consume + VALIDATE buffered selection
     selected_id, selection_status = None, "no_selection"
     sel = _pending_selection
     _pending_selection = None
@@ -522,7 +724,6 @@ def flush_gen(gen):
         else:
             selected_id, selection_status = "MISMATCH", "mismatch"
 
-    # consume buffered merge (post-merge ids + pipeline counts + cull candidates)
     post_ids, counts, cull_cands = set(), {}, []
     if _pending_merge is not None:
         post_ids   = set(_pending_merge["post_ids"])
@@ -532,16 +733,20 @@ def flush_gen(gen):
 
     ts = int(time.time() * 1000)
 
-    # lineage_diff: within-step merge transition (the sequence across gens = lineage tree)
     lineage_diff = {
         "seed_exemplar_id": selected_id,
         "new_programs": sorted(post_ids - cur_ids),
         "culled": sorted(cur_ids - post_ids),
     }
 
-    # --- per-deme records (1 element FS-off; N under FS+nDeme>1) ---
+    pair_events = list(_pending_pair_sampling)
+    _pending_pair_sampling = []
+    pair_by_rep = {}
+    for ev in pair_events:
+        pair_by_rep.setdefault(ev["rep_index"], []).append(ev)
+
     demes, evals_gen = [], 0
-    for did in s["deme_order"]:
+    for i, did in enumerate(s["deme_order"]):
         d = s["demes"][did]
         kb = {"logical": 0, "strategy": 0, "other": 0}
         for k in d["knobs"]:
@@ -550,21 +755,22 @@ def flush_gen(gen):
                   if isinstance(k["multiplicity"], (int, float)))
         ev = d["evaluations"] if d["evaluations"] is not None else (_num(d["instances"]) or 0)
         evals_gen += ev or 0
+        rep_sampled = []
+        for pe in pair_by_rep.get(i, []):
+            rep_sampled.extend(pe["sampled_combinations"])
         demes.append({
             "deme_id": did, "exemplar_program_id": selected_id,
             "exemplar_expr": d["deme_tree"],
             "knobs": d["knobs"], "knob_count": len(d["knobs"]),
             "knob_type_breakdown": kb,
             "sampled_pair_count": (kb["logical"] if ptype == "boolean" else None),
+            "sampled_combinations": rep_sampled if rep_sampled else None,
             "neighborhood_size": nbh,
             "instances_evaluated": d["instances"],
             "hill_climb_evaluations": d["evaluations"],
-            "operator_inclusion_set": None,
-            "pair_sampling_candidates": None,
         })
     _total_evals += evals_gen
 
-    # generation-level merge summary (mergeDemes runs once over ALL demes)
     pool_ids = cur_ids | {c["program_id"] for c in cull_cands}
     merge_summary = {
         "candidates_produced":     counts.get("candidates_produced"),
@@ -578,21 +784,19 @@ def flush_gen(gen):
         },
     }
 
-    # lineage depth: child = seed depth + 1
     seed_depth = _depth.get(selected_id, 0)
     for pid in lineage_diff["new_programs"]:
         _depth.setdefault(pid, seed_depth + 1)
     for m in members:
         _depth.setdefault(m["program_id"], 0)
 
-    # derive complexity_ratio if extractor gave null: ratio = complexity / complexity_penalty
-    global _last_complexity_ratio
-    cratio = _cr_or_none(complexity_ratio)
+    cratio = _cr_or_none(_pending_run_params.get("complexity_ratio"))
     if cratio is None:
         for m in members:
             cpx, cpen = m["complexity"], m["cscore"]["complexity_penalty"]
             if isinstance(cpx, (int, float)) and isinstance(cpen, (int, float)) and cpen:
-                cratio = cpx / cpen; break
+                cratio = cpx / cpen
+                break
     _last_complexity_ratio = cratio
 
     members_out = [{**m, "explored": m["program_id"] in _explored_ids} for m in members]
@@ -612,24 +816,11 @@ def flush_gen(gen):
             "selection_status": selection_status,
         }
 
-    hc_max = get_hill_climb_max_evals()
-    if hill_climb_max_evals is not None:
-        hc_max = _num(hill_climb_max_evals) or hc_max
-
-    run_parameters = {
-        "problem_type": ptype,
-        "complexity_ratio": cratio,
-        "n_eval": _num(n_eval),
-        "hill_climb_max_evaluations": hc_max,
-        "max_cands_per_deme": _num(max_cands_per_deme),
-        "min_pool_size": _num(min_pool_size),
-        "complexity_temperature": _num(complexity_temperature),
-        "n_to_keep": _num(n_to_keep), "cap_coef": _num(cap_coef),
-        "n_deme": _num(n_deme), "optimizer": _flat(optimizer),
-    }
+    score_vs_complexity_trend = _compute_score_vs_complexity_trend(members, g)
 
     state_doc = {
         "schema_version": _VERSION, "run_seq": _run_seq, "generation": g,
+        "problem_type": ptype,
         "timestamp_ms": ts,
         "hill_climb_evaluations_this_generation": evals_gen,
         "total_hill_climb_evaluations": _total_evals,
@@ -641,9 +832,16 @@ def flush_gen(gen):
         "merge_summary": merge_summary,
         "lineage_diff": lineage_diff,
         "moses_native_events": {"post_selection": post_selection_evt},
-        "problem_spec": _problem_spec,
-        "run_parameters": run_parameters,
+        "score_vs_complexity_trend": score_vs_complexity_trend,
     }
+
+    pair_menus = None
+    if pair_events:
+        pair_menus = [
+            {"rep_index": ev["rep_index"], "operator": ev["operator"],
+             "enumerated_combinations": ev["enumerated_combinations"]}
+            for ev in pair_events
+        ]
 
     action_doc = {
         "schema_version": _VERSION, "run_seq": _run_seq, "generation": g,
@@ -656,18 +854,18 @@ def flush_gen(gen):
              "lineage_depth": _depth.get(m["program_id"])}
             for m in members
         ],
-        "selected_program_id": selected_id,
-        "selection_status": selection_status,
-        "selection_detail": (
-            None if selection_status in ("ok", "no_selection")
-            else {"buffered_id": sel["program_id"], "buffered_tree": sel["tree"],
-                  "candidate_ids": sorted(cur_ids)}
-        ),
-        "complexity_ratio": {"current_value": cratio},
+        "culling_candidates": cull_cands if cull_cands else [],
+        "pair_sampling_candidates": pair_menus,
+        "complexity_ratio": {
+            "current_value": cratio,
+            "options": ([cratio] if cratio is not None else []),
+        },
     }
 
+    probe(f"flush_gen:PREWRITE g={g}")
     _write_json(os.path.join(_cur_state_dir, f"step-{g}.json"), state_doc)
     _write_json(os.path.join(_cur_action_dir, f"step-{g}.json"), action_doc)
+    probe(f"flush_gen:WROTE g={g}")
     _NFH.write(json.dumps({
         "run_seq": _run_seq, "generation": g, "size": len(members),
         "best_penalized_score": best,
