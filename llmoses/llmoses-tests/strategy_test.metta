@@ -1,13 +1,15 @@
 ;; strategy_test.metta — focused tic-tac-toe strategy MOSES tests.
 ;;
 ;; This file intentionally defines callable test forms instead of running every
-;; assertion at import time. The companion run_strategy_state_test.sh harness
+;; assertion at import time. The companion run_strategy_smoke_test.sh harness
 ;; imports this file and invokes one named test or all tests.
 ;;
 ;; Install location expected by the harness:
 ;;   llmoses/llmoses-tests/strategy_test.metta
 ;;
 ;; Classic MOSES -H demos (pa/dj/maj/mux/sr/cp/ann-cp) are not exercised here;
+;; boolean demos: ./run_moses_demo.sh demo pa
+;; strategy demo: ./run_moses_demo.sh demo ttt
 ;; this harness targets the tic-tac-toe strategy problem type instead.
 
 !(import! &self utilities/general-helpers)
@@ -51,12 +53,10 @@
 !(import! &self representation/lsk)
 !(import! &self representation/logical-probe)
 !(import! &self representation/logical-canonize)
-!(import! &self representation/sample-logical-perms)
 !(import! &self representation/add-logical-knobs)
 !(import! &self representation/build-logical)
 !(import! &self representation/build-knobs)
 !(import! &self representation/knob-mapper)
-!(import! &self representation/representation)
 !(import! &self llmoses/representation/create-representation)
 !(import! &self representation/instance)
 !(import! &self examples/tic-tac-toe/tic-tac-toe-helpers)
@@ -79,9 +79,10 @@
 !(import! &self llmoses/deme/merge-demes)
 !(import! &self llmoses/wrapper/extractors)
 !(import! &self llmoses/wrapper/state-builder)
+!(import! &self llmoses/representation/sample-logical-perms)
+!(import! &self llmoses/representation/representation)
 !(import! &self llmoses/utilities/state-emitter)
 !(import! &self llmoses/deme/expand-deme)
-!(import! &self moses/demo-problems)
 
 ;; Empty strategy metapop — empty PRIORITIZED-OR with worst CScore.
 ;; Useful for testing evolution from a cold strategy seed.
@@ -302,7 +303,7 @@
      $size))
 
 ;; -------------------------------------------------------------------------
-;; Shell harness result wrappers (run_strategy_state_test.sh).
+;; Shell harness result wrappers (run_strategy_smoke_test.sh).
 ;; -------------------------------------------------------------------------
 
 (= (strategy-metta-result $case $ok)

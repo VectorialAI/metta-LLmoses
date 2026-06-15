@@ -1,20 +1,17 @@
 #!/usr/bin/env bash
 # ============================================================================
-# run_strategy_state_test.sh — strategy MOSES + LLMOSES state/action regression
+# run_strategy_smoke_test.sh — strategy LLMOSES smoke + pressure regression
 #
-# Directory contract intentionally matches llmoses/utilities/state_builder.py:
-#   LLMOSES_RUN_ID=<timestamp>
-#   -> llmoses/outputs/runs/<timestamp>/{state,action,ready}
-# Logs are kept separately under:
-#   llmoses/outputs/logs
+# Targeted tic-tac-toe fixture runs (NOT classic boolean demos).
+# For classic demos use: ./run_moses_demo.sh demo <key>
 #
 # Usage:
-#   ./run_strategy_state_test.sh list
-#   ./run_strategy_state_test.sh metta expand-single
-#   ./run_strategy_state_test.sh metta all
-#   ./run_strategy_state_test.sh state merge-cull-pressure
-#   ./run_strategy_state_test.sh state all
-#   ./run_strategy_state_test.sh all
+#   ./run_strategy_smoke_test.sh list
+#   ./run_strategy_smoke_test.sh metta expand-single
+#   ./run_strategy_smoke_test.sh metta all
+#   ./run_strategy_smoke_test.sh state merge-cull-pressure
+#   ./run_strategy_smoke_test.sh state all
+#   ./run_strategy_smoke_test.sh all
 # ============================================================================
 set -euo pipefail
 
@@ -89,6 +86,26 @@ STATE_CASES=(
   merge-cull-pressure
   deep-lineage
 )
+
+strategy_metta_tier() {
+  case "$1" in
+    expand-single|expand-multideme|run-single|game-context-scoring|empty-seed)
+      echo smoke ;;
+    max-candidate-cap|multigen-multideme|merge-cull-pressure)
+      echo pressure ;;
+    *) return 1 ;;
+  esac
+}
+
+strategy_state_tier() {
+  case "$1" in
+    single|multigen-multideme|empty-seed|merge-cull-smoke)
+      echo smoke ;;
+    merge-cull-pressure|deep-lineage)
+      echo pressure ;;
+    *) return 1 ;;
+  esac
+}
 
 metta_func() {
   case "$1" in
@@ -178,24 +195,28 @@ run_traced() {
 }
 
 list_cases() {
-  cat <<EOF
-Output root:      $OUTPUT_ROOT
-Logs:             $LOGDIR
-State run dir:    $RUN_DIR
-Run ID:           $RUN_ID
-Test file:        $TEST_REL
-
-MeTTa unit cases:
-EOF
-  for c in "${METTA_CASES[@]}"; do echo "  metta $c"; done
+  echo "Output root:      $OUTPUT_ROOT"
+  echo "Logs:             $LOGDIR"
+  echo "State run dir:    $RUN_DIR"
+  echo "Run ID:           $RUN_ID"
+  echo "Test file:        $TEST_REL"
+  echo
+  echo "MeTTa unit cases:"
+  local c
+  for c in "${METTA_CASES[@]}"; do
+    echo "  metta $c [$(strategy_metta_tier "$c")]"
+  done
   echo "  metta all"
   echo
   echo "State/action JSON cases:"
-  for c in "${STATE_CASES[@]}"; do echo "  state $c"; done
+  for c in "${STATE_CASES[@]}"; do
+    echo "  state $c [$(strategy_state_tier "$c")]"
+  done
   echo "  state all"
   echo
-  echo "Combined:"
-  echo "  all"
+  echo "Combined:  all"
+  echo
+  echo "Classic MOSES demos:  ./run_moses_demo.sh demo pa"
 }
 
 case_in_array() {
@@ -255,6 +276,36 @@ if not ready_dir.is_dir(): fail(f"missing archived ready dir {ready_dir}")
 
 steps = []
 actions = []
+run_config_path = state_dir / "run_config.json"
+if not run_config_path.exists():
+    fail(f"missing run_config.json in {state_dir}")
+with run_config_path.open() as fh:
+    rc = json.load(fh)
+if rc.get("record_type") != "run_config":
+    fail("run_config record_type mismatch")
+ps = rc.get("problem_spec", {})
+if ps.get("problem_type") != "strategy":
+    fail("run_config problem_spec not strategy")
+if not ps.get("moves"):
+    fail("missing strategy moves in run_config")
+if ps.get("n_games") is None:
+    fail("missing n_games in run_config problem_spec")
+if ps.get("opponent_policy") in (None, "", "None"):
+    fail("missing opponent_policy in run_config")
+if ps.get("complexity_ratio") is None:
+    fail("missing problem_spec complexity_ratio in run_config")
+rp = rc.get("run_parameters", {})
+if rp.get("problem_type") != "strategy":
+    fail("run_config run_parameters.problem_type not strategy")
+if rp.get("complexity_ratio") is None:
+    fail("missing run_parameters complexity_ratio in run_config")
+levers = rc.get("active_levers", [])
+for need in ("exemplar_selection", "culling", "pair_sampling", "complexity_ratio", "comparator_hook"):
+    if need not in levers:
+        fail(f"missing active_lever {need} in run_config")
+if rc.get("comparator_hook_available") is not True:
+    fail("run_config comparator_hook_available not true")
+
 for g in range(1, expected_gens + 1):
     sp = state_dir / f"step-{g}.json"
     ap = action_dir / f"step-{g}.json"
@@ -266,22 +317,34 @@ for g in range(1, expected_gens + 1):
     actions.append(a)
     if s.get("generation") != g: fail(f"state generation mismatch in step-{g}")
     if a.get("generation") != g: fail(f"action generation mismatch in step-{g}")
-    if s.get("problem_spec", {}).get("problem_type") != "strategy": fail(f"problem_spec not strategy in step-{g}")
-    ps = s.get("problem_spec", {})
-    if not ps.get("moves"): fail(f"missing strategy moves in step-{g}")
-    if ps.get("n_games") is None: fail(f"missing n_games in problem_spec step-{g}")
-    if ps.get("opponent_policy") in (None, "", "None"): fail(f"missing opponent_policy in step-{g}")
-    if ps.get("complexity_ratio") is None: fail(f"missing problem_spec complexity_ratio in step-{g}")
-    rp = s.get("run_parameters", {})
-    if rp.get("problem_type") != "strategy": fail(f"run_parameters.problem_type not strategy in step-{g}")
-    if rp.get("complexity_ratio") is None: fail(f"missing run_parameters complexity_ratio in step-{g}")
+    if s.get("problem_type") != "strategy": fail(f"state problem_type not strategy in step-{g}")
+    if a.get("problem_type") != "strategy": fail(f"action problem_type not strategy in step-{g}")
+    for static_key in ("problem_spec", "run_parameters", "active_levers", "comparator_hook_available"):
+        if static_key in s:
+            fail(f"static key {static_key} must not appear in per-step state step-{g}")
+    if "active_levers" in a:
+        fail(f"active_levers must not appear in per-step action step-{g}")
+    for removed in ("selected_program_id", "selection_status", "selection_detail"):
+        if removed in a:
+            fail(f"realized selection field {removed} must not appear in action step-{g}")
+    if s.get("score_vs_complexity_trend") is None:
+        fail(f"missing score_vs_complexity_trend in state step-{g}")
     demes = s.get("demes", [])
     if len(demes) < expected_demes: fail(f"expected at least {expected_demes} demes in step-{g}, got {len(demes)}")
     saw_strategy_knob = False
+    saw_sampled = False
     for d in demes:
+        if "operator_inclusion_set" in d:
+            fail(f"operator_inclusion_set must not appear in deme step-{g}")
         kb = d.get("knob_type_breakdown", {})
         if kb.get("logical", 0) != 0: fail(f"logical knobs present in strategy deme step-{g}: {kb}")
         if d.get("sampled_pair_count") is not None: fail(f"sampled_pair_count should be null for strategy step-{g}")
+        sc = d.get("sampled_combinations")
+        if sc:
+            saw_sampled = True
+            for combo in sc:
+                if combo.get("arity") != 3:
+                    fail(f"strategy sampled_combinations should be arity 3 in step-{g}: {combo}")
         for k in d.get("knobs", []):
             if k.get("kind") == "strategy":
                 saw_strategy_knob = True
@@ -299,6 +362,18 @@ for g in range(1, expected_gens + 1):
         fail(f"bad selection_status in step-{g}: {post.get('selection_status')}")
     cands = a.get("exemplar_candidates", [])
     if not cands: fail(f"no action exemplar_candidates in step-{g}")
+    if "culling_candidates" not in a:
+        fail(f"missing culling_candidates in action step-{g}")
+    cr = a.get("complexity_ratio", {})
+    if not cr.get("options"):
+        fail(f"missing complexity_ratio.options in action step-{g}")
+    pair_menus = a.get("pair_sampling_candidates")
+    if not pair_menus:
+        fail(f"missing pair_sampling_candidates in action step-{g}")
+    for menu in pair_menus:
+        for combo in menu.get("enumerated_combinations", []):
+            if combo.get("arity") != 3:
+                fail(f"strategy pair_sampling menu should be arity 3 in step-{g}: {combo}")
 
 terminal = state_dir / "terminal.json"
 if not terminal.exists(): fail(f"missing terminal {terminal}")

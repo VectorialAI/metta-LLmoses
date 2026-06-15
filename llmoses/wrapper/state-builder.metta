@@ -4,13 +4,13 @@
 ;; Mirrors state-emitter.metta's emitGen call site EXACTLY (expand-deme.metta
 ;; lines 145-148): bind each value with `eval` in the let*, THEN pass the bound
 ;; bare variable to py-call. NEVER pass an extractor CALL directly as a py-call
-;; argument — that crosses unreduced (probed exhaustively).
+;; argument — that crosses unreduced.
 ;;
-;; Why eval works here but not in the earlier top-level probes: these are
-;; function-equation bodies (= (sbEmitMembers ...) (let* ...)), reduced by the
-;; runtime as it evaluates the loop — the same context runMosesLoop's working
-;; emitGen runs in. eval forces reduction inside an executing function body;
-;; it does NOT in a top-level py-call argument. Context, not syntax.
+;; These are function-equation bodies (= (sbEmitMembers ...) (let* ...)),
+;; reduced by the runtime as it evaluates the loop — the same context
+;; runMosesLoop's working emitGen runs in. eval forces reduction inside an
+;; executing function body; it does NOT in a top-level py-call argument.
+;; Context, not syntax.
 ;;
 ;; Load AFTER extractors.metta.
 ;; ============================================================================
@@ -20,8 +20,6 @@
 ;; Canary: prints the run dir at import if PYTHONPATH resolves the module.
 !(py-call (state_builder.sb_run_dir))
 
-(= (sbProbe $tag) (py-call (state_builder.probe $tag)))
-
 ;; --- direct delegators (scalars already; mirror emitGen/emitNewRun) ---------
 (= (sbNewRun)           (py-call (state_builder.new_run)))
 (= (sbBeginGen $g)      (py-call (state_builder.begin_gen $g)))
@@ -30,7 +28,8 @@
 ;; --- input feature spec: emit once per run from the ITable ----------------
 ;; Boolean problems have $itable in context; strategy problems pass 0 (no-op).
 (= (sbSetProblemSpec $itable)
-   (py-call (state_builder.set_problem_spec (eval (getArgLabels $itable)))))
+   (let* (($labels (eval (getArgLabels $itable))))
+     (py-call (state_builder.set_problem_spec $labels))))
 
 ;; --- post_selection hook: buffer the selected exemplar's tree -------------
 ;; Called from inside expandDeme right after $tree is bound. Passes the FULL
@@ -70,8 +69,10 @@
    (let* (
      ((mkDeme $rep $sInst $demeId) $deme)
      ($inst (eval (List.length (second $sInst))))
-     ($_ (sbEmitDemeKnobs $g $demeId (eval (knobsOfRep $rep))))
-     ($_ (let $tr (eval (repTree $rep)) (py-call (state_builder.set_deme $g $demeId $tr $inst))))
+     ($knobs (eval (knobsOfRep $rep)))
+     ($_k   (sbEmitDemeKnobs $g $demeId $knobs))
+     ($tr   (eval (repTree $rep)))
+     ($_s   (py-call (state_builder.set_deme $g $demeId $tr $inst)))
    ) 0))
 
 ;; Named run-parameter buffering (replaces the 12-arg positional sbFlushGen).
@@ -99,11 +100,21 @@
 
 ;; --- post_deme_close Tier A/B ----------------------------------------------
 ;; sbBeginMerge MUST be called BEFORE mergeDemes so the in-merge set_merge_count
-;; probes land in an open buffer. sbEmitAllMerged only WALKS the post-merge pop.
+;; events land in an open buffer. sbEmitAllMerged only WALKS the post-merge pop.
 (= (sbBeginMerge) (py-call (state_builder.begin_merge)))
 
+;; Combination-sampling hooks (eval-dispatch from sample-logical-perms.metta).
+(= (sbBeginPairSampling) (py-call (state_builder.begin_pair_sampling)))
+(= (sbSetPairSamplingRepIndex $idx) (py-call (state_builder.set_pair_sampling_rep_index $idx)))
+(= (sbIncPairSamplingRepIndex) (py-call (state_builder.inc_pair_sampling_rep_index)))
+(= (emitPairSampling $op $idxGroups $picked $argLabels)
+   (py-call (state_builder.add_pair_sampling $op $idxGroups $picked $argLabels)))
+
+;; Run-level static config preamble (before generation 1).
+(= (sbEmitRunConfig) (py-call (state_builder.emit_run_config)))
+
 ;; Walk $removedDominated (mkExemplar list) and buffer each as a cull candidate.
-;; Called at the probe site in merge-demes.metta, buffer open from sbBeginMerge.
+;; Called at the merge-demes hook site, buffer open from sbBeginMerge.
 ;; cscore fields extracted via named accessors (getScore / getComp / getPenScore)
 ;; so the three scalars cross as ints/floats rather than as a raw mkCscore atom.
 (= (sbEmitCullCands Nil) 0)
@@ -163,16 +174,18 @@
 (= (sbBeginRunBoolean
       $maxGen $nEval $maxCandsPerDeme $minPoolSize $complexityTemperature
       $nToKeep $capCoef $nDeme $optimizer
-      $itable)
+      $truthTableBScore $itable)
    (let* (
+     (($cpxCoeff $_size $_tbl) (eval (getTTableParams $truthTableBScore)))
      ($_0 (sbNewRun))
      ($_1 (sbSetProblemSpec $itable))
      ($_2 (sbSetRunParams
-             "boolean" ()
+             "boolean" $cpxCoeff
              $maxGen $nEval $maxCandsPerDeme
              $minPoolSize $complexityTemperature
              $nToKeep $capCoef $nDeme $optimizer
              10000))
+     ($_3 (sbEmitRunConfig))
    ) 0))
 
 ;; Explicit strategy run initializer — call instead of sbNewRun + sbSetProblemSpecStrategy.
@@ -190,4 +203,5 @@
              $minPoolSize $complexityTemperature
              $nToKeep $capCoef $nDeme $optimizer
              10000))
+     ($_3 (sbEmitRunConfig))
    ) 0))
