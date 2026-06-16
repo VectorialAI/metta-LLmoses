@@ -129,13 +129,13 @@
                  )
                  ($exemplar-arg-seq
                      (if $prune-exemplar
-                           (map-atom $ft-set-pop $ft-set 
+                           (map-atom $ft-set-pop $ft-set
                               (let* (($diff-ft (subtraction-atom $exemplar-fts $ft-set))
                                      ($ft-names (fsToNames $labels $diff-ft))
                                      ($pruned-xmplr (pruneExemplar $exemplar $ft-names))
                                      ($final-args (subtraction-atom $ft-set $exemplar-fts)))
                                  ($pruned-xmplr (fsToNames $labels $final-args))))
-                           (map-atom $ft-set-pop $ft-set 
+                           (map-atom $ft-set-pop $ft-set
                                  (let* (($agg (union-atom-set $ft-set $exemplar-fts))
                                         ($final-args (fsToNames $labels $agg)))
                                     ($exemplar $final-args)))))
@@ -147,7 +147,7 @@
                                              (let $acc (concatT $args $sampled-enforced-fts) ($xmplr $acc))))))
                   ($filter-empty-args (filter-atom $with-enforced-fts ($xmplr $args) (not (== $args ()))))
               )
-                     (map-atom $filter-empty-args ($xmplr $argLabels) 
+                     (map-atom $filter-empty-args ($xmplr $argLabels)
                            (let* (
                                     (($updatedTree $dscMp) (buildKnobs $xmplr NilMMap $argLabels))
                                     ($dscKbMp (crtDiscKnobMap (mkDscMp $dscMp) (mkDscKbMp NilMap) 0))
