@@ -380,13 +380,6 @@ def sb_run_dir():
     return _RUN_DIR
 
 
-def probe(tag):
-    """Temporary bisection breadcrumb: appends a tag to probe.log in the run dir."""
-    with open(os.path.join(_RUN_DIR, "probe.log"), "a", encoding="utf-8") as fh:
-        fh.write(f"{int(time.time()*1000)} {_flat(tag)}\n")
-    return 0
-
-
 def new_run():
     """Open a fresh per-run subdir. Call once at the top of each runMoses."""
     global _run_seq, _cur_state_dir, _cur_action_dir, _pending_selection, _pending_merge
@@ -520,9 +513,16 @@ def set_selection(tree):
     return 0
 
 
-def set_deme_evals(deme_id, n):
+def set_deme_evals(deme_id, state):
     """Per-deme fitness-call count, keyed by deme_id (expandDemeHelper has no gen)."""
-    _pending_deme_evals[_demeid(deme_id)] = _num(n)
+    try:
+        e = state[8]
+        evals = (_num(e[1]) + _num(e[2])
+                 if isinstance(e, (list, tuple)) and len(e) >= 3 and e[0] == "+"
+                 else _num(e))
+    except Exception:
+        evals = None
+    _pending_deme_evals[_demeid(deme_id)] = evals
     return 0
 
 
@@ -689,22 +689,11 @@ def flush_terminal(gen):
     return 0
 
 
-# v0.5: per-step state is dynamic-only; static config lives in run_config.json.
 def flush_gen(gen):
-    g = _num(gen)
-    probe(f"flush_gen:ENTER g={g}")
-    try:
-        return _flush_gen_impl(g)
-    except Exception as e:
-        import traceback
-        probe(f"flush_gen:EXC {type(e).__name__}: {e}")
-        probe("flush_gen:TB " + traceback.format_exc().replace("\n", " | "))
-        raise
-
-
-def _flush_gen_impl(g):
+    """v0.5: per-step state is dynamic-only; static config lives in run_config.json."""
     global _pending_selection, _pending_merge, _pending_deme_evals, _depth
     global _total_evals, _explored_ids, _pending_pair_sampling, _last_complexity_ratio
+    g = _num(gen)
     ptype = _effective_problem_type(_pending_run_params.get("problem_type"))
     s = _gs(g)
     members = s["members"]
@@ -862,10 +851,8 @@ def _flush_gen_impl(g):
         },
     }
 
-    probe(f"flush_gen:PREWRITE g={g}")
     _write_json(os.path.join(_cur_state_dir, f"step-{g}.json"), state_doc)
     _write_json(os.path.join(_cur_action_dir, f"step-{g}.json"), action_doc)
-    probe(f"flush_gen:WROTE g={g}")
     _NFH.write(json.dumps({
         "run_seq": _run_seq, "generation": g, "size": len(members),
         "best_penalized_score": best,

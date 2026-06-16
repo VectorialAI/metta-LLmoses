@@ -56,7 +56,7 @@
     ;; ($_ (println! $demeIds))
     ; ($argLabels (getArgLabels $itable))
     ;; ($_ (println! "Creating Deme"))
-    ($_ (eval (sbBeginPairSampling)))
+    ;; ($_ (eval (sbBeginPairSampling)))
     ($demes (createDeme $nDeme $demeIds $tree $itable $fs-algo $prune-exemplar () $scorerType))
     )
     (map-atom $demes $deme (expandDemeHelper $deme $truthTableBScore $optimize))
@@ -70,7 +70,7 @@
          ($tree (trace! "getting exemplar tree" (getExemplarTree $exemplar)))
          ($_ (sbSetSelection $tree))
          ($demeIds (trace! "creating deme IDs" (createDemeIds $nExpansion $nDeme)))
-         ($_ (eval (sbBeginPairSampling)))
+         ;; ($_ (eval (sbBeginPairSampling)))
          ($demes (trace! "Creating Deme" (createDeme $nDeme $demeIds $tree)))
          ($gameContext ($nGames $opponentPolicy $complexityRatio $targetCScore))
       )
@@ -93,8 +93,7 @@
     ;; ($_ (println! (Rep: (mkRep (mkKbMap (mkDscKbMp $dscKbMp) (mkDscMp $dscMp)) $updatedTree))))
     ;; ($_ (println! "Optimizing Deme"))
     (($inst $optimDeme $state) (optimizeDemes $deme $context (mkInst $generatedList) $optimize))
-    ($evals (eval (index-atom $state 8)))
-    ($_ (py-call (state_builder.set_deme_evals $demeId $evals)))   ;; <-- per-deme fitness-call count
+    ($_ (py-call (state_builder.set_deme_evals $demeId $state)))   ;; <-- per-deme fitness-call count
 )
 $optimDeme
 ))
