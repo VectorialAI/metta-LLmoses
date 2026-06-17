@@ -24,6 +24,11 @@ import json
 import time
 import hashlib
 
+try:
+    import context_docs
+except Exception:  # pragma: no cover - guide docs must not block state emission
+    context_docs = None
+
 _VERSION = "0.5-mvp"
 
 # Per problem_type: which action-space levers are live (agent should not score inactive dims).
@@ -83,6 +88,24 @@ _atom_cumulative = {}      # key -> {appearances_total, first_seen_gen, last_see
 # Boltzmann selection constants — mirror exemplar-selection.metta COMPXY_TEMP / INV_TEMP
 _COMPXY_TEMP = 6.0
 _INV_TEMP = 100.0 / _COMPXY_TEMP
+
+
+def _ensure_context_docs(problem_type=None, problem_spec=None, active_levers=None):
+    """Best-effort run-local guide generation for shadow agents."""
+    if context_docs is None:
+        return
+    try:
+        context_docs.ensure_output_context(
+            _LLMOSES_DIR,
+            _RUN_ID,
+            _RUN_DIR,
+            run_seq=_run_seq,
+            problem_type=problem_type,
+            problem_spec=problem_spec,
+            active_levers=active_levers,
+        )
+    except Exception:
+        pass
 
 
 # ===========================================================================
@@ -658,6 +681,7 @@ def new_run():
     _atom_alphabet = None
     _atom_alphabet_map = {}
     _atom_cumulative = {}
+    _ensure_context_docs()
     return _run_seq
 
 
@@ -843,6 +867,9 @@ def emit_run_config():
         "comparator_hook_available": True,
     }
     _write_json(os.path.join(_cur_state_dir, "run_config.json"), doc)
+    _ensure_context_docs(problem_type=ptype,
+                         problem_spec=_problem_spec,
+                         active_levers=doc["active_levers"])
     return 0
 
 

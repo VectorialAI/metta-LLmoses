@@ -3,14 +3,14 @@
 
 Emulates the real coding-agent topology: an independent process that observes
 state appearing on disk and writes its own output files. It is NOT called by
-MOSES and does NOT publish back to MOSES — fully filesystem-mediated.
+MOSES and does NOT publish back to MOSES; the handoff is filesystem-mediated.
 
 Trigger contract: it watches <run>/ready/ for per-step sentinels dropped by the
 emitter as the LAST action of each generation. Sentinel names are
 ``run-<seq>-step-<g>`` — the run-sequence prefix keeps the flat ready/ dir
 collision-free even when multiple runMoses calls fire within the same process.
-A sentinel's presence proves that state/run-<seq>/step-<g>.txt and
-action/run-<seq>/step-<g>.txt are both complete, so there are no partial reads.
+A sentinel's presence proves that state/run-<seq>/step-<g>.json and
+action/run-<seq>/step-<g>.json are both complete, so there are no partial reads.
 
 Stop/drain contract: on a stop signal (a <run>/CONTROL/stop flag file, or
 SIGTERM) the watcher does a FINAL pass that processes every remaining sentinel
@@ -19,16 +19,17 @@ touches the stop flag only AFTER the MeTTa process returns (so the last
 sentinel is guaranteed on disk), then waits on this process.
 
 MVP handler: ``head -10`` of state-<g> and action-<g>, echoed into
-utilities/run-<seq>/step-<g>.txt and traces/run-<seq>/step-<g>.txt with an
-explicit STUB banner. Swapping this handler for a real provider call is the
+utilities/run-<seq>/step-<g>.json and traces/run-<seq>/step-<g>.json with an
+explicit stub marker. Swapping this handler for a real provider call is the
 only change needed to go from MVP to a live agent.
 
 Directory layout produced:
-  <run>/utilities/run-<seq>/step-<g>.txt  — stub utility estimate
-  <run>/traces/run-<seq>/step-<g>.txt     — stub trace / receipt
-  <run>/ready/.consumed/run-<seq>-step-<g> — moved-on-success marker
+  <run>/utilities/run-<seq>/step-<g>.json   - stub UtilityResponse estimate
+  <run>/traces/run-<seq>/step-<g>.json      - stub trace / receipt
+  <run>/ready/.consumed/run-<seq>-step-<g>  - moved-on-success marker
 """
 import argparse
+import json
 import os
 import signal
 import sys
@@ -87,41 +88,67 @@ def _handle_step(run_dir, seq, gen, dirs):
     """MVP stub handler: acknowledge receipt of state-<g> + action-<g>.
 
     Reads from the per-run subdirectories that mirror the emitter's layout:
-      state/run-<seq>/step-<g>.txt
-      action/run-<seq>/step-<g>.txt
+      state/run-<seq>/step-<g>.json
+      action/run-<seq>/step-<g>.json
     Writes into:
-      utilities/run-<seq>/step-<g>.txt
-      traces/run-<seq>/step-<g>.txt
+      utilities/run-<seq>/step-<g>.json
+      traces/run-<seq>/step-<g>.json
     """
-    state_p  = os.path.join(dirs["state"],  f"run-{seq}", f"step-{gen}.txt")
-    action_p = os.path.join(dirs["action"], f"run-{seq}", f"step-{gen}.txt")
+    state_p  = os.path.join(dirs["state"],  f"run-{seq}", f"step-{gen}.json")
+    action_p = os.path.join(dirs["action"], f"run-{seq}", f"step-{gen}.json")
     state_head  = _head(state_p)
     action_head = _head(action_p)
     ts = int(time.time() * 1000)
 
     util_dir = os.path.join(dirs["utilities"], f"run-{seq}")
     os.makedirs(util_dir, exist_ok=True)
-    util_p = os.path.join(util_dir, f"step-{gen}.txt")
+    util_p = os.path.join(util_dir, f"step-{gen}.json")
+    utility_doc = {
+        "schema_version": "stub-v0",
+        "record_type": "UtilityResponse",
+        "stub": True,
+        "run_seq": seq,
+        "generation": gen,
+        "timestamp_ms": ts,
+        "pass": True,
+        "sampling_temperature": None,
+        "exemplar_utilities": [],
+        "pair_utilities": [],
+        "culling_utilities": [],
+        "complexity_ratio_delta": None,
+        "comparator_bias": None,
+        "reasoning_trace": [
+            "stub watcher observed ready sentinel but did not call a provider"
+        ],
+        "trace_summary": "stub utility response; replace watcher handler for live estimation",
+    }
     with open(util_p, "w", encoding="utf-8") as fh:
-        fh.write(
-            f"STUB_UTILITY_v0 run {seq} step {gen} ts {ts}"
-            " (NOT a real utility estimate)\n"
-        )
-        fh.write(f"-- received state-{gen} (head {HEAD_N}) --\n")
-        fh.write("\n".join(state_head) + "\n")
-        fh.write(f"-- received action-{gen} (head {HEAD_N}) --\n")
-        fh.write("\n".join(action_head) + "\n")
+        json.dump(utility_doc, fh, indent=2)
+        fh.write("\n")
 
     trace_dir = os.path.join(dirs["traces"], f"run-{seq}")
     os.makedirs(trace_dir, exist_ok=True)
-    trace_p = os.path.join(trace_dir, f"step-{gen}.txt")
-    with open(trace_p, "w", encoding="utf-8") as fh:
-        fh.write(f"STUB_TRACE_v0 run {seq} step {gen} ts {ts}\n")
-        fh.write(
+    trace_p = os.path.join(trace_dir, f"step-{gen}.json")
+    trace_doc = {
+        "schema_version": "stub-v0",
+        "record_type": "watcher_trace",
+        "run_seq": seq,
+        "generation": gen,
+        "timestamp_ms": ts,
+        "ready_sentinel": f"ready/run-{seq}-step-{gen}",
+        "state_path": state_p,
+        "action_path": action_p,
+        "state_head": state_head,
+        "action_head": action_head,
+        "summary": (
             f"observed ready/run-{seq}-step-{gen}; "
             f"read {len(state_head)} state line(s), "
-            f"{len(action_head)} action line(s); wrote utilities + traces.\n"
-        )
+            f"{len(action_head)} action line(s); wrote utilities + traces."
+        ),
+    }
+    with open(trace_p, "w", encoding="utf-8") as fh:
+        json.dump(trace_doc, fh, indent=2)
+        fh.write("\n")
 
     return util_p, trace_p
 
@@ -150,8 +177,8 @@ def _scan_and_process(run_dir, dirs, consumed_dir):
 
 def main():
     ap = argparse.ArgumentParser(
-        description="LLMOSES shadow-agent watcher — watches ready/ sentinels "
-                    "and writes stub utilities + traces."
+        description="LLMOSES shadow-agent watcher: watches ready/ sentinels "
+                    "and writes stub utility + trace JSON."
     )
     ap.add_argument("run_dir", help="Path to the run root directory.")
     args = ap.parse_args()
