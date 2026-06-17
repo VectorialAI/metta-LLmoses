@@ -1,3 +1,5 @@
+This fork is an extension of the official metta-moses repository (see below). For specific information on using metta-llmoses (MOSES with integrated LLM reasoning), refer to the llmoses directory.
+
 # MOSES -- Meta-Optimizing Semantic Evolutionary Search
 
 This repository is contains re implementation of the Moses algorithm found in the [asmoses](https://github.com/opencog/asmoses) repository in MeTTaLog. A brief introduction about what the Moses algorithm can be found below.
