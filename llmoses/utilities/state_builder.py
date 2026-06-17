@@ -33,7 +33,7 @@ _VERSION = "0.5-mvp"
 
 # Per problem_type: which action-space levers are live (agent should not score inactive dims).
 _ACTIVE_LEVERS = {
-    "boolean": ["exemplar_selection", "culling", "atom_evidence",
+    "logical": ["exemplar_selection", "culling", "atom_evidence",
                 "complexity_ratio", "comparator_hook"],
     "strategy": ["exemplar_selection", "culling", "atom_evidence",
                  "complexity_ratio", "comparator_hook"],
@@ -195,23 +195,27 @@ def _cr_or_none(x):
 
 
 _ABSENT_ATOMS = {"", "None", "()", "Nil"}
+_PROBLEM_TYPE_ALIASES = {"boolean": "logical"}
 
 def _present_atom(x):
     s = _flat(x)
     return None if s in _ABSENT_ATOMS else s
+
+def _canonical_problem_type(x):
+    return _PROBLEM_TYPE_ALIASES.get(x, x)
 
 def _effective_problem_type(raw_problem_type=None):
     """Resolve the canonical problem-type string from the buffered run param,
     falling back to _problem_spec. Returns None if genuinely unknown."""
     p = _present_atom(raw_problem_type)
     if p is not None:
-        return p
+        return _canonical_problem_type(p)
     if isinstance(_problem_spec, dict):
         p = _present_atom(_problem_spec.get("problem_type"))
         if p is not None:
-            return p
+            return _canonical_problem_type(p)
         if "input_labels" in _problem_spec:
-            return "boolean"
+            return "logical"
     return None
 
 
@@ -371,11 +375,11 @@ def _write_json(path, doc):
 # One problem_type-keyed config drives THREE coupled choices so they can't
 # desync: the clause-op set, the ordered flag (which governs both dedupe rule
 # and key canonicalization), and whether contradictions are meaningful.
-#   boolean  : AND/OR commutative -> set-dedupe, sorted keys, contradictions real
+#   logical  : AND/OR commutative -> set-dedupe, sorted keys, contradictions real
 #   strategy : PRIORITIZED-OR ordered -> order-preserving dedupe, preserved keys,
 #              no contradiction concept (no negation in the move algebra)
 _PROBLEM_CONFIG = {
-    "boolean":  {"ops": {"AND", "OR"},        "ordered": False, "contradiction": True},
+    "logical":  {"ops": {"AND", "OR"},        "ordered": False, "contradiction": True},
     "strategy": {"ops": {"PRIORITIZED-OR"},   "ordered": True,  "contradiction": False},
 }
 _DEFAULT_CONFIG = {"ops": {"AND", "OR"}, "ordered": False, "contradiction": True}
@@ -390,14 +394,14 @@ _ATOM_LOSSLESS = os.environ.get("LLMOSES_ATOM_LOSSLESS", "").strip().lower() in 
 
 def _build_atom_alphabet():
     """Resolve the static action-space alphabet from _problem_spec.
-    Strategy -> moves (prefix 'move'); boolean/default -> input_labels (prefix
+    Strategy -> moves (prefix 'move'); logical/default -> input_labels (prefix
     'feature'). Returns the indexed, label-keyed block emitted in run_config and
     also (re)builds _atom_alphabet_map (label -> {index, key}) for the walker."""
     global _atom_alphabet_map
     _atom_alphabet_map = {}
     if not isinstance(_problem_spec, dict):
         return None
-    ptype = _problem_spec.get("problem_type")
+    ptype = _effective_problem_type(_problem_spec.get("problem_type"))
     if ptype == "strategy":
         labels = _problem_spec.get("moves") or []
         prefix = "move"
@@ -657,13 +661,36 @@ def sb_run_dir():
     return _RUN_DIR
 
 
+def _max_existing_run_seq():
+    seqs = []
+    for root in (_STATE_DIR, _ACTION_DIR):
+        try:
+            names = os.listdir(root)
+        except OSError:
+            continue
+        for name in names:
+            if not name.startswith("run-"):
+                continue
+            raw = name[4:].split("-", 1)[0]
+            try:
+                seqs.append(int(raw))
+            except ValueError:
+                pass
+    return max(seqs) if seqs else 0
+
+
 def new_run():
-    """Open a fresh per-run subdir. Call once at the top of each runMoses."""
+    """Open a fresh per-run subdir. Call once at the top of each runMoses.
+
+    Demo harnesses may invoke several PeTTa processes with one LLMOSES_RUN_ID.
+    Each process imports this module with _run_seq reset to 0, so consult the
+    existing output directories before choosing the next run-N slot.
+    """
     global _run_seq, _cur_state_dir, _cur_action_dir, _pending_selection, _pending_merge
     global _pending_deme_evals, _depth, _total_evals, _explored_ids, _problem_spec
     global _last_complexity_ratio, _pending_run_params, _score_complexity_history
     global _atom_alphabet, _atom_alphabet_map, _atom_cumulative
-    _run_seq += 1
+    _run_seq = max(_run_seq + 1, _max_existing_run_seq() + 1)
     _cur_state_dir = os.path.join(_STATE_DIR, f"run-{_run_seq}")
     _cur_action_dir = os.path.join(_ACTION_DIR, f"run-{_run_seq}")
     os.makedirs(_cur_state_dir, exist_ok=True)
@@ -816,7 +843,7 @@ def set_problem_spec(labels, arity=None):
         raw = list(labels) if isinstance(labels, list) else [labels]
     lbls = [_flat(x) for x in raw]
     _problem_spec = {
-        "problem_type": "boolean",
+        "problem_type": "logical",
         "input_labels": lbls,
         "arity": (_num(arity) if arity is not None else len(lbls)),
     }

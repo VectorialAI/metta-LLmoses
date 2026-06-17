@@ -35,9 +35,9 @@ def _write_json(path, doc):
 def _problem_summary(problem_type, problem_spec):
     if not problem_spec:
         return "Problem spec has not been emitted yet."
-    if problem_type == "boolean":
+    if problem_type in ("logical", "boolean"):
         labels = problem_spec.get("input_labels") or []
-        return "Boolean problem over inputs: " + ", ".join(str(x) for x in labels)
+        return "Logical problem over inputs: " + ", ".join(str(x) for x in labels)
     if problem_type == "strategy":
         moves = problem_spec.get("moves") or []
         return "Strategy problem over moves: " + ", ".join(str(x) for x in moves)
