@@ -103,13 +103,6 @@
 ;; events land in an open buffer. sbEmitAllMerged only WALKS the post-merge pop.
 (= (sbBeginMerge) (py-call (state_builder.begin_merge)))
 
-;; Combination-sampling hooks (eval-dispatch from sample-logical-perms.metta).
-(= (sbBeginPairSampling) (py-call (state_builder.begin_pair_sampling)))
-(= (sbSetPairSamplingRepIndex $idx) (py-call (state_builder.set_pair_sampling_rep_index $idx)))
-(= (sbIncPairSamplingRepIndex) (py-call (state_builder.inc_pair_sampling_rep_index)))
-(= (emitPairSampling $op $idxGroups $picked $argLabels)
-   (py-call (state_builder.add_pair_sampling $op $idxGroups $picked $argLabels)))
-
 ;; Run-level static config preamble (before generation 1).
 (= (sbEmitRunConfig) (py-call (state_builder.emit_run_config)))
 

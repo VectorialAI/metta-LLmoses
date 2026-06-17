@@ -75,9 +75,10 @@ _explored_ids = set()      # program_ids selected in a prior gen (reset per run;
 _problem_spec = None       # {input_labels, arity} — set once per run by set_problem_spec
 _last_complexity_ratio = None  # derived cratio from flush_gen; reused by flush_terminal
 _pending_run_params = {}   # name -> raw value; persists across gens, reset by new_run
-_pending_pair_sampling = []  # [{rep_index, operator, enumerated_combinations, ...}]
-_active_rep_index = 0
 _score_complexity_history = []  # per-gen trajectory for score_vs_complexity_trend
+_atom_alphabet = None      # {problem_type, prefix, atoms:[{index,key,label}]} — static, run_config
+_atom_alphabet_map = {}    # label -> {index, key} — walker lookup, derived from _atom_alphabet
+_atom_cumulative = {}      # key -> {appearances_total, first_seen_gen, last_seen_gen} (run-scoped)
 
 # Boltzmann selection constants — mirror exemplar-selection.metta COMPXY_TEMP / INV_TEMP
 _COMPXY_TEMP = 6.0
@@ -257,47 +258,6 @@ def _compute_score_vs_complexity_trend(members, g):
     return out
 
 
-def _group_indices(entry):
-    """Extract index list from one marshalled pair/triplet entry."""
-    if isinstance(entry, (list, tuple)):
-        if len(entry) >= 2 and entry[0] != "Cons":
-            return [_num(x) for x in entry if _num(x) is not None]
-        if len(entry) == 3 and entry[0] == "Cons":
-            out, cur = [], entry
-            while isinstance(cur, list) and len(cur) == 3 and cur[0] == "Cons":
-                out.append(_num(cur[1]))
-                cur = cur[2]
-            return [x for x in out if x is not None]
-    return []
-
-
-def _group_list_to_records(idx_groups, arg_labels):
-    """Turn marshalled idx-group list + labels into JSON-friendly combination records."""
-    groups_raw = cons_to_list(idx_groups) if not isinstance(idx_groups, list) else idx_groups
-    labels = cons_to_list(arg_labels) if not isinstance(arg_labels, list) else arg_labels
-    out = []
-    for i, entry in enumerate(groups_raw):
-        indices = _group_indices(entry)
-        if len(indices) < 2:
-            continue
-        arity = len(indices)
-        lbls = []
-        for a in indices:
-            if isinstance(a, int) and a < len(labels):
-                lbls.append(_flat(labels[a]))
-            else:
-                lbls.append(str(a))
-        out.append({
-            "combination_index": i, "indices": indices, "labels": lbls, "arity": arity,
-        })
-    return out
-
-
-def _picked_indices(picked):
-    raw = cons_to_list(picked) if not isinstance(picked, list) else picked
-    return [_num(x) for x in raw if _num(x) is not None]
-
-
 def _build_run_parameters(cratio_override=None):
     """Assemble run_parameters dict from buffered _pending_run_params."""
     rp = _pending_run_params
@@ -365,12 +325,174 @@ def _gs(gen):
     return _gen[g]
 
 
+def _member_out(m):
+    """Emit-shape of a member: drop the internal tree_ast (walker input only),
+    tag the explored flag."""
+    return {k: v for k, v in m.items() if k != "tree_ast"} | {
+        "explored": m["program_id"] in _explored_ids}
+
+
 def _write_json(path, doc):
     os.makedirs(os.path.dirname(path), exist_ok=True)
     tmp = path + ".tmp"
     with open(tmp, "w", encoding="utf-8") as fh:
         json.dump(doc, fh, indent=2)
     os.replace(tmp, path)
+
+
+# ===========================================================================
+# Atom evidence: clause-walking over the resolved post-merge candidate trees.
+# This keeps sampling evidence out of the MeTTa knob-building hot path.
+# ===========================================================================
+
+# Clause-op set + ordered flag per problem_type. Boolean AND/OR are commutative
+# (cooccurrences canonicalized); strategy PRIORITIZED-OR is ordered (source
+# order preserved, since priority position is semantically meaningful).
+_CLAUSE_OPS = {
+    "boolean":  ({"AND", "OR"}, False),
+    "strategy": ({"PRIORITIZED-OR"}, True),
+}
+
+
+def _build_atom_alphabet():
+    """Resolve the static action-space alphabet from _problem_spec.
+    Strategy -> moves (prefix 'move'); boolean/default -> input_labels (prefix
+    'feature'). Returns the indexed, label-keyed block emitted in run_config and
+    also (re)builds _atom_alphabet_map (label -> {index, key}) for the walker."""
+    global _atom_alphabet_map
+    _atom_alphabet_map = {}
+    if not isinstance(_problem_spec, dict):
+        return None
+    ptype = _problem_spec.get("problem_type")
+    if ptype == "strategy":
+        labels = _problem_spec.get("moves") or []
+        prefix = "move"
+    else:
+        labels = _problem_spec.get("input_labels") or []
+        prefix = "feature"
+    atoms = []
+    for i, lbl in enumerate(labels):
+        label = _flat(lbl)
+        key = f"{prefix}:{label}"
+        atoms.append({"index": i, "key": key, "label": label})
+        _atom_alphabet_map[label] = {"index": i, "key": key}
+    return {"problem_type": ptype, "prefix": prefix, "atoms": atoms}
+
+
+# --- node classifiers over the marshalled preOrder AST ---------------------
+def _is_clause_op(node, ops):
+    """node is a non-empty list whose head is a clause-op symbol in `ops`."""
+    return isinstance(node, list) and len(node) >= 1 and node[0] in ops
+
+
+def _is_not_wrapper(node):
+    """Unary NOT wrapper: ['NOT', <child>]."""
+    return isinstance(node, list) and len(node) == 2 and node[0] == "NOT"
+
+
+def _is_alphabet_atom(x, alpha_map):
+    """Scalar string present in the resolved alphabet."""
+    return isinstance(x, str) and x in alpha_map
+
+
+def _peel_modifier(node):
+    """Peel a unary NOT for polarity. ['NOT', c] -> ('-', c) ; else ('+', node)."""
+    if _is_not_wrapper(node):
+        return "-", node[1]
+    return "+", node
+
+
+def _coocc_key(members, ordered):
+    """Build the cooccurrence join key from a clause's literal members.
+    Unordered (boolean) -> canonicalized by (atom_index, polarity); ordered
+    (strategy) -> source order preserved."""
+    parts = [f"{m['polarity']}{m['atom_label']}" for m in members]
+    if not ordered:
+        parts = sorted(parts)
+    return "&".join(parts)
+
+
+def _walk_clauses(tree_ast, alpha_map, clause_ops, ordered, score_ref):
+    """Walk a resolved candidate AST, emitting atom_appearances (one per literal
+    member of a clause) and realized_cooccurrences (one per clause with >=2
+    members). Recurses through nested clause-op nodes."""
+    appearances, cooccurrences = [], []
+
+    def visit_clause(node, depth, node_ref):
+        """node is known to be a clause-op node. Collect its direct children,
+        classify each, recurse into nested clauses, emit records for this clause."""
+        op = node[0]
+        members = []          # literal members of THIS clause
+        has_nested = False    # did this clause contain a nested sub-clause?
+        for ci, child in enumerate(node[1:]):
+            child_ref = f"{node_ref}.{ci}"
+            polarity, peeled = _peel_modifier(child)
+            if _is_clause_op(peeled, clause_ops):
+                has_nested = True
+                visit_clause(peeled, depth + 1, child_ref)
+            elif _is_alphabet_atom(peeled, alpha_map):
+                info = alpha_map[peeled]
+                members.append({"atom_index": info["index"], "atom_label": peeled,
+                                "polarity": polarity, "_node_ref": child_ref})
+            # constants / unknowns are skipped
+        # `clause_adjacent` is per-clause: true iff a sibling was a sub-clause.
+        for m in members:
+            appearances.append({
+                "atom_index": m["atom_index"], "atom_label": m["atom_label"],
+                "polarity": m["polarity"], "score_ref": score_ref,
+                "clause_type": op, "parent_operator": op,
+                "depth": depth, "node_ref": m["_node_ref"],
+                "clause_adjacent": has_nested,
+            })
+        if len(members) >= 2:
+            mem_out = [{"atom_index": m["atom_index"], "atom_label": m["atom_label"],
+                        "polarity": m["polarity"]} for m in members]
+            cooccurrences.append({
+                "members": mem_out, "key": _coocc_key(members, ordered),
+                "score_ref": score_ref, "clause_type": op, "parent_operator": op,
+                "depth": depth, "node_ref": node_ref,
+                "clause_adjacent": has_nested,
+            })
+
+    # The root may itself be a clause-op node, or a bare literal / constant.
+    if _is_clause_op(tree_ast, clause_ops):
+        visit_clause(tree_ast, 0, "0")
+    return appearances, cooccurrences
+
+
+def _build_atom_evidence(members, g, ptype):
+    """Drive the walk over the retained metapop members for generation g and
+    update the run-scoped cumulative accumulator."""
+    clause_ops, ordered = _CLAUSE_OPS.get(ptype, ({"AND", "OR"}, False))
+    alpha_map = _atom_alphabet_map
+    appearances, cooccurrences = [], []
+    for m in members:
+        ast = m.get("tree_ast")
+        if ast is None:
+            continue
+        a, c = _walk_clauses(ast, alpha_map, clause_ops, ordered, m["program_id"])
+        appearances.extend(a)
+        cooccurrences.extend(c)
+
+    # Cumulative accumulator: per-alphabet-key totals across generations.
+    counts_this_gen = {}
+    for a in appearances:
+        key = alpha_map.get(a["atom_label"], {}).get("key")
+        if key is not None:
+            counts_this_gen[key] = counts_this_gen.get(key, 0) + 1
+    for key, cnt in counts_this_gen.items():
+        rec = _atom_cumulative.get(key)
+        if rec is None:
+            _atom_cumulative[key] = {"appearances_total": cnt,
+                                     "first_seen_gen": g, "last_seen_gen": g}
+        else:
+            rec["appearances_total"] += cnt
+            rec["last_seen_gen"] = g
+    return {
+        "atom_appearances": appearances,
+        "realized_cooccurrences": cooccurrences,
+        "atom_cumulative": {k: dict(v) for k, v in _atom_cumulative.items()},
+    }
 
 
 # ===========================================================================
@@ -384,8 +506,8 @@ def new_run():
     """Open a fresh per-run subdir. Call once at the top of each runMoses."""
     global _run_seq, _cur_state_dir, _cur_action_dir, _pending_selection, _pending_merge
     global _pending_deme_evals, _depth, _total_evals, _explored_ids, _problem_spec
-    global _last_complexity_ratio, _pending_run_params, _pending_pair_sampling
-    global _active_rep_index, _score_complexity_history
+    global _last_complexity_ratio, _pending_run_params, _score_complexity_history
+    global _atom_alphabet, _atom_alphabet_map, _atom_cumulative
     _run_seq += 1
     _cur_state_dir = os.path.join(_STATE_DIR, f"run-{_run_seq}")
     _cur_action_dir = os.path.join(_ACTION_DIR, f"run-{_run_seq}")
@@ -400,9 +522,10 @@ def new_run():
     _problem_spec = None
     _last_complexity_ratio = None
     _pending_run_params = {}
-    _pending_pair_sampling = []
-    _active_rep_index = 0
     _score_complexity_history = []
+    _atom_alphabet = None
+    _atom_alphabet_map = {}
+    _atom_cumulative = {}
     return _run_seq
 
 
@@ -425,6 +548,7 @@ def add_member(gen, expr, tree, cscore, bscore):
     _gs(gen)["members"].append({
         "program_id": _pid(raw),        # identity off the full tree
         "tree_str": tree_str,           # lossless clean AST (replaces expr + tree)
+        "tree_ast": expr,               # nested preOrder list — clause walker input (stripped on emit)
         "cscore": {
             "raw_score": cs[0], "complexity": cs[1], "complexity_penalty": cs[2],
             "uniformity_penalty": cs[3], "penalized_score": cs[4],
@@ -569,53 +693,19 @@ def set_run_param(name, value):
     return 0
 
 
-def begin_pair_sampling():
-    """Reset per-generation combination-sampling buffer. Call at expandDeme before createDeme."""
-    global _pending_pair_sampling, _active_rep_index
-    _pending_pair_sampling = []
-    _active_rep_index = 0
-    return 0
-
-
-def set_pair_sampling_rep_index(idx):
-    """Tag the active representation index during collapse (game / multi-rep boolean)."""
-    global _active_rep_index
-    _active_rep_index = _num(idx) or 0
-    return 0
-
-
-def inc_pair_sampling_rep_index():
-    """Advance rep index between boolean feature-set / rep builds."""
-    global _active_rep_index
-    _active_rep_index += 1
-    return 0
-
-
-def add_pair_sampling(op, idx_groups, picked, arg_labels):
-    """Buffer one combination-sampling menu + MOSES draw (pairs or triplets)."""
-    enumerated = _group_list_to_records(idx_groups, arg_labels)
-    picked_idx = _picked_indices(picked)
-    sampled = [enumerated[i] for i in picked_idx
-               if isinstance(i, int) and 0 <= i < len(enumerated)]
-    _pending_pair_sampling.append({
-        "rep_index": _active_rep_index,
-        "operator": _flat(op),
-        "enumerated_combinations": enumerated,
-        "sampled_indices": picked_idx,
-        "sampled_combinations": sampled,
-    })
-    return 0
-
-
 def emit_run_config():
-    """Write run_config.json preamble (static config) before evolution starts."""
+    """Write run_config.json preamble (static config) before evolution starts.
+    Resolves the static atom_alphabet here (and builds the walker's label map)."""
+    global _atom_alphabet
     ptype = _effective_problem_type(_pending_run_params.get("problem_type"))
+    _atom_alphabet = _build_atom_alphabet()
     doc = {
         "schema_version": _VERSION,
         "run_seq": _run_seq,
         "record_type": "run_config",
         "timestamp_ms": int(time.time() * 1000),
         "problem_spec": _problem_spec,
+        "atom_alphabet": _atom_alphabet,
         "run_parameters": _build_run_parameters(),
         "active_levers": _ACTIVE_LEVERS.get(ptype, []),
         "comparator_hook_available": True,
@@ -664,7 +754,7 @@ def flush_terminal(gen):
     hc_max = get_hill_climb_max_evals()
     if hill_climb_max_evals is not None:
         hc_max = _num(hill_climb_max_evals) or hc_max
-    members_out = [{**m, "explored": m["program_id"] in _explored_ids} for m in members]
+    members_out = [_member_out(m) for m in members]
     doc = {
         "schema_version": _VERSION, "run_seq": _run_seq, "record_type": "terminal",
         "timestamp_ms": int(time.time() * 1000),
@@ -692,7 +782,7 @@ def flush_terminal(gen):
 def flush_gen(gen):
     """v0.5: per-step state is dynamic-only; static config lives in run_config.json."""
     global _pending_selection, _pending_merge, _pending_deme_evals, _depth
-    global _total_evals, _explored_ids, _pending_pair_sampling, _last_complexity_ratio
+    global _total_evals, _explored_ids, _last_complexity_ratio
     g = _num(gen)
     ptype = _effective_problem_type(_pending_run_params.get("problem_type"))
     s = _gs(g)
@@ -728,12 +818,6 @@ def flush_gen(gen):
         "culled": sorted(cur_ids - post_ids),
     }
 
-    pair_events = list(_pending_pair_sampling)
-    _pending_pair_sampling = []
-    pair_by_rep = {}
-    for ev in pair_events:
-        pair_by_rep.setdefault(ev["rep_index"], []).append(ev)
-
     demes, evals_gen = [], 0
     for i, did in enumerate(s["deme_order"]):
         d = s["demes"][did]
@@ -744,16 +828,11 @@ def flush_gen(gen):
                   if isinstance(k["multiplicity"], (int, float)))
         ev = d["evaluations"] if d["evaluations"] is not None else (_num(d["instances"]) or 0)
         evals_gen += ev or 0
-        rep_sampled = []
-        for pe in pair_by_rep.get(i, []):
-            rep_sampled.extend(pe["sampled_combinations"])
         demes.append({
             "deme_id": did, "exemplar_program_id": selected_id,
             "exemplar_expr": d["deme_tree"],
             "knobs": d["knobs"], "knob_count": len(d["knobs"]),
             "knob_type_breakdown": kb,
-            "sampled_pair_count": (kb["logical"] if ptype == "boolean" else None),
-            "sampled_combinations": rep_sampled if rep_sampled else None,
             "neighborhood_size": nbh,
             "instances_evaluated": d["instances"],
             "hill_climb_evaluations": d["evaluations"],
@@ -788,7 +867,7 @@ def flush_gen(gen):
                 break
     _last_complexity_ratio = cratio
 
-    members_out = [{**m, "explored": m["program_id"] in _explored_ids} for m in members]
+    members_out = [_member_out(m) for m in members]
 
     post_selection_evt = None
     if selection_status != "no_selection":
@@ -807,6 +886,14 @@ def flush_gen(gen):
 
     score_vs_complexity_trend = _compute_score_vs_complexity_trend(members, g)
 
+    # Atom evidence is best-effort emission metadata; malformed trees must not
+    # interrupt search or generation output.
+    try:
+        atom_evidence = _build_atom_evidence(members, g, ptype)
+    except Exception:  # pragma: no cover - defensive only
+        atom_evidence = {"atom_appearances": [], "realized_cooccurrences": [],
+                         "atom_cumulative": {}}
+
     state_doc = {
         "schema_version": _VERSION, "run_seq": _run_seq, "generation": g,
         "problem_type": ptype,
@@ -822,15 +909,8 @@ def flush_gen(gen):
         "lineage_diff": lineage_diff,
         "moses_native_events": {"post_selection": post_selection_evt},
         "score_vs_complexity_trend": score_vs_complexity_trend,
+        "atom_evidence": atom_evidence,
     }
-
-    pair_menus = None
-    if pair_events:
-        pair_menus = [
-            {"rep_index": ev["rep_index"], "operator": ev["operator"],
-             "enumerated_combinations": ev["enumerated_combinations"]}
-            for ev in pair_events
-        ]
 
     action_doc = {
         "schema_version": _VERSION, "run_seq": _run_seq, "generation": g,
@@ -844,7 +924,6 @@ def flush_gen(gen):
             for m in members
         ],
         "culling_candidates": cull_cands if cull_cands else [],
-        "pair_sampling_candidates": pair_menus,
         "complexity_ratio": {
             "current_value": cratio,
             "options": ([cratio] if cratio is not None else []),

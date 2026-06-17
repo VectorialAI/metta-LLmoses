@@ -2,10 +2,10 @@
 ;; llmoses/representation/sample-logical-perms.metta
 ;;
 ;; Drop-in replacement for representation/sample-logical-perms.metta — do NOT
-;; import the upstream file. Adds combination-sampling emission hooks after
-;; lazyRandomSelector (pairs on boolean, triplets on strategy).
-;; Helpers genPairs / genTriplet / getArgs / getMoveArgs are inlined here so
-;; no upstream import is needed.
+;; import the upstream file. Sampling evidence is emitted after merge by
+;; state_builder.py, so lazyRandomSelector and the samplers run untouched here.
+;; Helpers genPairs / genTriplet / getArgs / getMoveArgs are inlined here so no
+;; upstream import is needed.
 ;; ============================================================================
 
 ;; --- inlined helpers from representation/sample-logical-perms ---
@@ -59,7 +59,7 @@
         ($op $move1 $move2 $move3)
     ))
 
-;; --- overlay definitions (add emitPairSampling hooks) ---
+;; --- overlay definitions ---
 
 (= (sampleLogicalPerms $op $arity $argLabels)
     (let*
@@ -72,7 +72,6 @@
                 (let $arg (car-atom $argLabels) ($arg (NOT $arg)))
                 (let* (($upperbound (- (* $arity (- $arity 1)) 1))
                         ($picked (lazyRandomSelector 0 $upperbound $nPairs))
-                        ($_ (collapse (eval (emitPairSampling $op $idxPairs $picked $argLabels))))
                         ($perms (collapse (getArgs $swapedOp $idxPairs $picked $argLabels))))
                    (concatT $argLabels $perms)))))
 
@@ -89,7 +88,6 @@
                 (
                     ($upperbound (- (length $idxPairs) 1))
                     ($picked (lazyRandomSelector 0 $upperbound $nPairs))
-                    ($_ (collapse (eval (emitPairSampling $op $idxPairs $picked $moveLabels))))
                     ($perms (collapse (getMoveArgs $op $idxPairs $picked $moveLabels)))
                 )
                    $perms

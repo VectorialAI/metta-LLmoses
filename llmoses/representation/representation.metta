@@ -2,8 +2,9 @@
 ;; llmoses/representation/representation.metta
 ;;
 ;; Drop-in replacement for representation/representation.metta — do NOT import
-;; the upstream file. Tags rep-index during representation build so pair-sampling
-;; events align with deme order.
+;; the upstream file. Carries the boolean/strategy representation overrides
+;; used by llmoses. Pair-sampling evidence is emitted after merge by
+;; state_builder.py, outside this knob-building path.
 ;; buildKnobs / featureSelector / sampleEnforcedFts etc. come from earlier
 ;; imports in the load order; only the five non-overridden helpers from the
 ;; upstream surface are copied here.
@@ -92,7 +93,7 @@
    )
 )
 
-;; --- overlay definitions (add sbSetPairSamplingRepIndex / sbIncPairSamplingRepIndex hooks) ---
+;; --- overlay definitions ---
 
 ;; Game strategy path: one rep per deme index from collapse superpose.
 (= (representation $exemplar $nDeme)
@@ -101,7 +102,6 @@
       ($result (collapse (let $x (superpose $demeCount)
          (let*
             (
-               ($_ (eval (sbSetPairSamplingRepIndex $x)))
                (($updatedTree $dscMp) (buildKnobs $exemplar NilMMap ()))
                ($dscKbMp (crtDiscKnobMap (mkDscMp $dscMp) (mkDscKbMp NilMap) 0))
                ($rep (mkRep (mkKbMap $dscKbMp (mkDscMp $dscMp)) $updatedTree))
@@ -151,6 +151,5 @@
                            (let* (
                                     (($updatedTree $dscMp) (buildKnobs $xmplr NilMMap $argLabels))
                                     ($dscKbMp (crtDiscKnobMap (mkDscMp $dscMp) (mkDscKbMp NilMap) 0))
-                                    ($rep (mkRep (mkKbMap $dscKbMp (mkDscMp $dscMp)) $updatedTree))
-                                    ($_ (eval (sbIncPairSamplingRepIndex))))
+                                    ($rep (mkRep (mkKbMap $dscKbMp (mkDscMp $dscMp)) $updatedTree)))
                                  $rep))))
