@@ -9,7 +9,9 @@
 !(import! &self moses/demo-problems)
 
 ;; Demo keys -> problem table constructors (atoms; invoked as ($problem) at run time).
-(= (demoProblem $key)
+;; Use llmoses-specific names so the upstream demoProblem/runDemoProblem
+;; definitions imported above cannot be selected nondeterministically.
+(= (llDemoProblem $key)
    (case $key
      ((pa     parity3)
       (dj     disjunction3)
@@ -18,7 +20,7 @@
       (cp     parity4)
       (annCp  parity4))))
 
-(= (runDemoProblem $seed $maxGen $nDeme $fsAlgo $problem)
+(= (llRunDemoProblem $seed $maxGen $nDeme $fsAlgo $problem)
    (let*
       (
         ($srp (py-call (random.seed $seed)))

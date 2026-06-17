@@ -72,7 +72,7 @@
                 (let $arg (car-atom $argLabels) ($arg (NOT $arg)))
                 (let* (($upperbound (- (* $arity (- $arity 1)) 1))
                         ($picked (lazyRandomSelector 0 $upperbound $nPairs))
-                        ;; ($_ (eval (emitPairSampling $op $idxPairs $picked $argLabels)))
+                        ($_ (collapse (eval (emitPairSampling $op $idxPairs $picked $argLabels))))
                         ($perms (collapse (getArgs $swapedOp $idxPairs $picked $argLabels))))
                    (concatT $argLabels $perms)))))
 
@@ -89,7 +89,7 @@
                 (
                     ($upperbound (- (length $idxPairs) 1))
                     ($picked (lazyRandomSelector 0 $upperbound $nPairs))
-                    ;; ($_ (eval (emitPairSampling $op $idxPairs $picked $moveLabels)))
+                    ($_ (collapse (eval (emitPairSampling $op $idxPairs $picked $moveLabels))))
                     ($perms (collapse (getMoveArgs $op $idxPairs $picked $moveLabels)))
                 )
                    $perms

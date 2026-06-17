@@ -7,17 +7,18 @@ logs/
 .DS_Store
 
 # ── Containerisation setup (branch-local, not merged to main) ──────────────
-#Dockerfile
-#.dockerignore
-#run_moses_demo.sh
-#run_boolean_smoke_test.sh
-#run_strategy_smoke_test.sh
-#Makefile
-#llmoses-tests
-#llmoses-tests/*
-#llmoses/llmoses-tests/*
-#llmoses/temp
-#llmoses/temp/*
+Dockerfile
+.dockerignore
+run_moses_demo.sh
+run_boolean_smoke_test.sh
+run_strategy_smoke_test.sh
+Makefile
+llmoses-tests
+llmoses-tests/*
+llmoses/llmoses-tests/*
+llmoses/temp
+llmoses/temp/*
+llmoses/readme.md
 
 # Container outputs – host-bound volume; runtime artefacts, not committed.
 # The outputs/ directory and logs/ subdirectory are kept in tree via .gitkeep;

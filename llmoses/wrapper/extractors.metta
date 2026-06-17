@@ -12,11 +12,13 @@
    ( (getScore $cs) (getComp $cs) (getCompPen $cs) (getUniPen $cs) (getPenScore $cs) ))
 
 ;; --- MEMBER (exemplar) via native getters -----------------------------------
-(= (memberExpr   $x) (preOrder (getExemplarTree $x)))   ; -> SHORT display (preOrder; lossy)
-(= (memberTree   $x) (getExemplarTree $x))              ; -> FULL raw tree (for stable program_id)
-(= (memberCscore $x) (getExemplarCscore $x))            ; -> Cscore
-(= (memberPen    $x) (getExemplarPenScore $x))          ; -> Number (native)
-(= (memberBScore $x) (getExemplarBScore $x))            ; -> (mkBScore $list); Python unwraps
+(= (memberExpr $x)
+   (let* (($tree (eval (getExemplarTree $x))))
+     (preOrder $tree)))                                  ; -> SHORT display (preOrder; lossy)
+(= (memberTree   $x) (eval (getExemplarTree $x)))        ; -> FULL raw tree (for stable program_id)
+(= (memberCscore $x) (eval (getExemplarCscore $x)))      ; -> Cscore
+(= (memberPen    $x) (eval (getExemplarPenScore $x)))    ; -> Number (native)
+(= (memberBScore $x) (eval (getExemplarBScore $x)))      ; -> (mkBScore $list); Python unwraps
 (= (memberFields $x) ( (memberExpr $x) (cscoreFields (memberCscore $x)) ))
 
 ;; --- METAPOP traversal: confirmed native primitives -------------------------
