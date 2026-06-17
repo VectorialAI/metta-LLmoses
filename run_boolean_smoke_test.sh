@@ -22,8 +22,8 @@ STATE_TEST_REL="llmoses/llmoses-tests/boolean_state_test.metta"
 PRESSURE_TEST_REL="llmoses/llmoses-tests/boolean_pressure_test.metta"
 EXPAND_CI_REL="llmoses/llmoses-tests/expand-demes-test.metta"
 SIMILARITY_REL="llmoses/llmoses-tests/similarity-scorers-test.metta"
-FS_SMD_REL="llmoses/llmoses-tests/fs-probe.metta"
-FS_PORT_REL="feature-selection/tests/fs-port-harness.metta"
+FS_SMD_REL="llmoses/llmoses-tests/feature-selection-smoke-test.metta"
+FS_PORT_REL="feature-selection/tests/smd-test.metta"
 RUN_ID_OVERRIDE=""
 LOGDIR_OVERRIDE=""
 
@@ -71,8 +71,8 @@ METTA_CASES=(
   "merge-cull-pressure:pressure:state"
   "expand-ci:smoke:expand-ci"
   "similarity-scorers:smoke:file:llmoses/llmoses-tests/similarity-scorers-test.metta"
-  "fs-smd:pressure:file:llmoses/llmoses-tests/fs-probe.metta"
-  "fs-port:pressure:file:feature-selection/tests/fs-port-harness.metta"
+  "fs-smd:pressure:file:llmoses/llmoses-tests/feature-selection-smoke-test.metta"
+  "fs-port:pressure:file:feature-selection/tests/smd-test.metta"
   "parity3:pressure:pressure"
   "crep-smd:pressure:pressure"
 )
@@ -408,11 +408,16 @@ if ps.get("problem_type") != "boolean":
     fail("run_config problem_spec not boolean")
 if not ps.get("input_labels"):
     fail("missing boolean input_labels in run_config")
+alphabet = rc.get("atom_alphabet", {})
+if alphabet.get("prefix") != "feature":
+    fail("run_config atom_alphabet prefix not feature")
+if not alphabet.get("atoms"):
+    fail("missing atom_alphabet atoms in run_config")
 rp = rc.get("run_parameters", {})
 if rp.get("problem_type") != "boolean":
     fail("run_config run_parameters.problem_type not boolean")
 levers = rc.get("active_levers", [])
-for need in ("exemplar_selection", "culling", "pair_sampling", "complexity_ratio", "comparator_hook"):
+for need in ("exemplar_selection", "culling", "atom_evidence", "complexity_ratio", "comparator_hook"):
     if need not in levers:
         fail(f"missing active_lever {need} in run_config")
 
@@ -430,6 +435,12 @@ for g in range(1, expected_gens + 1):
             fail(f"static key {static_key} must not appear in per-step state step-{g}")
     if s.get("score_vs_complexity_trend") is None:
         fail(f"missing score_vs_complexity_trend in state step-{g}")
+    ae = s.get("atom_evidence")
+    if not isinstance(ae, dict):
+        fail(f"missing atom_evidence in state step-{g}")
+    for key in ("atom_appearances", "realized_cooccurrences", "atom_cumulative", "degenerate_summary"):
+        if key not in ae:
+            fail(f"missing atom_evidence.{key} in state step-{g}")
     demes = s.get("demes", [])
     if len(demes) < expected_demes:
         fail(f"expected at least {expected_demes} demes in step-{g}, got {len(demes)}")
@@ -438,8 +449,6 @@ for g in range(1, expected_gens + 1):
         kb = d.get("knob_type_breakdown", {})
         if kb.get("strategy", 0) != 0:
             fail(f"strategy knobs present in boolean deme step-{g}")
-        if d.get("sampled_pair_count") is None:
-            fail(f"sampled_pair_count should be set for boolean step-{g}")
         for k in d.get("knobs", []):
             if k.get("kind") == "logical":
                 saw_logical = True
@@ -447,8 +456,6 @@ for g in range(1, expected_gens + 1):
         fail(f"no logical knobs found in step-{g}")
     if not a.get("exemplar_candidates"):
         fail(f"no action exemplar_candidates in step-{g}")
-    if not a.get("pair_sampling_candidates"):
-        fail(f"missing pair_sampling_candidates in action step-{g}")
 
 terminal = state_dir / "terminal.json"
 if not terminal.exists(): fail(f"missing terminal {terminal}")
@@ -474,7 +481,7 @@ archive_state_case() {
   cp -a "$state_run"/. "$state_case"/
   cp -a "$action_run"/. "$action_case"/
   find "$RUN_DIR/ready" -maxdepth 1 -type f -name 'run-*-step-*' -exec cp -a {} "$ready_case"/ \; 2>/dev/null || true
-  validate_case_json "$case_name" "$expected_gens" "$expected_demes"
+  validate_case_json "$case_name" "$expected_gens" "$expected_demes" || return $?
   rm -rf "$state_run" "$action_run"
   find "$RUN_DIR/ready" -maxdepth 1 -type f -name 'run-*-step-*' -delete 2>/dev/null || true
 }

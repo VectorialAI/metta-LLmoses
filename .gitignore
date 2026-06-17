@@ -31,6 +31,12 @@ outputs/logs/*
 llmoses/outputs/*
 !llmoses/outputs/.gitkeep
 
+# Auto-generated harness drivers.
+llmoses/llmoses-tests/_boolean_*.metta
+llmoses/llmoses-tests/_strategy_*.metta
+llmoses/llmoses-tests/_moses_demo_*.metta
+llmoses/llmoses-tests/_regression_metta_*.metta
+
 myTest.metta
 todo
 tree-helper-registration-test.metta
