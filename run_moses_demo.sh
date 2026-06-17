@@ -64,8 +64,6 @@ RUN_SH="$(command -v run.sh 2>/dev/null || true)"
 LOGDIR="${LOGDIR_OVERRIDE:-$REPO/llmoses/outputs/logs}"
 mkdir -p "$LOGDIR"
 STAMP="$(date +%Y%m%d-%H%M%S)"
-DEMO_KEYS=(pa dj maj mux cp ann-cp)
-
 run_traced() {
     local stem="$1"; shift
     [[ "${1:-}" == "--" ]] && shift
@@ -104,7 +102,7 @@ run_traced() {
     return "$rc"
 }
 
-DEMO_KEYS=(pa dj maj mux cp ann-cp ttt)
+DEMO_KEYS=(pa dj maj mux cp ann-cp ttt ttt-mm)
 
 is_strategy_demo() {
     case "$1" in ttt|tictactoe|ttt-mm) return 0 ;; *) return 1 ;; esac
