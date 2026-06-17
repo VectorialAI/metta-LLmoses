@@ -1,4 +1,4 @@
-;; LLMOSES feature-selection pressure test — FS = smd, nDeme = 3.
+;; LLMOSES feature-selection smoke test — FS = smd, nDeme = 3.
 ;; Purpose: confirm that first/first-from-pair/second-from-pair are in scope,
 ;;          stochasticMaxDependency runs clean, and jaccardIndex fires correctly
 ;;          through the real rankFtSet → rankIterator path.
@@ -6,8 +6,6 @@
 ;; Run via:   ./run_boolean_smoke_test.sh metta fs-smd
 ;;
 ;; Reading the results:
-;;   • JDBG lines show the $last-ft / $current-ft values reaching jaccardIndex.
-;;     If either is an unreduced atom the FS accessor chain is broken.
 ;;   • Any assertEqual that prints FAILED identifies the broken layer.
 
 !(import! &self utilities/general-helpers)
@@ -26,7 +24,7 @@
 
 !(import! &self feature-selection/feature-selection-helpers)
 !(import! &self llmoses/feature-selection/similarity-scorers)       ;; LLMOSES fork: union-free jaccardIndex
-!(import! &self llmoses/feature-selection/select-top-features)      ;; LLMOSES fork: JDBG print in rankIterator
+!(import! &self llmoses/feature-selection/select-top-features)
 !(import! &self feature-selection/simple)
 !(import! &self feature-selection/smd)
 !(import! &self feature-selection/incremental)
@@ -63,7 +61,6 @@
 
 ;; ── Layer 3: selectTopFts with ja scorer and nDeme = 3 ──────────────────────
 ;; Pre-computed smd-style input: 3 feature sets with scores.
-;; JDBG lines from rankIterator will appear in the output — that is expected.
 !(assertEqual
     (let $res (selectTopFts (fsp-table) 2 -1 False ja
                   ((1 (0 2)) (0.4 (3 1)) (0.3 (1 2 3)))

@@ -1,10 +1,5 @@
 ;; LLMOSES fork of feature-selection/select-top-features.metta.
 ;; Import this INSTEAD of the base file.
-;;
-;; Changes vs. base:
-;;   * Debug print immediately before jaccardIndex call in rankIterator
-;;     (binding name $_jdbg — $_ collapses in PeTTa, distinct name is required).
-;;     Remove the $_jdbg line once the FS path is confirmed clean.
 
 ;; select top features -- based on value of diversity pressure parameter
 ;;          $ft-set         -- feature set from feature selection algos
@@ -44,7 +39,6 @@
                     ($last-ft-set (car-atom $acc))
                     ($last-cscore (first-from-pair $last-ft-set))
                     ($last-ft (second $last-ft-set))
-                    ($_jdbg (println! (JDBG last= $last-ft current= $current-ft)))   ;; DEBUG — remove after
                     ($sim (if (== $sim-scorer ja)
                                 (jaccardIndex $last-ft $current-ft)
                                 (mi $current-ft $last-ft $div-interaction (mkITable $table $labels))))

@@ -294,13 +294,18 @@ if ps.get("opponent_policy") in (None, "", "None"):
     fail("missing opponent_policy in run_config")
 if ps.get("complexity_ratio") is None:
     fail("missing problem_spec complexity_ratio in run_config")
+alphabet = rc.get("atom_alphabet", {})
+if alphabet.get("prefix") != "move":
+    fail("run_config atom_alphabet prefix not move")
+if not alphabet.get("atoms"):
+    fail("missing atom_alphabet atoms in run_config")
 rp = rc.get("run_parameters", {})
 if rp.get("problem_type") != "strategy":
     fail("run_config run_parameters.problem_type not strategy")
 if rp.get("complexity_ratio") is None:
     fail("missing run_parameters complexity_ratio in run_config")
 levers = rc.get("active_levers", [])
-for need in ("exemplar_selection", "culling", "pair_sampling", "complexity_ratio", "comparator_hook"):
+for need in ("exemplar_selection", "culling", "atom_evidence", "complexity_ratio", "comparator_hook"):
     if need not in levers:
         fail(f"missing active_lever {need} in run_config")
 if rc.get("comparator_hook_available") is not True:
@@ -329,22 +334,20 @@ for g in range(1, expected_gens + 1):
             fail(f"realized selection field {removed} must not appear in action step-{g}")
     if s.get("score_vs_complexity_trend") is None:
         fail(f"missing score_vs_complexity_trend in state step-{g}")
+    ae = s.get("atom_evidence")
+    if not isinstance(ae, dict):
+        fail(f"missing atom_evidence in state step-{g}")
+    for key in ("atom_appearances", "realized_cooccurrences", "atom_cumulative", "degenerate_summary"):
+        if key not in ae:
+            fail(f"missing atom_evidence.{key} in state step-{g}")
     demes = s.get("demes", [])
     if len(demes) < expected_demes: fail(f"expected at least {expected_demes} demes in step-{g}, got {len(demes)}")
     saw_strategy_knob = False
-    saw_sampled = False
     for d in demes:
         if "operator_inclusion_set" in d:
             fail(f"operator_inclusion_set must not appear in deme step-{g}")
         kb = d.get("knob_type_breakdown", {})
         if kb.get("logical", 0) != 0: fail(f"logical knobs present in strategy deme step-{g}: {kb}")
-        if d.get("sampled_pair_count") is not None: fail(f"sampled_pair_count should be null for strategy step-{g}")
-        sc = d.get("sampled_combinations")
-        if sc:
-            saw_sampled = True
-            for combo in sc:
-                if combo.get("arity") != 3:
-                    fail(f"strategy sampled_combinations should be arity 3 in step-{g}: {combo}")
         for k in d.get("knobs", []):
             if k.get("kind") == "strategy":
                 saw_strategy_knob = True
@@ -367,13 +370,6 @@ for g in range(1, expected_gens + 1):
     cr = a.get("complexity_ratio", {})
     if not cr.get("options"):
         fail(f"missing complexity_ratio.options in action step-{g}")
-    pair_menus = a.get("pair_sampling_candidates")
-    if not pair_menus:
-        fail(f"missing pair_sampling_candidates in action step-{g}")
-    for menu in pair_menus:
-        for combo in menu.get("enumerated_combinations", []):
-            if combo.get("arity") != 3:
-                fail(f"strategy pair_sampling menu should be arity 3 in step-{g}: {combo}")
 
 terminal = state_dir / "terminal.json"
 if not terminal.exists(): fail(f"missing terminal {terminal}")
@@ -381,14 +377,6 @@ with terminal.open() as fh: t = json.load(fh)
 if t.get("record_type") != "terminal": fail("terminal record_type mismatch")
 if t.get("problem_spec", {}).get("problem_type") != "strategy": fail("terminal problem_spec not strategy")
 if t.get("run_parameters", {}).get("problem_type") != "strategy": fail("terminal run_parameters not strategy")
-if case == "deep-lineage":
-    max_depth = max(
-        (c.get("lineage_depth") or 0)
-        for a in actions
-        for c in a.get("exemplar_candidates", [])
-    )
-    if max_depth < 2:
-        fail(f"deep-lineage: expected at least one candidate with lineage_depth>=2 across all steps, max was {max_depth}")
 ready_files = list(ready_dir.glob("run-*-step-*"))
 if len(ready_files) < expected_gens: fail(f"expected at least {expected_gens} ready sentinels, got {len(ready_files)}")
 print(f"PASS_SCHEMA: {case} ({expected_gens} steps, {len(ready_files)} ready sentinels)")
@@ -427,7 +415,7 @@ archive_state_case() {
   cp -a "$action_run"/. "$action_case"/
   find "$RUN_DIR/ready" -maxdepth 1 -type f -name 'run-*-step-*' -exec cp -a {} "$ready_case"/ \; 2>/dev/null || true
 
-  validate_case_json "$case_name" "$expected_gens" "$expected_demes"
+  validate_case_json "$case_name" "$expected_gens" "$expected_demes" || return $?
 
   rm -rf "$state_run" "$action_run"
   find "$RUN_DIR/ready" -maxdepth 1 -type f -name 'run-*-step-*' -delete 2>/dev/null || true

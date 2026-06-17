@@ -42,29 +42,3 @@ run: $(OUTPUTS_HOST)/logs $(OUTPUTS_HOST)/states
 	docker run --rm \
 		-v "$(OUTPUTS_HOST):$(OUTPUTS_CNT)" \
 		$(IMAGE)
-
-# Run the member-loop-only integration check.
-# After completion, inspect the decisive output:
-#   llmoses/outputs/runs/<RUN_ID>/state/run-1/step-1.json
-# Member B's bscore must read [0.0, 1.0, 0.0, 1.0].
-test-member: $(OUTPUTS_HOST)/logs $(OUTPUTS_HOST)/states
-	docker run --rm \
-		-v "$(OUTPUTS_HOST):$(OUTPUTS_CNT)" \
-		$(IMAGE) \
-		bash -c 'cd $(WORKDIR) && run.sh llmoses/llmoses-tests/member-only-test.metta -s; \
-		         echo "--- latest run dir ---"; \
-		         latest=$$(ls -1dt $(OUTPUTS_CNT)/runs/*/ 2>/dev/null | head -1); \
-		         echo "$$latest"; \
-		         echo "--- member B bscore (expect [0.0,1.0,0.0,1.0]) ---"; \
-		         cat "$$latest/state/run-1/step-1.json" 2>/dev/null \
-		           | python3 -c "import sys,json; d=json.load(sys.stdin); \
-		             [print(m[\"program_id\"],m[\"bscore\"]) for m in d[\"metapopulation\"][\"members\"]]" \
-		           || echo "(step-1.json not found — run may have failed)"'
-
-# Probe how OS.length reduces (and whether arithmetic/if-guard reduce at all)
-# in exactly the same scope as the member loop. Read P1-P7 in the printed output.
-probe-os-length: $(OUTPUTS_HOST)/logs $(OUTPUTS_HOST)/states
-	docker run --rm \
-		-v "$(OUTPUTS_HOST):$(OUTPUTS_CNT)" \
-		$(IMAGE) \
-		bash -c 'cd $(WORKDIR) && run.sh llmoses/llmoses-tests/os-length-probe.metta -s'

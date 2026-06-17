@@ -28,9 +28,9 @@ _VERSION = "0.5-mvp"
 
 # Per problem_type: which action-space levers are live (agent should not score inactive dims).
 _ACTIVE_LEVERS = {
-    "boolean": ["exemplar_selection", "culling", "pair_sampling",
+    "boolean": ["exemplar_selection", "culling", "atom_evidence",
                 "complexity_ratio", "comparator_hook"],
-    "strategy": ["exemplar_selection", "culling", "pair_sampling",
+    "strategy": ["exemplar_selection", "culling", "atom_evidence",
                  "complexity_ratio", "comparator_hook"],
 }
 
