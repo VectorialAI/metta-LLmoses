@@ -345,13 +345,24 @@ def _write_json(path, doc):
 # This keeps sampling evidence out of the MeTTa knob-building hot path.
 # ===========================================================================
 
-# Clause-op set + ordered flag per problem_type. Boolean AND/OR are commutative
-# (cooccurrences canonicalized); strategy PRIORITIZED-OR is ordered (source
-# order preserved, since priority position is semantically meaningful).
-_CLAUSE_OPS = {
-    "boolean":  ({"AND", "OR"}, False),
-    "strategy": ({"PRIORITIZED-OR"}, True),
+# One problem_type-keyed config drives THREE coupled choices so they can't
+# desync: the clause-op set, the ordered flag (which governs both dedupe rule
+# and key canonicalization), and whether contradictions are meaningful.
+#   boolean  : AND/OR commutative -> set-dedupe, sorted keys, contradictions real
+#   strategy : PRIORITIZED-OR ordered -> order-preserving dedupe, preserved keys,
+#              no contradiction concept (no negation in the move algebra)
+_PROBLEM_CONFIG = {
+    "boolean":  {"ops": {"AND", "OR"},        "ordered": False, "contradiction": True},
+    "strategy": {"ops": {"PRIORITIZED-OR"},   "ordered": True,  "contradiction": False},
 }
+_DEFAULT_CONFIG = {"ops": {"AND", "OR"}, "ordered": False, "contradiction": True}
+
+# Lossless debug: when LLMOSES_ATOM_LOSSLESS is truthy, also write the raw
+# per-event appearance/cooccurrence lists to a SEPARATE side-file per gen
+# (atom_lossless-<g>.json), so aggregated-vs-raw can be diffed during validation
+# without bloating the main state doc. Default off.
+_ATOM_LOSSLESS = os.environ.get("LLMOSES_ATOM_LOSSLESS", "").strip().lower() in (
+    "1", "true", "yes", "on")
 
 
 def _build_atom_alphabet():
@@ -402,84 +413,197 @@ def _peel_modifier(node):
     return "+", node
 
 
-def _coocc_key(members, ordered):
-    """Build the cooccurrence join key from a clause's literal members.
-    Unordered (boolean) -> canonicalized by (atom_index, polarity); ordered
-    (strategy) -> source order preserved."""
-    parts = [f"{m['polarity']}{m['atom_label']}" for m in members]
-    if not ordered:
-        parts = sorted(parts)
-    return "&".join(parts)
+def _depth_bucket(d):
+    """Collapse exact clause depth into bounded bands (the agent levers on bands,
+    and raw depth shatters the keyspace). 0 -> shallow, 1-2 -> mid, 3+ -> deep."""
+    if d <= 0:
+        return "shallow"
+    if d <= 2:
+        return "mid"
+    return "deep"
 
 
-def _walk_clauses(tree_ast, alpha_map, clause_ops, ordered, score_ref):
-    """Walk a resolved candidate AST, emitting atom_appearances (one per literal
-    member of a clause) and realized_cooccurrences (one per clause with >=2
-    members). Recurses through nested clause-op nodes."""
-    appearances, cooccurrences = [], []
+def _canonical_members(members, ordered):
+    """Order a clause's distinct members for keying. Unordered (boolean) -> sort
+    by (atom_index, polarity); ordered (strategy) -> preserve source order."""
+    if ordered:
+        return list(members)
+    return sorted(members, key=lambda m: (m["atom_index"], m["polarity"]))
+
+
+def _coocc_key(members):
+    """Join key from already-ordered members: '+X1&-X2' (label-based)."""
+    return "&".join(f"{m['polarity']}{m['atom_label']}" for m in members)
+
+
+def _score_summary(scores, gen_best, eps=1e-9):
+    """Summarize a bucket's host-program penalized scores. n_best_tier counts
+    distinct hosts sitting at the generation's best_penalized_score (the "is this
+    in the current optima" signal)."""
+    vals = [s for s in scores if isinstance(s, (int, float))]
+    if not vals:
+        return {"mean_penalized": None, "best_penalized": None, "n_best_tier": 0}
+    n_best = (sum(1 for s in vals if abs(s - gen_best) <= eps)
+              if isinstance(gen_best, (int, float)) else 0)
+    return {"mean_penalized": round(sum(vals) / len(vals), 6),
+            "best_penalized": max(vals), "n_best_tier": n_best}
+
+
+def _normalize_clause(raw_members, cfg, degen):
+    """Per-clause normalization (runs after raw member collection, before any
+    counting). Returns (distinct_members, degenerate_bool).
+      - dedupe identical (atom, polarity), tallying repeats_collapsed;
+      - boolean only: flag contradiction (an atom present with both polarities),
+        tally contradiction_dropped, mark the clause degenerate.
+    Order-preserving for both (boolean re-canonicalizes at key time anyway)."""
+    distinct, seen = [], set()
+    for m in raw_members:
+        sig = (m["atom_index"], m["polarity"])
+        if sig in seen:
+            continue
+        seen.add(sig)
+        distinct.append(m)
+    degen["repeats_collapsed"] += len(raw_members) - len(distinct)
+    degenerate = False
+    if cfg["contradiction"]:
+        pols = {}
+        for m in distinct:
+            pols.setdefault(m["atom_index"], set()).add(m["polarity"])
+        if any(len(v) > 1 for v in pols.values()):
+            degenerate = True
+            degen["contradiction_dropped"] += 1
+    return distinct, degenerate
+
+
+def _walk_member(tree_ast, cfg, alpha_map, pid, pen, acc):
+    """Walk one candidate AST, feeding the appearance/cooccurrence/degenerate
+    accumulators directly (no intermediate per-event lists, except the optional
+    lossless raw lists). See _build_atom_evidence for accumulator shapes."""
+    ops, ordered = cfg["ops"], cfg["ordered"]
+    app, co, degen = acc["app"], acc["co"], acc["degen"]
 
     def visit_clause(node, depth, node_ref):
-        """node is known to be a clause-op node. Collect its direct children,
-        classify each, recurse into nested clauses, emit records for this clause."""
         op = node[0]
-        members = []          # literal members of THIS clause
-        has_nested = False    # did this clause contain a nested sub-clause?
+        raw_members, has_nested = [], False
         for ci, child in enumerate(node[1:]):
             child_ref = f"{node_ref}.{ci}"
             polarity, peeled = _peel_modifier(child)
-            if _is_clause_op(peeled, clause_ops):
+            if _is_clause_op(peeled, ops):
                 has_nested = True
                 visit_clause(peeled, depth + 1, child_ref)
             elif _is_alphabet_atom(peeled, alpha_map):
                 info = alpha_map[peeled]
-                members.append({"atom_index": info["index"], "atom_label": peeled,
-                                "polarity": polarity, "_node_ref": child_ref})
-            # constants / unknowns are skipped
-        # `clause_adjacent` is per-clause: true iff a sibling was a sub-clause.
-        for m in members:
-            appearances.append({
-                "atom_index": m["atom_index"], "atom_label": m["atom_label"],
-                "polarity": m["polarity"], "score_ref": score_ref,
-                "clause_type": op, "parent_operator": op,
-                "depth": depth, "node_ref": m["_node_ref"],
-                "clause_adjacent": has_nested,
-            })
-        if len(members) >= 2:
-            mem_out = [{"atom_index": m["atom_index"], "atom_label": m["atom_label"],
-                        "polarity": m["polarity"]} for m in members]
-            cooccurrences.append({
-                "members": mem_out, "key": _coocc_key(members, ordered),
-                "score_ref": score_ref, "clause_type": op, "parent_operator": op,
-                "depth": depth, "node_ref": node_ref,
-                "clause_adjacent": has_nested,
-            })
+                raw_members.append({"atom_index": info["index"], "atom_label": peeled,
+                                    "atom_key": info["key"], "polarity": polarity,
+                                    "node_ref": child_ref})
+        bucket = _depth_bucket(depth)
 
-    # The root may itself be a clause-op node, or a bare literal / constant.
-    if _is_clause_op(tree_ast, clause_ops):
+        # Lossless raw events: pre-normalization, mirrors the un-aggregated walk.
+        if _ATOM_LOSSLESS:
+            for m in raw_members:
+                acc["raw_app"].append({
+                    "atom_index": m["atom_index"], "atom_label": m["atom_label"],
+                    "polarity": m["polarity"], "score_ref": pid,
+                    "clause_type": op, "parent_operator": op,
+                    "depth": depth, "node_ref": m["node_ref"],
+                    "clause_adjacent": has_nested})
+            if len(raw_members) >= 2:
+                ordered_raw = _canonical_members(raw_members, ordered)
+                acc["raw_co"].append({
+                    "members": [{"atom": m["atom_key"], "polarity": m["polarity"]}
+                                for m in ordered_raw],
+                    "key": _coocc_key(ordered_raw), "score_ref": pid,
+                    "clause_type": op, "parent_operator": op,
+                    "depth": depth, "node_ref": node_ref,
+                    "clause_adjacent": has_nested})
+
+        distinct, degenerate = _normalize_clause(raw_members, cfg, degen)
+
+        # Appearances: deduped distinct members stay honest even in a degenerate
+        # clause (each atom genuinely appeared). Aggregate into bucket records.
+        for m in distinct:
+            ak = (m["atom_key"], m["polarity"], op, op, bucket)
+            b = app.get(ak)
+            if b is None:
+                b = app[ak] = {"atom": m["atom_key"], "polarity": m["polarity"],
+                               "clause_type": op, "parent_operator": op,
+                               "depth_bucket": bucket, "count": 0,
+                               "programs": {}, "clause_adjacent": 0}
+            b["count"] += 1
+            b["programs"][pid] = pen
+            if has_nested:
+                b["clause_adjacent"] += 1
+
+        # Cooccurrences: only non-degenerate clauses with >=2 distinct members.
+        if not degenerate and len(distinct) >= 2:
+            ordered_m = _canonical_members(distinct, ordered)
+            canon = _coocc_key(ordered_m)
+            ck = (canon, op)
+            c = co.get(ck)
+            if c is None:
+                c = co[ck] = {
+                    "key": canon,
+                    "members": [{"atom": m["atom_key"], "polarity": m["polarity"]}
+                                for m in ordered_m],
+                    "width": len(ordered_m), "ordered": ordered, "clause_type": op,
+                    "count": 0, "programs": {}, "depth_buckets": {}}
+            c["count"] += 1
+            c["programs"][pid] = pen
+            c["depth_buckets"][bucket] = c["depth_buckets"].get(bucket, 0) + 1
+
+    if _is_clause_op(tree_ast, ops):
         visit_clause(tree_ast, 0, "0")
-    return appearances, cooccurrences
 
 
-def _build_atom_evidence(members, g, ptype):
-    """Drive the walk over the retained metapop members for generation g and
-    update the run-scoped cumulative accumulator."""
-    clause_ops, ordered = _CLAUSE_OPS.get(ptype, ({"AND", "OR"}, False))
+def _build_atom_evidence(members, g, ptype, gen_best):
+    """Drive the normalize -> aggregate pass over the retained metapop members
+    for generation g, update the run-scoped cumulative accumulator, and finalize
+    rollup records. Returns (atom_evidence_block, lossless_block_or_None)."""
+    cfg = _PROBLEM_CONFIG.get(ptype, _DEFAULT_CONFIG)
     alpha_map = _atom_alphabet_map
-    appearances, cooccurrences = [], []
+    acc = {"app": {}, "co": {},
+           "degen": {"contradiction_dropped": 0, "repeats_collapsed": 0},
+           "raw_app": [], "raw_co": []}
     for m in members:
         ast = m.get("tree_ast")
         if ast is None:
             continue
-        a, c = _walk_clauses(ast, alpha_map, clause_ops, ordered, m["program_id"])
-        appearances.extend(a)
-        cooccurrences.extend(c)
+        pen = m.get("cscore", {}).get("penalized_score")
+        _walk_member(ast, cfg, alpha_map, m["program_id"], pen, acc)
 
-    # Cumulative accumulator: per-alphabet-key totals across generations.
+    # Finalize appearance buckets (drop per-program score duplication: emit
+    # n_programs cardinality + a score summary, never one record per host).
+    appearances = []
+    for b in acc["app"].values():
+        progs = b["programs"]
+        appearances.append({
+            "atom": b["atom"], "polarity": b["polarity"],
+            "clause_type": b["clause_type"], "parent_operator": b["parent_operator"],
+            "depth_bucket": b["depth_bucket"],
+            "count": b["count"], "n_programs": len(progs),
+            "clause_adjacent": b["clause_adjacent"],
+            "score": _score_summary(list(progs.values()), gen_best),
+        })
+    appearances.sort(key=lambda r: (r["atom"], r["polarity"], r["clause_type"],
+                                    r["depth_bucket"]))
+
+    cooccurrences = []
+    for c in acc["co"].values():
+        progs = c["programs"]
+        cooccurrences.append({
+            "key": c["key"], "members": c["members"], "width": c["width"],
+            "ordered": c["ordered"], "clause_type": c["clause_type"],
+            "count": c["count"], "n_programs": len(progs),
+            "depth_buckets": c["depth_buckets"],
+            "score": _score_summary(list(progs.values()), gen_best),
+        })
+    cooccurrences.sort(key=lambda r: (r["key"], r["clause_type"]))
+
+    # Cumulative accumulator: per-alphabet-key totals across generations, fed
+    # from the (post-dedupe) aggregated appearance counts.
     counts_this_gen = {}
-    for a in appearances:
-        key = alpha_map.get(a["atom_label"], {}).get("key")
-        if key is not None:
-            counts_this_gen[key] = counts_this_gen.get(key, 0) + 1
+    for b in acc["app"].values():
+        counts_this_gen[b["atom"]] = counts_this_gen.get(b["atom"], 0) + b["count"]
     for key, cnt in counts_this_gen.items():
         rec = _atom_cumulative.get(key)
         if rec is None:
@@ -488,11 +612,19 @@ def _build_atom_evidence(members, g, ptype):
         else:
             rec["appearances_total"] += cnt
             rec["last_seen_gen"] = g
-    return {
+
+    evidence = {
         "atom_appearances": appearances,
         "realized_cooccurrences": cooccurrences,
         "atom_cumulative": {k: dict(v) for k, v in _atom_cumulative.items()},
+        "degenerate_summary": acc["degen"],
     }
+    lossless = None
+    if _ATOM_LOSSLESS:
+        lossless = {"schema_version": _VERSION, "run_seq": _run_seq, "generation": g,
+                    "atom_appearances": acc["raw_app"],
+                    "realized_cooccurrences": acc["raw_co"]}
+    return evidence, lossless
 
 
 # ===========================================================================
@@ -887,12 +1019,16 @@ def flush_gen(gen):
     score_vs_complexity_trend = _compute_score_vs_complexity_trend(members, g)
 
     # Atom evidence is best-effort emission metadata; malformed trees must not
-    # interrupt search or generation output.
+    # interrupt search or generation output. The aggregation adds no new failure
+    # surface on the search path (settled-side only), but stays wrapped anyway.
     try:
-        atom_evidence = _build_atom_evidence(members, g, ptype)
+        atom_evidence, atom_lossless = _build_atom_evidence(members, g, ptype, best)
     except Exception:  # pragma: no cover - defensive only
         atom_evidence = {"atom_appearances": [], "realized_cooccurrences": [],
-                         "atom_cumulative": {}}
+                         "atom_cumulative": {},
+                         "degenerate_summary": {"contradiction_dropped": 0,
+                                                "repeats_collapsed": 0}}
+        atom_lossless = None
 
     state_doc = {
         "schema_version": _VERSION, "run_seq": _run_seq, "generation": g,
@@ -932,6 +1068,8 @@ def flush_gen(gen):
 
     _write_json(os.path.join(_cur_state_dir, f"step-{g}.json"), state_doc)
     _write_json(os.path.join(_cur_action_dir, f"step-{g}.json"), action_doc)
+    if atom_lossless is not None:
+        _write_json(os.path.join(_cur_state_dir, f"atom_lossless-{g}.json"), atom_lossless)
     _NFH.write(json.dumps({
         "run_seq": _run_seq, "generation": g, "size": len(members),
         "best_penalized_score": best,
