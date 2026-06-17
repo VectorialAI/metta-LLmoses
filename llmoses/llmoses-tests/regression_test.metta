@@ -9,9 +9,7 @@
 ;;
 ;; Forked imports (replace the upstream versions):
 ;;   llmoses/representation/knob-representation      (mkCSK accessors)
-;;   llmoses/moses/neighborhood-sampling             (updateInst generalization)
 ;;   llmoses/optimization/hill-climbing-helpers        (regression dispatch + epsilon)
-;;   llmoses/deme/score-deme                           (transform regression arm)
 ;; New regression modules:
 ;;   llmoses/scoring/numeric-eval, llmoses/scoring/regression-bscore,
 ;;   llmoses/representation/build-contin
@@ -74,18 +72,18 @@
 !(import! &self llmoses/representation/build-contin)
 !(import! &self llmoses/representation/create-representation)
 !(import! &self representation/instance)
+!(import! &self llmoses/wrapper/extractors)
 !(import! &self optimization/hillclimbing/cross-top-one-helpers)
 !(import! &self optimization/hillclimbing/cross-top-one)
 !(import! &self llmoses/optimization/hill-climbing-helpers)
 !(import! &self deme/create-deme)
-!(import! &self llmoses/moses/neighborhood-sampling)
+!(import! &self moses/neighborhood-sampling)
 !(import! &self metapopulation/exemplar-type)
 !(import! &self metapopulation/exemplar-selection)
 !(import! &self metapopulation/metapopulation)
 !(import! &self deme/deme-id-creation)
-!(import! &self llmoses/deme/score-deme)
+!(import! &self deme/score-deme)
 !(import! &self llmoses/deme/merge-demes)
-!(import! &self llmoses/wrapper/extractors)
 !(import! &self llmoses/wrapper/state-builder)
 !(import! &self llmoses/utilities/state-emitter)
 !(import! &self llmoses/deme/expand-deme)

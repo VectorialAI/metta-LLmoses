@@ -17,11 +17,11 @@
 ;; Game strategy representation (2 parameters)
 ;;(: createRepresentation (-> Number (Tree $a) (List Representation)))
 (= (createRepresentation $nDeme $tree)
-    (representation $tree $nDeme))
+    (eval (representation $tree $nDeme)))
 
 ;; Boolean logic representation (7 parameters)
 ;;(= (createRepresentation $nDeme $tree (mkITable $table $labels) $algo $prune-exemplar $enforced-fts $scorerType)
 ;;    (let ((mkRep (mkKbMap (mkDscKbMp $dscKbMp) (mkDscMp $dscMp)) $updatedTree)) (representation $nDeme $tree (mkITable $table $labels) $algo $prune-exemplar $enforced-fts $scorerType) ((mkRep (mkKbMap (mkDscKbMp $dscKbMp) (mkDscMp $dscMp)) $updatedTree))))
 ;; llmoses fix passes list of representations directly from representation to caller (treeNeighborhood) to avoid cohesion issues with import order and representation building procedure, which relies on some Python-side logic. The caller (treeNeighborhood) is responsible for peeling the list when FS is off and passing the single rep to repNeighborhood.
 (= (createRepresentation $nDeme $tree (mkITable $table $labels) $algo $prune-exemplar $enforced-fts $scorerType)
-    (representation $nDeme $tree (mkITable $table $labels) $algo $prune-exemplar $enforced-fts $scorerType))
+    (eval (representation $nDeme $tree (mkITable $table $labels) $algo $prune-exemplar $enforced-fts $scorerType)))

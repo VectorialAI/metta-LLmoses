@@ -145,8 +145,10 @@ state_expected_gens() {
 state_expected_demes() {
   case "$1" in
     single) echo 1 ;;
-    multigen-multideme|merge-cull-smoke|merge-cull-pressure) echo 2 ;;
-    parity3-short) echo 3 ;;
+    # These fixtures validate state/action emission, not feature-set diversity:
+    # the XOR cases have one usable feature-set, and parity3-short uses
+    # feature selection None, which builds one all-input representation.
+    multigen-multideme|merge-cull-smoke|merge-cull-pressure|parity3-short) echo 1 ;;
     *) return 1 ;;
   esac
 }
