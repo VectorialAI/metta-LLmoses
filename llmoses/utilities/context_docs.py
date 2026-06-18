@@ -2,13 +2,24 @@
 
 The canonical estimator docs live in llmoses/skills/. This module writes small
 orientation files into ignored output directories so a shadow agent can inspect
-a run in place without needing repository-wide context.
+a run in place without needing repository-wide context. The generated Markdown
+bodies live in context_doc_templates/.
 """
 import json
 import os
 import time
 
 _SCHEMA_VERSION = "0.1"
+_THIS_DIR = os.path.dirname(os.path.abspath(__file__))
+_TEMPLATE_DIR = os.path.join(_THIS_DIR, "context_doc_templates")
+
+_MOSES_EXPLANATION = "moses-explanation.md"
+_RUN_INSTRUCTIONS = "run-instructions.md"
+_STATE_ARTIFACTS = "state-artifacts.md"
+_ACTION_ARTIFACTS = "action-artifacts.md"
+_READY_ARTIFACTS = "ready-artifacts.md"
+_UTILITY_ARTIFACTS = "utility-artifacts.md"
+_TRACE_ARTIFACTS = "trace-artifacts.md"
 
 
 def _ts_ms():
@@ -42,6 +53,16 @@ def _problem_summary(problem_type, problem_spec):
         moves = problem_spec.get("moves") or []
         return "Strategy problem over moves: " + ", ".join(str(x) for x in moves)
     return "Problem type: " + str(problem_type or problem_spec.get("problem_type") or "unknown")
+
+
+def _template_text(name):
+    path = os.path.join(_TEMPLATE_DIR, name)
+    with open(path, "r", encoding="utf-8") as fh:
+        return fh.read()
+
+
+def _render_template(name, **values):
+    return _template_text(name).format_map(values)
 
 
 def ensure_output_context(llmoses_dir, run_id, run_dir, run_seq=None,
@@ -96,204 +117,39 @@ def ensure_run_context(run_dir, run_id, run_seq=None, problem_type=None,
 
 
 def _moses_explanation():
-    return """# MOSES Explanation
-
-This file is generated under `llmoses/outputs/` and is safe to delete with the
-rest of the generated outputs. The canonical estimator docs live in
-`llmoses/skills/`.
-
-MOSES searches over program trees. Each generation selects an exemplar from the
-metapopulation, expands one or more demes around that exemplar, scores generated
-candidates, and merges useful candidates back into the metapopulation.
-
-LLMOSES runs in shadow mode. It emits state and action artifacts at generation
-boundaries so an estimator can score possible intervention levers without
-mutating MOSES state.
-
-The useful loop for an estimator is:
-
-1. Read the current run pointer from `CURRENT_RUN.json`.
-2. Open the run directory and read `run-instructions.md`.
-3. Use `state/run-*/run_config.json` for static run context.
-4. Use matching `state/run-*/step-G.json` and `action/run-*/step-G.json` files as ground truth.
-5. Treat `ready/run-N-step-G` as the completion marker for generation `G`.
-
-The checked-in source docs under `llmoses/skills/` give deeper estimator context.
-"""
+    return _template_text(_MOSES_EXPLANATION)
 
 
 def _run_instructions(run_id, run_seq, problem_type, problem_spec, active_levers):
     lever_text = ", ".join(active_levers) if active_levers else "not emitted yet"
-    return f"""# Run Instructions
-
-This file is generated inside a run directory and is disposable. It exists so an
-estimator can orient itself locally; the canonical estimator docs remain in
-`llmoses/skills/` and are not copied into runs.
-
-Run id: `{run_id}`
-Current run sequence: `{run_seq if run_seq is not None else "not emitted yet"}`
-Problem: {_problem_summary(problem_type, problem_spec)}
-Active levers: {lever_text}
-
-Read order for a utility-estimation step:
-
-1. `run_meta.json`
-2. `state/run-*/run_config.json`
-3. Matching `state/run-*/step-G.json`
-4. Matching `action/run-*/step-G.json`
-5. Recent prior `step-*.json` files when trend context is useful
-6. `moses_native_log.jsonl` for native event breadcrumbs
-
-Use the JSON artifacts as ground truth. These markdown files only describe how
-to navigate and interpret the artifacts.
-
-Write two output artifacts for each processed ready sentinel:
-
-- `utilities/run-N/step-G.json`: machine-consumable UtilityResponse.
-- `traces/run-N/step-G.json`: AgentTrace transcript and audit artifact.
-
-The UtilityResponse contains only:
-
-- `pass`
-- `sampling_temperature`
-- `exemplar_utilities`
-- `pair_utilities`
-- `culling_utilities`
-- `complexity_ratio_delta`
-- `comparator_bias`
-
-Put prompt/context manifests, raw model responses, read-file lists, explicit
-audit reasoning, provider metadata, and parse/error diagnostics in AgentTrace.
-Do not rely on hidden model chain-of-thought; traces should contain only
-transcript material and explicit audit text available to the harness.
-
-Complexity-ratio direction: `increase` rewards complexity, `decrease` penalizes
-complexity, and `maintain` leaves pressure unchanged.
-"""
+    return _render_template(
+        _RUN_INSTRUCTIONS,
+        run_id=run_id,
+        run_seq_text=run_seq if run_seq is not None else "not emitted yet",
+        problem_summary=_problem_summary(problem_type, problem_spec),
+        lever_text=lever_text,
+    )
 
 
 def _state_artifacts(problem_type, problem_spec):
-    return f"""# State Artifacts
-
-This file is generated and may be deleted with its run directory. Use it as a
-local guide only; JSON artifacts are ground truth.
-
-Problem: {_problem_summary(problem_type, problem_spec)}
-
-State files are written under `state/run-N/`.
-
-- `run_config.json` contains static run parameters, problem spec, atom alphabet,
-  active levers, and comparator availability.
-- `step-G.json` is the MosesState for generation `G`.
-- `terminal.json` may appear at the end of a run for final post-merge state.
-- `atom_lossless-G.json` may appear when lossless atom/cooccurrence emission is
-  enabled.
-
-Common `step-G.json` sections:
-
-- `metapopulation`: candidate programs and scores.
-- `demes`: per-deme knobs, instance counts, and evaluation counts.
-- `merge_summary`: merge counts and culling context.
-- `lineage_diff`: selected, new, retained, and removed program ids.
-- `moses_native_events`: selected native MOSES events for this generation.
-- `score_vs_complexity_trend`: score and complexity direction over recent steps.
-- `atom_evidence`: atom appearances and realized cooccurrences.
-
-`step` means generation. Do not wait for renamed generation files; the current
-compatibility contract is `step-G.json`.
-"""
+    return _render_template(
+        _STATE_ARTIFACTS,
+        problem_summary=_problem_summary(problem_type, problem_spec),
+    )
 
 
 def _action_artifacts(active_levers):
     lever_text = ", ".join(active_levers) if active_levers else "not emitted yet"
-    return f"""# Action Artifacts
-
-This file is generated and may be deleted with its run directory. Use
-`llmoses/skills/ACTION_LEVERS.md` for the canonical action-lever guide.
-
-Action files are written under `action/run-N/` as `step-G.json`.
-
-Active levers from config: {lever_text}
-
-Current or planned action components:
-
-- `exemplar_candidates`: candidate programs available for exemplar preference.
-- `culling_candidates`: candidates exposed for retention or removal preference.
-- `complexity_ratio`: current value and complexity-pressure context.
-- `pair_sampling_candidates`: optional explicit pair or cooccurrence guidance.
-- Comparator ordering: available only when exposed by config or action files.
-
-Only estimate utilities for components that are actually present or explicitly
-exposed. If a component is absent, return an empty array or null for that part
-of the UtilityResponse.
-"""
+    return _render_template(_ACTION_ARTIFACTS, lever_text=lever_text)
 
 
 def _ready_artifacts():
-    return """# Ready Artifacts
-
-This file is generated and may be deleted with its run directory.
-
-Ready sentinels are written under `ready/` and named `run-N-step-G`.
-
-The sentinel is written after the matching state and action JSON files, so it is
-the safe trigger for an external watcher or estimator. A watcher may move
-processed sentinels into `ready/.consumed/`.
-
-For `run-N-step-G`, read:
-
-- `state/run-N/step-G.json`
-- `action/run-N/step-G.json`
-
-The watcher or live agent should write both:
-
-- `utilities/run-N/step-G.json`
-- `traces/run-N/step-G.json`
-
-Only after both files are written should a watcher move the sentinel into
-`ready/.consumed/`.
-"""
+    return _template_text(_READY_ARTIFACTS)
 
 
 def _utility_artifacts():
-    return """# Utility Artifacts
-
-This file is generated and may be deleted with its run directory. Use
-`llmoses/skills/UTILITY_RESPONSE.md` for the canonical UtilityResponse guide.
-
-Utility files are written under `utilities/run-N/` as `step-G.json`.
-
-Each file is a machine-consumable UtilityResponse. It should contain only the
-action utility fields needed by a downstream controller:
-
-- `pass`
-- `sampling_temperature`
-- `exemplar_utilities`
-- `pair_utilities`
-- `culling_utilities`
-- `complexity_ratio_delta`
-- `comparator_bias`
-
-Do not put prompt text, raw provider output, natural-language reasoning, or
-conversation transcripts in utility files. Those belong in the matching
-AgentTrace file under `traces/run-N/step-G.json`.
-"""
+    return _template_text(_UTILITY_ARTIFACTS)
 
 
 def _trace_artifacts():
-    return """# Trace Artifacts
-
-This file is generated and may be deleted with its run directory. Use
-`llmoses/skills/AGENT_TRACE.md` for the canonical AgentTrace guide.
-
-Trace files are written under `traces/run-N/` as `step-G.json`.
-
-Each file is an AgentTrace transcript and audit artifact for the matching
-UtilityResponse. It should include available prompt/context manifests, read-file
-lists, raw model responses, parsed UtilityResponse JSON, explicit audit
-reasoning, provider metadata, and parse/error diagnostics.
-
-Do not require or attempt to reconstruct hidden model chain-of-thought. Store
-only transcript material and explicit reasoning or audit notes available to the
-harness.
-"""
+    return _template_text(_TRACE_ARTIFACTS)
