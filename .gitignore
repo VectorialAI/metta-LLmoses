@@ -7,15 +7,15 @@ logs/
 .DS_Store
 
 # ── Containerisation setup (branch-local, not merged to main) ──────────────
-Dockerfile
-.dockerignore
-run_moses_demo.sh
-run_boolean_smoke_test.sh
-run_strategy_smoke_test.sh
-Makefile
-llmoses-tests
-llmoses-tests/*
-llmoses/llmoses-tests/*
+#Dockerfile
+#.dockerignore
+#run_moses_demo.sh
+#run_logical_smoke_test.sh
+#run_strategy_smoke_test.sh
+#Makefile
+#llmoses-tests
+#llmoses-tests/*
+#llmoses/llmoses-tests/*
 llmoses/temp
 llmoses/temp/*
 
@@ -36,6 +36,7 @@ llmoses/outputs/*
 !llmoses/outputs/.gitkeep
 
 # Auto-generated harness drivers.
+llmoses/llmoses-tests/_logical_*.metta
 llmoses/llmoses-tests/_boolean_*.metta
 llmoses/llmoses-tests/_strategy_*.metta
 llmoses/llmoses-tests/_moses_demo_*.metta

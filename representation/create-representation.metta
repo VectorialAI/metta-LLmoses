@@ -17,8 +17,8 @@
 ;; Game strategy representation (2 parameters)
 ;;(: createRepresentation (-> Number (Tree $a) (List Representation)))
 (= (createRepresentation $nDeme $tree)
-    (eval (representation $tree $nDeme)))
+    (representation $tree $nDeme))
 
 ;; Boolean logic representation (7 parameters)
 (= (createRepresentation $nDeme $tree (mkITable $table $labels) $algo $prune-exemplar $enforced-fts $scorerType)
-    (eval (representation $nDeme $tree (mkITable $table $labels) $algo $prune-exemplar $enforced-fts $scorerType)))
+    (let ((mkRep (mkKbMap (mkDscKbMp $dscKbMp) (mkDscMp $dscMp)) $updatedTree)) (representation $nDeme $tree (mkITable $table $labels) $algo $prune-exemplar $enforced-fts $scorerType) ((mkRep (mkKbMap (mkDscKbMp $dscKbMp) (mkDscMp $dscMp)) $updatedTree))))

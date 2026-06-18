@@ -1,20 +1,14 @@
-;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
-;;            LLMOSES – Merge Demes                  ;;
-;;                                                   ;;
-;; Fork of deme/merge-demes.metta with one change:   ;;
-;;   sbEmitCullCands is wrapped in (eval ...) so that ;;
-;;   runtime dispatch finds the definition that lives ;;
-;;   in llmoses/wrapper/state-builder.metta, which is ;;
-;;   loaded AFTER this file and would otherwise be    ;;
-;;   compiled to a no-op (true) by MeTTaLog.          ;;
-;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+;; LLMOSES merge-deme overlay.
+;; Keeps the base merge flow while adding strategy scoring support,
+;; tree-level candidate deduplication, merge counters, and cull-candidate
+;; emission through the state-builder wrapper.
 
 ;; Removes adjacent duplicate ScoredInstances from a sorted list, keeping up to $topCnd unique instances.
 ;; Params:
 ;;    (List (ScoredInstance Cscore)): Sorted list of scored instances.
 ;;    $topCnd: Maximum number of instances to keep.
 ;; Return: (List (ScoredInstance Cscore)): List with adjacent duplicates removed, limited by $topCnd.
-; (: removeDupInsts (-> (List (ScoredInstance Cscore)) Number (List (ScoredInstance Cscore))))
+;; (: removeDupInsts (-> (List (ScoredInstance Cscore)) Number (List (ScoredInstance Cscore))))
 (= (removeDupInsts $rep Nil $topCnd) Nil)
 (= (removeDupInsts $rep (Cons $x Nil) $topCnd)
    (if (> $topCnd 0) (Cons $x Nil) Nil))
@@ -26,7 +20,6 @@
               (
                 ($tr1 (getCandidate $rep (Pair.first $x)))
                 ($tr2 (getCandidate $rep (Pair.first $y)))
-                ;; ($_ (println! (Tree1: (preOrder $tr1) Tree2: (preOrder $tr2))))
               )
               (if (== $tr1 $tr2)
                   (removeDupInsts $rep (Cons (mkSInst $x) $rest) (min-atom ($topCnd $lengthOfTail)))
@@ -42,7 +35,7 @@
 ;;   $nEval: Maximum evaluations.
 ;;   $maxCandsPerDeme: Maximum candidates per deme.
 ;; Return: (List (ScoredInstance Cscore)): List of unique top-scoring instances.
-; (: keepTopUniqueCandidates (-> (InstanceSet Cscore) Number Number (List (ScoredInstance Cscore))))
+;; (: keepTopUniqueCandidates (-> (InstanceSet Cscore) Number Number (List (ScoredInstance Cscore))))
 (= (keepTopUniqueCandidates $rep (mkSInstSet $sortedSInstList) $nEval $maxCandsPerDeme)
  (let*
  (
@@ -63,7 +56,7 @@
 ;;   $lastIndex: Index to start checking from (end of list).
 ;;   $botSc: Minimum penalized score threshold.
 ;; Return: (List (ScoredInstance Cscore)): Filtered list with low-scoring instances removed.
-; (: filterDemeByScore (-> (List (ScoredInstance Cscore)) Number Number (List (ScoredInstance Cscore))))
+;; (: filterDemeByScore (-> (List (ScoredInstance Cscore)) Number Number (List (ScoredInstance Cscore))))
 (= (filterDemeByScore Nil $lastIndex $botSc) Nil)
 (= (filterDemeByScore (Cons $x $xs) $lastIndex $botSc)
 (if (== $lastIndex 0) (Cons $x $xs) (let*
@@ -84,8 +77,8 @@
 ;;   (List (ScoredInstance Cscore)): Sorted list of scored instances.
 ;;   $minPoolSize: Minimum number of instances to retain.
 ;;   $complexityTemperature: Parameter for computing score range.
-;;Return: (List (ScoredInstance Cscore)): Trimmed list of instances.
-; (: trimDownDeme (-> (List (ScoredInstance Cscore)) Number Number (List (ScoredInstance Cscore))))
+;; Return: (List (ScoredInstance Cscore)): Trimmed list of instances.
+;; (: trimDownDeme (-> (List (ScoredInstance Cscore)) Number Number (List (ScoredInstance Cscore))))
 (= (trimDownDeme $sInstList $minPoolSize $complexityTemperature)
 (let $demeSize (List.length $sInstList)
 (if (or (>= $minPoolSize $demeSize) (<= $demeSize 1)) 
@@ -104,7 +97,7 @@
 ;;   $deme: A deme containing a representation, scored instance set, and demeId.
 ;;   $itable: The input table.
 ;; Return: (List (Exemplar $a)) - List of exemplars with scored trees.
-; (: demeToTrees (-> Deme (ITable $a) (List (Exemplar $a))))
+;; (: demeToTrees (-> Deme (ITable $a) (List (Exemplar $a))))
 (= (demeToTrees (mkDeme $rep (mkSInstSet Nil) $demeId) $scoringContext) Nil)
 (= (demeToTrees (mkDeme $rep (mkSInstSet (Cons $si $sil)) $demeId) $scoringContext)
 (let*
@@ -122,7 +115,7 @@
     )
 )
 
-;; ── LLMOSES dedup guard ─────────────────────────────────────────────────────
+;; LLMOSES dedup guard.
 ;; getNewCandidates' stock test is OS.isMember = full structural == INCLUDING
 ;; demeId, so the same program arriving from two feature-set demes (identical
 ;; tree, different demeId) reads as "new" and gets inserted twice.
@@ -140,7 +133,7 @@
 ;;   (List (Exemplar $a)): List of exemplars to filter.
 ;;   $metaPop: Ordered set of existing exemplars.
 ;; Return: (List (Exemplar $a)): List of new exemplars not in metaPop.
-; (: getNewCandidates (-> (List (Exemplar $a)) (OS (Exemplar $a)) (List (Exemplar $a))))
+;; (: getNewCandidates (-> (List (Exemplar $a)) (OS (Exemplar $a)) (List (Exemplar $a))))
 (= (getNewCandidates Nil $metaPop) Nil)
 (= (getNewCandidates (Cons $xmp $xmpl) $metaPop)
    (if (osHasTree (getExemplarTree $xmp) $metaPop)
@@ -149,7 +142,7 @@
             (Cons $xmp (getNewCandidates $xmpl $updatedMetaPop)))))
 
 ;; Determines if one BehavioralScore dominates another by comparing their score lists.
-; (: dominates (-> BehavioralScore BehavioralScore Atom))
+;; (: dominates (-> BehavioralScore BehavioralScore Atom))
 (= (dominates (mkBScore Nil) (mkBScore Nil)) Indeterminate)
 (= (dominates (mkBScore Nil) (mkBScore (Cons $by $bys))) False)
 (= (dominates (mkBScore (Cons $bx $bxs)) (mkBScore Nil)) True)
@@ -157,7 +150,7 @@
    (dominatesRec (mkBScore (Cons $bx $bxs)) (mkBScore (Cons $by $bys)) Indeterminate))
 
 ;; helper function for dominates
-; (: dominatesRec (-> BehavioralScore BehavioralScore Atom Atom))
+;; (: dominatesRec (-> BehavioralScore BehavioralScore Atom Atom))
 (= (dominatesRec (mkBScore Nil) (mkBScore Nil) $res) $res)
 (= (dominatesRec (mkBScore (Cons $bx $bxs)) (mkBScore (Cons $by $bys)) $res)
    (if (> $bx $by)
@@ -171,14 +164,14 @@
            (dominatesRec (mkBScore $bxs) (mkBScore $bys) $res))))
 
 ;; Removes dominated exemplars from a list based on their BehavioralScores.
-; (: removeDominated (-> (List (Exemplar $a)) (List (Exemplar $a))))
+;; (: removeDominated (-> (List (Exemplar $a)) (List (Exemplar $a))))
 (= (removeDominated Nil) Nil)
 (= (removeDominated (Cons $exemplar Nil)) (Cons $exemplar Nil))
 (= (removeDominated (Cons $exemplar (Cons $next $rest)))
    (removeDominatedRec $exemplar (Cons $next $rest) Nil))
 
 ;; Helper: Compares an exemplar with others, accumulating non-dominated exemplars.
-; (: removeDominatedRec (-> (Exemplar $a) (List (Exemplar $a)) (List (Exemplar $a)) (List (Exemplar $a))))
+;; (: removeDominatedRec (-> (Exemplar $a) (List (Exemplar $a)) (List (Exemplar $a)) (List (Exemplar $a))))
 (= (removeDominatedRec $exemplar Nil $acc)
    (Cons $exemplar $acc))
 (= (removeDominatedRec $exemplar (Cons $other $rest) $acc)
@@ -191,7 +184,7 @@
       ))
 
 ;; Merges a list of exemplars into the metapopulation.
-; (: mergeCandidates (-> (List (Exemplar $a)) (OS (Exemplar $a)) (OS (Exemplar $a))))
+;; (: mergeCandidates (-> (List (Exemplar $a)) (OS (Exemplar $a)) (OS (Exemplar $a))))
 (= (mergeCandidates Nil $metapop) $metapop)
 (= (mergeCandidates (Cons $x $xs) $metapop)
    (let $updatedMetaPop (OS.insert compareExemplar $x $metapop)
@@ -200,7 +193,7 @@
 ;; Merges a deme's candidates into a metapopulation.
 ;; LLMOSES change: (eval (sbEmitCullCands ...)) forces runtime dispatch so that
 ;; the definition in state-builder.metta (loaded after this file) is found.
-; (: mergeDemes (-> Expression Number Number Number Number (ITable $a) (OS (Exemplar $a)) Number Number Number (OS (Exemplar $a))))
+;; (: mergeDemes (-> Expression Number Number Number Number (ITable $a) (OS (Exemplar $a)) Number Number Number (OS (Exemplar $a))))
 (= (mergeDemes $demes $nEval $maxCandsPerDeme $minPoolSize $complexityTemperature $scoringContext $metapop $nToKeep $capCoef $genCount)
     (if (== $demes ()) $metapop
         (let*

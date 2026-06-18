@@ -1,19 +1,6 @@
-;; ============================================================================
-;; llmoses/wrapper/state-builder.metta  (v0.4-mvp)
-;;
-;; Mirrors state-emitter.metta's emitGen call site EXACTLY (expand-deme.metta
-;; lines 145-148): bind each value with `eval` in the let*, THEN pass the bound
-;; bare variable to py-call. NEVER pass an extractor CALL directly as a py-call
-;; argument — that crosses unreduced.
-;;
-;; These are function-equation bodies (= (sbEmitMembers ...) (let* ...)),
-;; reduced by the runtime as it evaluates the loop — the same context
-;; runMosesLoop's working emitGen runs in. eval forces reduction inside an
-;; executing function body; it does NOT in a top-level py-call argument.
-;; Context, not syntax.
-;;
-;; Load AFTER extractors.metta.
-;; ============================================================================
+;; LLMOSES state-builder wrapper.
+;; Bind extractor results with eval before passing them to py-call; direct
+;; extractor calls can cross into Python unreduced. Load after extractors.metta.
 
 !(import! &self "state_builder.py")
 

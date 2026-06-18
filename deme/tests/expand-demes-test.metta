@@ -272,45 +272,51 @@
 ) 
 ; ; with OR table and AND init exemplar     
 ; !(runMoses 7 (mkCscore -0.1 2 0.1 0.1 3) 3 (metaPop) 0 2 
-;     (False smd
-;      (eval (createTruthTableBScore 2 (mkITable
+;     False    ;; the new arguments for prune-exemplar -- we are saying dont prune the exemplar
+;     smd      ;; the new arguments for feature selection algo
+;     (eval (createTruthTableBScore 2 (mkITable
 ;                          (Cons (Cons False (Cons False (Cons False Nil))) 
 ;                          (Cons (Cons True (Cons False (Cons True Nil))) 
 ;                          (Cons (Cons False (Cons True (Cons True Nil)))
 ;                          (Cons (Cons True (Cons True (Cons True Nil))) Nil))))
-;                          (Cons A (Cons B (Cons O Nil))))))
-;      (mkITable
-;                          (Cons (Cons False (Cons False (Cons False Nil))) 
-;                          (Cons (Cons True (Cons False (Cons True Nil))) 
-;                          (Cons (Cons False (Cons True (Cons True Nil)))
-;                          (Cons (Cons True (Cons True (Cons True Nil))) Nil))))
-;                          (Cons A (Cons B (Cons O Nil)))))
+;                          (Cons A (Cons B (Cons O Nil)))))) 
 ;     hillClimbing 
 ;     5 2 0 1 
+;     (mkITable
+;                          (Cons (Cons False (Cons False (Cons False Nil))) 
+;                          (Cons (Cons True (Cons False (Cons True Nil))) 
+;                          (Cons (Cons False (Cons True (Cons True Nil)))
+;                          (Cons (Cons True (Cons True (Cons True Nil))) Nil))))
+;                          (Cons A (Cons B (Cons O Nil)))) 
 ;     3 0.004 1000)
 ; ; with OR table and AND init exemplar     
 ; !(runMoses 7 (mkCscore -0.1 2 0.1 0.1 3) 3 (metaPop) 0 2 
-;     (False smd
-;      (eval (createTruthTableBScore 2 (mkITable
+;     False    ;; the new arguments for prune-exemplar -- we are saying dont prune the exemplar
+;     smd      ;; the new arguments for feature selection algo
+;     (eval (createTruthTableBScore 2 (mkITable
 ;                           (Cons (Cons False (Cons False (Cons False Nil))) 
 ;                           (Cons (Cons True (Cons False (Cons True Nil))) 
 ;                           (Cons (Cons False (Cons True (Cons True Nil)))
 ;                           (Cons (Cons True (Cons True (Cons True Nil))) Nil))))
-;                           (Cons A (Cons B (Cons O Nil))))))
-;      (mkITable
-;                           (Cons (Cons False (Cons False (Cons False Nil))) 
-;                           (Cons (Cons True (Cons False (Cons True Nil))) 
-;                           (Cons (Cons False (Cons True (Cons True Nil)))
-;                           (Cons (Cons True (Cons True (Cons True Nil))) Nil))))
-;                           (Cons A (Cons B (Cons O Nil)))))
+;                           (Cons A (Cons B (Cons O Nil))))))  
 ;     hillClimbing 
 ;     5 2 0 1 
+;     (mkITable
+;                           (Cons (Cons False (Cons False (Cons False Nil))) 
+;                           (Cons (Cons True (Cons False (Cons True Nil))) 
+;                           (Cons (Cons False (Cons True (Cons True Nil)))
+;                           (Cons (Cons True (Cons True (Cons True Nil))) Nil))))
+;                           (Cons A (Cons B (Cons O Nil))))  
 ;     3 0.004 1000)
 
 ; !(runMoses 1 (mkCscore -0.1 2 0.1 0.1 3) 3 (metaPop2) 0 2 
-;     (False smd (eval (createTruthTableBScore 2 (bigtable))) (bigtable))
+;     False    ;; the new arguments for prune-exemplar -- we are saying dont prune the exemplar
+;     smd      ;; the new arguments for feature selection algo
+;     (eval (createTruthTableBScore 2 
+;     (bigtable)))
 ;     hillClimbing 
 ;     5 2 0 1 
+;     (bigtable) 
 ;     3 0.004 1000)
 
 ;; Parameters:
@@ -331,9 +337,12 @@
 ;; !(let*
 ;;    (
 ;;     ($result (runMoses 20 (mkCscore -0.1 2 0.1 0.1 3) 10 (metaPop2) 0 2
-;;                   (False smd (eval (createTruthTableBScore 2 (xortable))) (xortable))
+;;                   False    ;; the new arguments for prune-exemplar -- we are saying dont prune the exemplar
+;;                   smd      ;; the new arguments for feature selection algo
+;;                   (eval (createTruthTableBScore 2 (xortable)))
 ;;                   hillClimbing
 ;;                   100 10 20 2
+;;                   (xortable)
 ;;                   10 0.004 1000))
 ;;     ($nt (println! ""))
 ;;     ($newR (mapG cleanedExemplar $result))

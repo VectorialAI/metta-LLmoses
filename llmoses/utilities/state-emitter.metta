@@ -1,4 +1,4 @@
-;;;;;;;;;;;;;;;;;;;;;; LLMOSES State Emitter ;;;;;;;;;;;;;;;;;;;;;;
+;; LLMOSES state emitter wrapper.
 ;; File I/O is owned by the Python module llmoses_emitter.py (same
 ;; directory). See that file for path-resolution and handle-lifecycle
 ;; notes. MeTTa's role here is minimal: import the module and delegate.
@@ -20,7 +20,7 @@
 (= (emitState $genIndex $remaining)
    (py-call (llmoses_emitter.emit_state $genIndex $remaining)))
 
-;; v0: single entry point; Python fans out into metapop/deme/action channels.
+;; Python fans out into metapop/deme/action channels.
 ;; $genIndex  : ascending 1-based generation number
 ;; $remaining : the loop's native descending counter ($maxGen)
 ;; $popSize   : OS.length of the metapopulation going into this generation

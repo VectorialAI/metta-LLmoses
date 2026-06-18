@@ -108,7 +108,6 @@ $optimDeme
 ;; TODO: $nEval isn't being used. Increase it so that it works as expected. 
 ;; To enable that, we may need to change our termination condition so that the generation is equivalent to the number of expansion as well.
 ;; The number of expansions in the open cog classic is equivalent to the number of deme expansions. That looks like the same thing we are doing here but not sure.
-
 (= (runMoses $maxGen $maxScore $maxCandOutput $metaPop $nExpansion $nDeme $context $optimize $nEval $maxCandsPerDeme $minPoolSize $complexityTemperature $nToKeep $capCoef $genCount)
 (if (== $maxGen 0)
     (if (<= $maxCandOutput (OS.length $metaPop))

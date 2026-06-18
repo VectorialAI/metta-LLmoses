@@ -2,7 +2,7 @@
 ;;
 ;; Covers boolean demos (pa, dj, maj, mux) and combo-program recovery (cp,
 ;; annCp) via runDemoProblem. The sr (simple regression) demo is exercised by
-;; regression_test.metta / run_regression_state_test.sh instead — contin
+;; regression_test.metta through ./run_moses_demo.sh demo sr instead; contin
 ;; scoring uses a different runMoses overload than boolean truth tables.
 ;;
 ;; Run via:  ./run_moses_demo.sh demo <key>
