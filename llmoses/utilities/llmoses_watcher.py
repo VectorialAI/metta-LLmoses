@@ -18,14 +18,15 @@ before exiting. Nothing emitted before stop is ever lost. The demo script
 touches the stop flag only AFTER the MeTTa process returns (so the last
 sentinel is guaranteed on disk), then waits on this process.
 
-MVP handler: ``head -10`` of state-<g> and action-<g>, echoed into
-utilities/run-<seq>/step-<g>.json and traces/run-<seq>/step-<g>.json with an
-explicit stub marker. Swapping this handler for a real provider call is the
-only change needed to go from MVP to a live agent.
+MVP handler: ``head -10`` of state-<g> and action-<g>, then write a
+machine-consumable UtilityResponse to utilities/run-<seq>/step-<g>.json and a
+separate AgentTrace transcript/audit artifact to traces/run-<seq>/step-<g>.json.
+Swapping this handler for a real provider call is the only change needed to go
+from MVP to a live agent.
 
 Directory layout produced:
   <run>/utilities/run-<seq>/step-<g>.json   - stub UtilityResponse estimate
-  <run>/traces/run-<seq>/step-<g>.json      - stub trace / receipt
+  <run>/traces/run-<seq>/step-<g>.json      - stub AgentTrace receipt
   <run>/ready/.consumed/run-<seq>-step-<g>  - moved-on-success marker
 """
 import argparse
@@ -63,6 +64,16 @@ def _head(path, n=HEAD_N):
     return out or ["<empty>"]
 
 
+def _write_json(path, doc):
+    """Atomically write one JSON document."""
+    os.makedirs(os.path.dirname(path), exist_ok=True)
+    tmp = path + ".tmp"
+    with open(tmp, "w", encoding="utf-8") as fh:
+        json.dump(doc, fh, indent=2)
+        fh.write("\n")
+    os.replace(tmp, path)
+
+
 def _parse_sentinel(name):
     """Parse a sentinel filename ``run-<seq>-step-<g>`` into (seq, gen) strings.
 
@@ -91,8 +102,8 @@ def _handle_step(run_dir, seq, gen, dirs):
       state/run-<seq>/step-<g>.json
       action/run-<seq>/step-<g>.json
     Writes into:
-      utilities/run-<seq>/step-<g>.json
-      traces/run-<seq>/step-<g>.json
+      utilities/run-<seq>/step-<g>.json  (UtilityResponse)
+      traces/run-<seq>/step-<g>.json     (AgentTrace)
     """
     state_p  = os.path.join(dirs["state"],  f"run-{seq}", f"step-{gen}.json")
     action_p = os.path.join(dirs["action"], f"run-{seq}", f"step-{gen}.json")
@@ -104,12 +115,6 @@ def _handle_step(run_dir, seq, gen, dirs):
     os.makedirs(util_dir, exist_ok=True)
     util_p = os.path.join(util_dir, f"step-{gen}.json")
     utility_doc = {
-        "schema_version": "stub-v0",
-        "record_type": "UtilityResponse",
-        "stub": True,
-        "run_seq": seq,
-        "generation": gen,
-        "timestamp_ms": ts,
         "pass": True,
         "sampling_temperature": None,
         "exemplar_utilities": [],
@@ -117,38 +122,50 @@ def _handle_step(run_dir, seq, gen, dirs):
         "culling_utilities": [],
         "complexity_ratio_delta": None,
         "comparator_bias": None,
-        "reasoning_trace": [
-            "stub watcher observed ready sentinel but did not call a provider"
-        ],
-        "trace_summary": "stub utility response; replace watcher handler for live estimation",
     }
-    with open(util_p, "w", encoding="utf-8") as fh:
-        json.dump(utility_doc, fh, indent=2)
-        fh.write("\n")
+    raw_model_response = json.dumps(utility_doc, sort_keys=True)
+    _write_json(util_p, utility_doc)
 
     trace_dir = os.path.join(dirs["traces"], f"run-{seq}")
     os.makedirs(trace_dir, exist_ok=True)
     trace_p = os.path.join(trace_dir, f"step-{gen}.json")
     trace_doc = {
-        "schema_version": "stub-v0",
-        "record_type": "watcher_trace",
+        "schema_version": "agent-trace-v0",
+        "record_type": "AgentTrace",
+        "stub": True,
         "run_seq": seq,
         "generation": gen,
         "timestamp_ms": ts,
         "ready_sentinel": f"ready/run-{seq}-step-{gen}",
-        "state_path": state_p,
-        "action_path": action_p,
-        "state_head": state_head,
-        "action_head": action_head,
+        "input_artifacts": {
+            "state_path": state_p,
+            "action_path": action_p,
+            "run_config_path": os.path.join(dirs["state"], f"run-{seq}",
+                                            "run_config.json"),
+            "native_log_path": os.path.join(run_dir, "moses_native_log.jsonl"),
+        },
+        "read_files": [state_p, action_p],
+        "prompt_context_manifest": [
+            "stub watcher read state/action JSON heads only",
+        ],
+        "provider": None,
+        "raw_model_response": raw_model_response,
+        "parsed_utility_response": utility_doc,
+        "audit_reasoning": [
+            "stub watcher observed ready sentinel but did not call a provider",
+        ],
+        "parse_diagnostics": [],
+        "debug_heads": {
+            "state_head": state_head,
+            "action_head": action_head,
+        },
         "summary": (
             f"observed ready/run-{seq}-step-{gen}; "
             f"read {len(state_head)} state line(s), "
             f"{len(action_head)} action line(s); wrote utilities + traces."
         ),
     }
-    with open(trace_p, "w", encoding="utf-8") as fh:
-        json.dump(trace_doc, fh, indent=2)
-        fh.write("\n")
+    _write_json(trace_p, trace_doc)
 
     return util_p, trace_p
 
@@ -178,7 +195,7 @@ def _scan_and_process(run_dir, dirs, consumed_dir):
 def main():
     ap = argparse.ArgumentParser(
         description="LLMOSES shadow-agent watcher: watches ready/ sentinels "
-                    "and writes stub utility + trace JSON."
+                    "and writes stub UtilityResponse + AgentTrace JSON."
     )
     ap.add_argument("run_dir", help="Path to the run root directory.")
     args = ap.parse_args()

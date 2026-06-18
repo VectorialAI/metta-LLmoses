@@ -1,6 +1,8 @@
 # UtilityResponse
 
-Return exactly one valid JSON object. Do not wrap it in Markdown.
+Write exactly one valid JSON object to `utilities/run-N/step-G.json`. Do not wrap it in Markdown.
+
+UtilityResponse is the machine-consumable action utility output. It should not contain prompt text, raw model responses, natural-language reasoning, or transcript material. Those belong in `traces/run-N/step-G.json`.
 
 Required top-level fields:
 
@@ -12,9 +14,7 @@ Required top-level fields:
   "pair_utilities": [],
   "culling_utilities": [],
   "complexity_ratio_delta": null,
-  "comparator_bias": null,
-  "reasoning_trace": [],
-  "trace_summary": ""
+  "comparator_bias": null
 }
 ```
 
@@ -24,10 +24,10 @@ Use empty arrays or `null` for components that are not exposed in the current fi
 
 Recommended utility records:
 
-- Exemplar utilities: include `program_id`, `utility`, and a short `reason`.
-- Pair utilities: include the pair or atom keys available in the artifact, `utility`, and `reason`.
-- Culling utilities: include `program_id`, `retain_utility` or `cull_utility`, and `reason`.
+- Exemplar utilities: include `program_id` and `utility`.
+- Pair utilities: include the pair or atom keys available in the artifact and `utility`.
+- Culling utilities: include `program_id` and `retain_utility` or `cull_utility`.
 - Complexity ratio: use `increase`, `decrease`, or `maintain` when a directional field is expected.
 - Comparator bias: include only documented comparator dimensions.
 
-Keep `reasoning_trace` concise. It should support auditability, not narrate every token of analysis.
+Put all reasons, audit notes, parse diagnostics, prompt/context manifests, and raw provider responses in the matching AgentTrace file under `traces/`.

@@ -41,3 +41,13 @@ llmoses/outputs/logs/
 ```
 
 The latest run is recorded in `llmoses/outputs/CURRENT_RUN.json`. Runtime guide files are generated under `llmoses/outputs/` and each run directory; they are local artifacts and are not committed.
+
+Generated runs can be listed and removed without affecting the checked-in estimator docs:
+
+```sh
+make runs-list
+make run-delete RUN_ID=<run-id>
+make runs-refresh-current
+```
+
+Deleting a run removes only `llmoses/outputs/runs/<run-id>`. The canonical estimator docs stay in `llmoses/skills/`; run-local Markdown files are regenerated guide artifacts.
