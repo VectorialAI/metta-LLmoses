@@ -6,7 +6,9 @@ Estimate utilities for every action component that is actually present or expose
 
 Complexity-ratio direction is easy to reverse: increase means reward complexity; decrease means penalize complexity; maintain means leave pressure unchanged.
 
-Return only valid UtilityResponse JSON with these top-level fields:
-pass, sampling_temperature, exemplar_utilities, pair_utilities, culling_utilities, complexity_ratio_delta, comparator_bias, reasoning_trace, trace_summary.
+Write one valid UtilityResponse JSON file for this step at `utilities/run-N/step-G.json`. The UtilityResponse is machine-consumable and must contain only these top-level fields:
+pass, sampling_temperature, exemplar_utilities, pair_utilities, culling_utilities, complexity_ratio_delta, comparator_bias.
 
-If evidence is insufficient, set pass=true, leave unavailable component arrays empty or nullable, and explain briefly in reasoning_trace.
+Write one AgentTrace JSON file for this step at `traces/run-N/step-G.json`. Put the prompt/context manifest, read-file list, raw model response, parsed UtilityResponse, explicit audit reasoning, provider metadata when available, and parse/error diagnostics there. Do not rely on hidden model chain-of-thought; include only transcript material and explicit reasoning/audit text available to the harness.
+
+If evidence is insufficient, set pass=true in the UtilityResponse, leave unavailable component arrays empty or nullable, and explain the evidence gap in the AgentTrace audit fields.

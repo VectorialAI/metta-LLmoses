@@ -67,6 +67,8 @@ def ensure_output_context(llmoses_dir, run_id, run_dir, run_seq=None,
             "state": os.path.join(run_dir, "state", "state-artifacts.md"),
             "action": os.path.join(run_dir, "action", "action-artifacts.md"),
             "ready": os.path.join(run_dir, "ready", "ready-artifacts.md"),
+            "utilities": os.path.join(run_dir, "utilities", "utility-artifacts.md"),
+            "traces": os.path.join(run_dir, "traces", "trace-artifacts.md"),
         },
     })
     ensure_run_context(run_dir, run_id, run_seq, problem_type,
@@ -87,10 +89,18 @@ def ensure_run_context(run_dir, run_id, run_seq=None, problem_type=None,
                 _action_artifacts(active_levers))
     _write_text(os.path.join(run_dir, "ready", "ready-artifacts.md"),
                 _ready_artifacts())
+    _write_text(os.path.join(run_dir, "utilities", "utility-artifacts.md"),
+                _utility_artifacts())
+    _write_text(os.path.join(run_dir, "traces", "trace-artifacts.md"),
+                _trace_artifacts())
 
 
 def _moses_explanation():
     return """# MOSES Explanation
+
+This file is generated under `llmoses/outputs/` and is safe to delete with the
+rest of the generated outputs. The canonical estimator docs live in
+`llmoses/skills/`.
 
 MOSES searches over program trees. Each generation selects an exemplar from the
 metapopulation, expands one or more demes around that exemplar, scores generated
@@ -116,6 +126,10 @@ def _run_instructions(run_id, run_seq, problem_type, problem_spec, active_levers
     lever_text = ", ".join(active_levers) if active_levers else "not emitted yet"
     return f"""# Run Instructions
 
+This file is generated inside a run directory and is disposable. It exists so an
+estimator can orient itself locally; the canonical estimator docs remain in
+`llmoses/skills/` and are not copied into runs.
+
 Run id: `{run_id}`
 Current run sequence: `{run_seq if run_seq is not None else "not emitted yet"}`
 Problem: {_problem_summary(problem_type, problem_spec)}
@@ -133,7 +147,12 @@ Read order for a utility-estimation step:
 Use the JSON artifacts as ground truth. These markdown files only describe how
 to navigate and interpret the artifacts.
 
-Return a UtilityResponse JSON object with:
+Write two output artifacts for each processed ready sentinel:
+
+- `utilities/run-N/step-G.json`: machine-consumable UtilityResponse.
+- `traces/run-N/step-G.json`: AgentTrace transcript and audit artifact.
+
+The UtilityResponse contains only:
 
 - `pass`
 - `sampling_temperature`
@@ -142,8 +161,11 @@ Return a UtilityResponse JSON object with:
 - `culling_utilities`
 - `complexity_ratio_delta`
 - `comparator_bias`
-- `reasoning_trace`
-- `trace_summary`
+
+Put prompt/context manifests, raw model responses, read-file lists, explicit
+audit reasoning, provider metadata, and parse/error diagnostics in AgentTrace.
+Do not rely on hidden model chain-of-thought; traces should contain only
+transcript material and explicit audit text available to the harness.
 
 Complexity-ratio direction: `increase` rewards complexity, `decrease` penalizes
 complexity, and `maintain` leaves pressure unchanged.
@@ -152,6 +174,9 @@ complexity, and `maintain` leaves pressure unchanged.
 
 def _state_artifacts(problem_type, problem_spec):
     return f"""# State Artifacts
+
+This file is generated and may be deleted with its run directory. Use it as a
+local guide only; JSON artifacts are ground truth.
 
 Problem: {_problem_summary(problem_type, problem_spec)}
 
@@ -183,6 +208,9 @@ def _action_artifacts(active_levers):
     lever_text = ", ".join(active_levers) if active_levers else "not emitted yet"
     return f"""# Action Artifacts
 
+This file is generated and may be deleted with its run directory. Use
+`llmoses/skills/ACTION_LEVERS.md` for the canonical action-lever guide.
+
 Action files are written under `action/run-N/` as `step-G.json`.
 
 Active levers from config: {lever_text}
@@ -204,6 +232,8 @@ of the UtilityResponse.
 def _ready_artifacts():
     return """# Ready Artifacts
 
+This file is generated and may be deleted with its run directory.
+
 Ready sentinels are written under `ready/` and named `run-N-step-G`.
 
 The sentinel is written after the matching state and action JSON files, so it is
@@ -215,6 +245,55 @@ For `run-N-step-G`, read:
 - `state/run-N/step-G.json`
 - `action/run-N/step-G.json`
 
-Future Phase II harnesses can write estimator outputs under `utilities/run-N/`
-and traces under `traces/run-N/`.
+The watcher or live agent should write both:
+
+- `utilities/run-N/step-G.json`
+- `traces/run-N/step-G.json`
+
+Only after both files are written should a watcher move the sentinel into
+`ready/.consumed/`.
+"""
+
+
+def _utility_artifacts():
+    return """# Utility Artifacts
+
+This file is generated and may be deleted with its run directory. Use
+`llmoses/skills/UTILITY_RESPONSE.md` for the canonical UtilityResponse guide.
+
+Utility files are written under `utilities/run-N/` as `step-G.json`.
+
+Each file is a machine-consumable UtilityResponse. It should contain only the
+action utility fields needed by a downstream controller:
+
+- `pass`
+- `sampling_temperature`
+- `exemplar_utilities`
+- `pair_utilities`
+- `culling_utilities`
+- `complexity_ratio_delta`
+- `comparator_bias`
+
+Do not put prompt text, raw provider output, natural-language reasoning, or
+conversation transcripts in utility files. Those belong in the matching
+AgentTrace file under `traces/run-N/step-G.json`.
+"""
+
+
+def _trace_artifacts():
+    return """# Trace Artifacts
+
+This file is generated and may be deleted with its run directory. Use
+`llmoses/skills/AGENT_TRACE.md` for the canonical AgentTrace guide.
+
+Trace files are written under `traces/run-N/` as `step-G.json`.
+
+Each file is an AgentTrace transcript and audit artifact for the matching
+UtilityResponse. It should include available prompt/context manifests, read-file
+lists, raw model responses, parsed UtilityResponse JSON, explicit audit
+reasoning, provider metadata, and parse/error diagnostics.
+
+Do not require or attempt to reconstruct hidden model chain-of-thought. Store
+only transcript material and explicit reasoning or audit notes available to the
+harness.
 """
