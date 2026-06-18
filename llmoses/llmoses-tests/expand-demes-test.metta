@@ -192,9 +192,7 @@
 
                         (Cons A (Cons B (Cons C (Cons D (Cons E (Cons T Nil))))))))
 
-; (= (bigtablet2) (createTruthTableBScore 2 bigtable2))                        
-
-; (: isScored (-> (ScoredInstance Cscore) Bool))
+;; (: isScored (-> (ScoredInstance Cscore) Bool))
 (= (isScored (mkSInst (mkPair $instance $score))) (~= $score (eval (worstCscore))))
 
 ;; Testcase for optimizeDemes               
@@ -297,49 +295,6 @@
 )
     False
 ) 
-; ; with OR table and AND init exemplar     
-; !(runMoses 7 (mkCscore -0.1 2 0.1 0.1 3) 3 (metaPop) 0 2 
-;     (False None
-;      (eval (createTruthTableBScore 2 (mkITable
-;                          (Cons (Cons False (Cons False (Cons False Nil))) 
-;                          (Cons (Cons True (Cons False (Cons True Nil))) 
-;                          (Cons (Cons False (Cons True (Cons True Nil)))
-;                          (Cons (Cons True (Cons True (Cons True Nil))) Nil))))
-;                          (Cons A (Cons B (Cons O Nil))))))
-;      (mkITable
-;                          (Cons (Cons False (Cons False (Cons False Nil))) 
-;                          (Cons (Cons True (Cons False (Cons True Nil))) 
-;                          (Cons (Cons False (Cons True (Cons True Nil)))
-;                          (Cons (Cons True (Cons True (Cons True Nil))) Nil))))
-;                          (Cons A (Cons B (Cons O Nil)))))
-;     hillClimbing 
-;     5 2 0 1 
-;     3 0.004 1000)
-; ; with OR table and AND init exemplar     
-; !(runMoses 7 (mkCscore -0.1 2 0.1 0.1 3) 3 (metaPop) 0 2 
-;     (False None
-;      (eval (createTruthTableBScore 2 (mkITable
-;                           (Cons (Cons False (Cons False (Cons False Nil))) 
-;                           (Cons (Cons True (Cons False (Cons True Nil))) 
-;                           (Cons (Cons False (Cons True (Cons True Nil)))
-;                           (Cons (Cons True (Cons True (Cons True Nil))) Nil))))
-;                           (Cons A (Cons B (Cons O Nil))))))
-;      (mkITable
-;                           (Cons (Cons False (Cons False (Cons False Nil))) 
-;                           (Cons (Cons True (Cons False (Cons True Nil))) 
-;                           (Cons (Cons False (Cons True (Cons True Nil)))
-;                           (Cons (Cons True (Cons True (Cons True Nil))) Nil))))
-;                           (Cons A (Cons B (Cons O Nil)))))
-;     hillClimbing 
-;     5 2 0 1 
-;     3 0.004 1000)
-
-; !(runMoses 1 (mkCscore -0.1 2 0.1 0.1 3) 3 (metaPop2) 0 2 
-;     (False None (eval (createTruthTableBScore 2 (bigtable))) (bigtable))
-;     hillClimbing 
-;     5 2 0 1 
-;     3 0.004 1000)
-
 ;; Parameters:
   ;; $maxGen $maxScore $maxCandOutput $metaPop $nExpansion $nDeme
   ;; $prune-exemplar
@@ -380,23 +335,6 @@
        (mkBScore (Cons -10000.0 Nil)))
      NilOS))
 
-;; by uncomment this test and also adjust the parameter settings we can check the full evolution process of runMosesStrategy, and see how the strategy evolves from empty strategy to better strategy.
-; !(runMoses
-;     2                              ;; maxGen - 3 generations 
-;     (mkCscore 10.0 0 0 0.0 10)     ;; Target: 10/10 wins,
-;     3                              ;; maxCandOutput - return top 3 strategies
-;     (emptyStrategyMetaPop)         ;; metaPop - start with empty strategy
-;     0                              ;; nExpansion - generation counter
-;     2                              ;; nDeme - 3 demes (more diversity)
-;     (10 random-player 3.5)       ;; nGames - 10 games per evaluation
-;     hillClimbing                   ;; optimize - optimizer function
-;     30                             ;; nEval - not used
-;     5                              ;; maxCandsPerDeme - top 5 per deme
-;     2                              ;; minPoolSize - min deme size
-;     1.0                            ;; complexityTemperature - for trimming
-;     5                              ;; nToKeep - keep top 5
-;     0.004                          ;; capCoef - capacity coefficient
-;     1000)   
 ;; metapop for testing
 (= (strategyMetaPop)
    (ConsOS

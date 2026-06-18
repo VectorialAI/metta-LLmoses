@@ -1,33 +1,10 @@
 #!/usr/bin/env python3
-"""LLMOSES shadow-agent watcher (MVP, v0).
+"""Watch LLMOSES ready sentinels and write shadow-agent artifacts.
 
-Emulates the real coding-agent topology: an independent process that observes
-state appearing on disk and writes its own output files. It is NOT called by
-MOSES and does NOT publish back to MOSES; the handoff is filesystem-mediated.
-
-Trigger contract: it watches <run>/ready/ for per-step sentinels dropped by the
-emitter as the LAST action of each generation. Sentinel names are
-``run-<seq>-step-<g>`` — the run-sequence prefix keeps the flat ready/ dir
-collision-free even when multiple runMoses calls fire within the same process.
-A sentinel's presence proves that state/run-<seq>/step-<g>.json and
-action/run-<seq>/step-<g>.json are both complete, so there are no partial reads.
-
-Stop/drain contract: on a stop signal (a <run>/CONTROL/stop flag file, or
-SIGTERM) the watcher does a FINAL pass that processes every remaining sentinel
-before exiting. Nothing emitted before stop is ever lost. The demo script
-touches the stop flag only AFTER the MeTTa process returns (so the last
-sentinel is guaranteed on disk), then waits on this process.
-
-MVP handler: ``head -10`` of state-<g> and action-<g>, then write a
-machine-consumable UtilityResponse to utilities/run-<seq>/step-<g>.json and a
-separate AgentTrace transcript/audit artifact to traces/run-<seq>/step-<g>.json.
-Swapping this handler for a real provider call is the only change needed to go
-from MVP to a live agent.
-
-Directory layout produced:
-  <run>/utilities/run-<seq>/step-<g>.json   - stub UtilityResponse estimate
-  <run>/traces/run-<seq>/step-<g>.json      - stub AgentTrace receipt
-  <run>/ready/.consumed/run-<seq>-step-<g>  - moved-on-success marker
+The watcher is a separate process. It reads <run>/ready/run-<seq>-step-<g>
+markers after the emitter has finished state/action files, writes utility and
+trace JSON under run-local directories, and drains remaining sentinels before
+exit on stop.
 """
 import argparse
 import json
@@ -39,8 +16,8 @@ import time
 HEAD_N = 10
 
 # TODO: consider replacing the 100 ms polling loop with an OS-native file-event
-# mechanism such as inotify (Linux) or kqueue/FSEvents (macOS) — e.g. via the
-# watchdog library — to reduce latency and CPU overhead on high-generation runs.
+# mechanism such as inotify (Linux) or kqueue/FSEvents (macOS), e.g. via the
+# watchdog library, to reduce latency and CPU overhead on high-generation runs.
 POLL_S = float(os.environ.get("LLMOSES_WATCH_POLL_S", "0.1"))
 
 _stop = False
@@ -75,13 +52,7 @@ def _write_json(path, doc):
 
 
 def _parse_sentinel(name):
-    """Parse a sentinel filename ``run-<seq>-step-<g>`` into (seq, gen) strings.
-
-    Returns (seq, gen) or (None, None) if the name does not match the expected
-    format. The compound name encodes the per-run sequence so that the flat
-    ready/ directory is collision-free even when multiple runMoses calls fire
-    within the same MeTTa process.
-    """
+    """Parse ``run-<seq>-step-<g>`` into (seq, gen) strings."""
     if not name.startswith("run-"):
         return None, None
     rest = name[len("run-"):]
@@ -96,7 +67,7 @@ def _parse_sentinel(name):
 
 
 def _handle_step(run_dir, seq, gen, dirs):
-    """MVP stub handler: acknowledge receipt of state-<g> + action-<g>.
+    """Stub handler: acknowledge receipt of state-<g> + action-<g>.
 
     Reads from the per-run subdirectories that mirror the emitter's layout:
       state/run-<seq>/step-<g>.json

@@ -1,13 +1,7 @@
-;; In our simplified approach, we're not using dynamic feature selection
-;; or ignore operators. This significantly streamlines the representation
-;; creation process compared to the original implementation.
-;;
-;; The original code handles several complex scenarios:
-;; 1. Dynamic feature selection to reduce the number of features used
-;; 2. Creating multiple representations with different feature sets
-;; 3. Pruning exemplars based on selected features
-;; 4. Enforcing specific features
-;; 5. Creating ignore_ops sets for non-selected features ↠ not implemented as a separate container for ignored args rather if exemplar features are ignored, they are subtracted from args list in representation building
+;; LLMOSES createRepresentation overlay.
+;; Delegates to representation.metta so feature selection, pruning, enforced
+;; features, and strategy representation stay in one builder. The caller handles
+;; the returned representation list when feature selection is disabled.
 
 ;; createRepresentation -- calls on the representation building procedure
 ;; (: createRepresentation (-> Number (Tree $a) (ITable $a) Symbol Bool Expression Symbol Representation))
@@ -20,8 +14,7 @@
     (eval (representation $tree $nDeme)))
 
 ;; Boolean logic representation (7 parameters)
-;;(= (createRepresentation $nDeme $tree (mkITable $table $labels) $algo $prune-exemplar $enforced-fts $scorerType)
-;;    (let ((mkRep (mkKbMap (mkDscKbMp $dscKbMp) (mkDscMp $dscMp)) $updatedTree)) (representation $nDeme $tree (mkITable $table $labels) $algo $prune-exemplar $enforced-fts $scorerType) ((mkRep (mkKbMap (mkDscKbMp $dscKbMp) (mkDscMp $dscMp)) $updatedTree))))
-;; llmoses fix passes list of representations directly from representation to caller (treeNeighborhood) to avoid cohesion issues with import order and representation building procedure, which relies on some Python-side logic. The caller (treeNeighborhood) is responsible for peeling the list when FS is off and passing the single rep to repNeighborhood.
+;; Pass the representation list through to treeNeighborhood; it peels the single
+;; representation when feature selection is off.
 (= (createRepresentation $nDeme $tree (mkITable $table $labels) $algo $prune-exemplar $enforced-fts $scorerType)
     (eval (representation $nDeme $tree (mkITable $table $labels) $algo $prune-exemplar $enforced-fts $scorerType)))

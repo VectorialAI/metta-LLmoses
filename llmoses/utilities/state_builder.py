@@ -1,22 +1,9 @@
-"""LLMOSES state builder — list-marshalling accumulator (v0.4).
+"""Build structured LLMOSES state/action JSON from MeTTa extractor values.
 
-Receives extractor outputs across py-call. MeTTaLog hands Python native values
-recursively —
-  bare Number          -> int / float
-  (mkX $payload)       -> ['mkX', <payload>]            (atom: [name, payload])
-  (Cons h t) / Nil     -> ['Cons', h, t] / 'Nil'        (list spine)
-  preOrder expr        -> nested list, e.g. ['OR', ['NOT', 'A']]
-  cscoreFields         -> flat [raw, cpxy, cpen, upen, pen]
-So everything crosses in ONE py-call per value; Python unwraps. No MeTTa-side
-unwrap helpers, no streaming accumulator required for Phase I sizes.
-
-I/O design is copied verbatim from the proven llmoses_emitter.py: per-run
-subdirs via new_run(), ready/ sentinels written LAST, append-only JSONL native
-log, run_meta.json, permissive coercion that surfaces bad marshalling as a
-visible value rather than crashing the run.
-
-Lives in llmoses/utilities/ (on PYTHONPATH), imported from MeTTa as
-  !(import! &self "state_builder.py")
+Values arrive through py-call as native Python numbers, strings, nested lists,
+or Cons spines. The builder unwraps those shapes, accumulates per-generation
+records, writes per-run state/action files, and drops ready sentinels only after
+the generation output is complete.
 """
 import math
 import os
@@ -77,15 +64,15 @@ _pending_deme_evals = {}   # deme_id -> currentNInstances (from expandDemeHelper
 _depth = {}               # program_id -> lineage depth (reset per run)
 _total_evals = 0           # cumulative true fitness calls across all gens in the current run
 _explored_ids = set()      # program_ids selected in a prior gen (reset per run; "explored" flag)
-_problem_spec = None       # {input_labels, arity} — set once per run by set_problem_spec
+_problem_spec = None       # {input_labels, arity}; set once per run by set_problem_spec
 _last_complexity_ratio = None  # derived cratio from flush_gen; reused by flush_terminal
 _pending_run_params = {}   # name -> raw value; persists across gens, reset by new_run
 _score_complexity_history = []  # per-gen trajectory for score_vs_complexity_trend
-_atom_alphabet = None      # {problem_type, prefix, atoms:[{index,key,label}]} — static, run_config
-_atom_alphabet_map = {}    # label -> {index, key} — walker lookup, derived from _atom_alphabet
+_atom_alphabet = None      # {problem_type, prefix, atoms:[{index,key,label}]}; static, run_config
+_atom_alphabet_map = {}    # label -> {index, key}; walker lookup, derived from _atom_alphabet
 _atom_cumulative = {}      # key -> {appearances_total, first_seen_gen, last_seen_gen} (run-scoped)
 
-# Boltzmann selection constants — mirror exemplar-selection.metta COMPXY_TEMP / INV_TEMP
+# Boltzmann selection constants; mirror exemplar-selection.metta COMPXY_TEMP / INV_TEMP.
 _COMPXY_TEMP = 6.0
 _INV_TEMP = 100.0 / _COMPXY_TEMP
 
@@ -966,7 +953,7 @@ def flush_terminal(gen):
 
 
 def flush_gen(gen):
-    """v0.5: per-step state is dynamic-only; static config lives in run_config.json."""
+    """Flush dynamic per-step state; static config lives in run_config.json."""
     global _pending_selection, _pending_merge, _pending_deme_evals, _depth
     global _total_evals, _explored_ids, _last_complexity_ratio
     g = _num(gen)

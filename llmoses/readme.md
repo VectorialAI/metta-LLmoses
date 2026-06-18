@@ -8,7 +8,7 @@ LLMOSES is a shadow wrapper layer for metta-moses that emits MOSES state and act
 - `utilities/`: Python JSON emitters, the watcher stub, and helper shims used by the wrapper.
 - `skills/`: checked-in context docs for the shadow-mode utility estimator.
 - `deme/`, `representation/`, `scoring/`, `feature-selection/`, `moses/`, `optimization/`: shadow MOSES files imported instead of base files where LLMOSES hooks or fixes are needed.
-- `llmoses-tests/`: demo, state-capture, smoke, and pressure test entrypoints.
+- `llmoses-tests/`: centralized demo, state-capture, smoke, and pressure test entrypoints. This is an intentional harness layout exception to the repo's per-folder `tests/` convention.
 - `outputs/`: ignored generated logs, run metadata, state/action JSON, ready sentinels, and run-local guide files.
 
 ## Quickstart

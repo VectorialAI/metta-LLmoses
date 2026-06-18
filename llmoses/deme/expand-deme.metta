@@ -12,7 +12,7 @@
 ;;   $inst: The initial instance for optimization.
 ;;   $optimize: The optimizer function to apply to each deme.
 ;;  Returns: (List Deme): A new list where each deme has been optimized.
-; (: optimizeDemes (-> (List Deme) $context Instance $optimize (Instance Deme $state)))
+;; (: optimizeDemes (-> (List Deme) $context Instance $optimize (Instance Deme $state)))
 ;; Game strategy version - unpacks tuple with target score
 ;; Strategy version - unpacks game parameters and calls hillClimbing with mkParams
 (= (optimizeDemes $deme ($nGames $opponentPolicy $complexityRatio $targetCScore) $inst $optimize)
@@ -37,25 +37,16 @@
 ;;   $capCoef: Capacity coefficient for resizing.
 ;;   $genCount: Generation count for resizing.
 ;; Returns:
-   ;;   $updatedMetaPop: Updated metapopulation with the new optimized deme merged in.
-; (: expandDeme (-> (OS (Exemplar $a)) Number Number Bool Symbol (TruthTableBScore $a) (-> Deme (TruthTableBScore $a) Instance $Scorer (Instance Deme $state)) $Scorer Number Number Number Number (ITable $a) Number Number Number (OS (Exemplar $a))))
+;;   $updatedMetaPop: Updated metapopulation with the new optimized deme merged in.
+;; (: expandDeme (-> (OS (Exemplar $a)) Number Number Bool Symbol (TruthTableBScore $a) (-> Deme (TruthTableBScore $a) Instance $Scorer (Instance Deme $state)) $Scorer Number Number Number Number (ITable $a) Number Number Number (OS (Exemplar $a))))
 (= (expandDeme $metaPop $nExpansion $nDeme $prune-exemplar $fs-algo $truthTableBScore $optimize $itable $scorerType)
 (let*
    (
-    ;; ($_ (println! ""))
-    ;; ($_ (println! (MetaPop: $metaPop)))
-    ;; ($_ (println! "Selecting Exemplar"))
     ($exemplar (selectExemplar $metaPop))
-    ;; ($_ (println! $exemplar))
-    ;; ($_ (println! "getting exemplar tree"))
     ($tree (getExemplarTree $exemplar)) 
     ($_ (println! (SelectedTree: (preOrder $tree))))
     ($_ (sbSetSelection $tree))                          ;; <-- LLMOSES post_selection hook
-    ;; ($_ (println! "creating deme IDs"))
     ($demeIds (createDemeIds $nExpansion $nDeme))
-    ;; ($_ (println! $demeIds))
-    ; ($argLabels (getArgLabels $itable))
-    ;; ($_ (println! "Creating Deme"))
     ($demes (createDeme $nDeme $demeIds $tree $itable $fs-algo $prune-exemplar () $scorerType))
     )
     (map-atom $demes $deme (expandDemeHelper $deme $truthTableBScore $optimize))
@@ -85,11 +76,8 @@
 (let*
 (
     ($lengthOfDscKbMp (Map.length $dscKbMp))
-    ;; ($generatedList (List.generate $lengthOfDscKbMp 0))
     ($generatedList (createInitialInstance $dscMp))
     ($deme (mkDeme (mkRep (mkKbMap (mkDscKbMp $dscKbMp) (mkDscMp $dscMp)) $updatedTree) $sInstList $demeId))
-    ;; ($_ (println! (Rep: (mkRep (mkKbMap (mkDscKbMp $dscKbMp) (mkDscMp $dscMp)) $updatedTree))))
-    ;; ($_ (println! "Optimizing Deme"))
     (($inst $optimDeme $state) (optimizeDemes $deme $context (mkInst $generatedList) $optimize))
     ($_ (py-call (state_builder.set_deme_evals $demeId $state)))   ;; <-- per-deme fitness-call count
 )
@@ -102,7 +90,7 @@ $optimDeme
 ;; It also takes:
 ;;     - $maxCandOutput : The number of candidates to be returned
 ;;     - other parameters required by the expandDeme method
-; (: runMoses (-> Number Cscore Number (OS (Exemplar $a)) Number Number Bool Symbol (TruthTableBScore $a) (-> Deme (TruthTableBScore $a) Instance $Scorer (Instance Deme $state)) $Scorer Number Number Number Number (ITable $a) Number Number Number (OS (Exemplar $a))))
+;; (: runMoses (-> Number Cscore Number (OS (Exemplar $a)) Number Number Bool Symbol (TruthTableBScore $a) (-> Deme (TruthTableBScore $a) Instance $Scorer (Instance Deme $state)) $Scorer Number Number Number Number (ITable $a) Number Number Number (OS (Exemplar $a))))
 ;; Public entry — unchanged 15-arg signature. Captures the budget once,
 ;; then delegates to the internal loop with $totalGen pinned.
 (= (runMoses $maxGen $maxScore $maxCandOutput $metaPop $nExpansion $nDeme $context $optimize $nEval $maxCandsPerDeme $minPoolSize $complexityTemperature $nToKeep $capCoef $genCount)
@@ -140,11 +128,8 @@ $optimDeme
        ($updatedMetaPop (case $context 
                         ((($prune-exemplar $fs-algo $truthTableBScore $itable) (trace! "Merging Deme" (mergeDemes $optimizedDemes $nEval $maxCandsPerDeme $minPoolSize $complexityTemperature $itable $metaPop $nToKeep $capCoef $genCount)))
                         (($nGames $opponentPolicy $complexityRatio) (trace! "Merging Deme" (mergeDemes $optimizedDemes $nEval $maxCandsPerDeme $minPoolSize $complexityTemperature ($nGames $opponentPolicy) $metaPop $nToKeep $capCoef $genCount))))))
-       ;; ($_ (println! (Updated MetaPop: $updatedMetaPop)))
        ($top (OS.getByIdx 0 $metaPop))
-       ;; ($_ (println! (Top Exemplar before expansion: $top)))
        ($topScore (getExemplarCscore $top))
-       ;; ($_ (println! (topscore: $topScore)))
        ;; --- LLMOSES state-builder emit (run params pre-buffered by sbBeginRun*) ---
        ($_ (sbEmitAllMerged $updatedMetaPop))
        ($_emit (sbEmitGeneration $genIndex $metaPop $optimizedDemes))

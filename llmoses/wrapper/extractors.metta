@@ -1,11 +1,7 @@
-;; ============================================================================
-;; llmoses/wrapper/extractors.metta  (v3 — verified against re-uploaded main)
-;;
-;; knobsOfRep walks the DscMp by STRUCTURE (mirrors crtDiscKnobMap in
-;; representation.metta) instead of calling MultiMap.values, which is not present
-;; in the provided source. Everything else CALLS native accessors verified in the
-;; re-uploaded files. Pure (no py-call); each stays assert-testable.
-;; ============================================================================
+;; LLMOSES value extractors.
+;; Pure MeTTa helpers used by the state-builder wrapper before values cross
+;; into Python. knobsOfRep walks the DscMp structure directly instead of relying
+;; on MultiMap.values.
 
 ;; --- CSCORE: five raw fields via native getters; one ordered bundle ---------
 (= (cscoreFields $cs)
@@ -14,16 +10,16 @@
 ;; --- MEMBER (exemplar) via native getters -----------------------------------
 (= (memberExpr $x)
    (let* (($tree (eval (getExemplarTree $x))))
-     (preOrder $tree)))                                  ; -> SHORT display (preOrder; lossy)
-(= (memberTree   $x) (eval (getExemplarTree $x)))        ; -> FULL raw tree (for stable program_id)
-(= (memberCscore $x) (eval (getExemplarCscore $x)))      ; -> Cscore
-(= (memberPen    $x) (eval (getExemplarPenScore $x)))    ; -> Number (native)
-(= (memberBScore $x) (eval (getExemplarBScore $x)))      ; -> (mkBScore $list); Python unwraps
+     (preOrder $tree)))                                  ;; short display (preOrder; lossy)
+(= (memberTree   $x) (eval (getExemplarTree $x)))        ;; full raw tree for stable program_id
+(= (memberCscore $x) (eval (getExemplarCscore $x)))      ;; Cscore
+(= (memberPen    $x) (eval (getExemplarPenScore $x)))    ;; Number
+(= (memberBScore $x) (eval (getExemplarBScore $x)))      ;; (mkBScore $list); Python unwraps
 (= (memberFields $x) ( (memberExpr $x) (cscoreFields (memberCscore $x)) ))
 
 ;; --- METAPOP traversal: confirmed native primitives -------------------------
 (= (metapopSize $os)    (OS.length $os))
-(= (memberByIdx $os $i) (OS.getByIdx $i $os))           ; native arg order: idx FIRST
+(= (memberByIdx $os $i) (OS.getByIdx $i $os))           ;; native arg order: idx first
 
 ;; --- REPRESENTATION field pulls (shape verified in representation.metta) -----
 (= (repDscMp (mkRep (mkKbMap (mkDscKbMp $dscKbMp) (mkDscMp $dscMp)) $tree)) $dscMp)
@@ -36,9 +32,9 @@
 (= (knobsOfRep $rep) (mmapKnobList (repDscMp $rep)))
 
 ;; --- Per-knob native accessors (thin delegating names) ----------------------
-(= (knobLoc     $kb) (getKnobLoc     $kb))   ; native -> NodeId
-(= (knobMultip  $kb) (getKnobMultip  $kb))   ; native -> raw multiplicity field (mkMultip n)
-(= (knobDefault $kb) (getKnobDefault $kb))   ; native (expand-deme) -> Number
+(= (knobLoc     $kb) (getKnobLoc     $kb))   ;; native NodeId
+(= (knobMultip  $kb) (getKnobMultip  $kb))   ;; native raw multiplicity field (mkMultip n)
+(= (knobDefault $kb) (getKnobDefault $kb))   ;; native Number
 
 ;; Relocated from the expand-deme fork so the wrapper files can load before
 ;; expand-deme. expand-deme's own createInitialInstance use resolves fine,

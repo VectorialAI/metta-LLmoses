@@ -6,9 +6,10 @@
 ;;   $complexityRatio: probability parameter
 ;; Returns:
 ;;   cScore: Composite score of the instance                      
-; (: complexityBasedScorer (-> Representation Instance (ITable $a) Number Cscore))
+;; (: complexityBasedScorer (-> Representation Instance (ITable $a) Number Cscore))
 
-;;llmoses change: candidate may now be a list of trees (one per rep when FS is on), so we evaluate to get the actual tree(s), and is wrapped to affect import order cohesion
+;; LLMOSES change: candidate may be a list of trees, one per representation
+;; when feature selection is on. Evaluate before scoring to get the tree value.
     (= (complexityBasedScorer $rep $inst $itable $complexityRatio)
       (let*
           (

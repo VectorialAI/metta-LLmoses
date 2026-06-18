@@ -27,7 +27,7 @@
 ;; jaccard_index 0 ≤ ji ≤ 1 — intersection-only formula, no union-atom / list_to_set.
 ;; Verified: (1 2)∩(2 3)=1, |A|+|B|-|A∩B|=2+2-1=3, result=1/3.
 ;; Identical sets → 1;  disjoint sets → 0/n = 0.
-; (: jaccardIndex (-> Expression Expression Number))
+;; (: jaccardIndex (-> Expression Expression Number))
 (= (jaccardIndex $s1 $s2)
    (let* (($i (size-atom (intersection-atom $s1 $s2)))
           ($a (size-atom $s1))
