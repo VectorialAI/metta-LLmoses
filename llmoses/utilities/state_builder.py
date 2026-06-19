@@ -314,7 +314,7 @@ def _knob_kind(m):
 
 
 def _dslot(s, did):
-    return s["demes"].setdefault(did, {"knobs": [], "deme_tree": None,
+    return s["demes"].setdefault(did, {"knobs": [],
                                        "instances": None, "evaluations": None})
 
 
@@ -326,10 +326,12 @@ def _gs(gen):
 
 
 def _member_out(m):
-    """Emit-shape of a member: drop the internal tree_ast (walker input only),
-    tag the explored flag."""
-    return {k: v for k, v in m.items() if k != "tree_ast"} | {
-        "explored": m["program_id"] in _explored_ids}
+    """Emit-shape of a member: drop the internal tree_ast (walker input only) and the
+    top-level complexity duplicate (kept in cscore.complexity), strip the always-0.0
+    uniformity_penalty (D-014: no-op in Phase I), and tag the explored flag."""
+    cs = {k: v for k, v in m["cscore"].items() if k != "uniformity_penalty"}
+    return {k: v for k, v in m.items() if k not in ("tree_ast", "complexity")} | {
+        "cscore": cs, "explored": m["program_id"] in _explored_ids}
 
 
 def _write_json(path, doc):
@@ -705,10 +707,12 @@ def add_knob(gen, deme_id, loc, multip, default, tag=None):
     return 0
 
 
-def set_deme(gen, deme_id, deme_tree, instances):
+def set_deme(gen, deme_id, _deme_tree, instances):
+    # _deme_tree (the raw mkTree representation) is no longer emitted: exemplar_program_id
+    # references the seeding member, whose readable tree_str lives in the metapop. Skipping
+    # expr_to_str on the full representation tree is the wasted work this rework removes.
     s = _gs(gen); did = _demeid(deme_id); d = _dslot(s, did)
     if did not in s["deme_order"]: s["deme_order"].append(did)
-    d["deme_tree"] = expr_to_str(deme_tree)
     d["instances"] = _num(instances)
     d["evaluations"] = _pending_deme_evals.pop(did, None)
     return 0
@@ -962,7 +966,6 @@ def flush_gen(gen):
         evals_gen += ev or 0
         demes.append({
             "deme_id": did, "exemplar_program_id": selected_id,
-            "exemplar_expr": d["deme_tree"],
             "knobs": d["knobs"], "knob_count": len(d["knobs"]),
             "knob_type_breakdown": kb,
             "neighborhood_size": nbh,
@@ -976,11 +979,15 @@ def flush_gen(gen):
         "candidates_produced":     counts.get("candidates_produced"),
         "duplicates_dropped":      counts.get("duplicates_dropped"),
         "dominated_count_removed": counts.get("dominated_removed"),
+        # Membership partition only — IDs resolve to full records elsewhere in the same
+        # step's pair: incumbents == metapopulation.members (hence a count), survivors/culled
+        # ⊆ incumbents ∪ new_entrants, and new_entrants' full records live in
+        # action.culling_candidates. No definitions/scores are duplicated here.
         "resize_cull": {
-            "incumbents":   sorted(cur_ids),
-            "new_entrants": cull_cands,
-            "survivors":    sorted(post_ids),
-            "culled":       sorted(pool_ids - post_ids),
+            "incumbent_count": len(cur_ids),
+            "new_entrants":    [c["program_id"] for c in cull_cands],
+            "survivors":       sorted(post_ids),
+            "culled":          sorted(pool_ids - post_ids),
         },
     }
 
@@ -1052,14 +1059,19 @@ def flush_gen(gen):
         "schema_version": _VERSION, "run_seq": _run_seq, "generation": g,
         "problem_type": ptype,
         "exemplar_candidates": [
-            {"program_id": m["program_id"], "tree_str": m["tree_str"],
+            # tree_str omitted: resolve by program_id against metapopulation.members
+            # (the Split canonical home for incumbent/survivor tree shape).
+            {"program_id": m["program_id"],
              "penalized_score": m["cscore"]["penalized_score"],
              "complexity": m["complexity"],
              "raw_score": m["cscore"]["raw_score"],
              "lineage_depth": _depth.get(m["program_id"])}
             for m in members
         ],
-        "culling_candidates": cull_cands if cull_cands else [],
+        # new entrants are not in the metapop, so culling_candidates is their tree_str home;
+        # lineage_depth attached here (after _depth is populated above).
+        "culling_candidates": [dict(c, lineage_depth=_depth.get(c["program_id"]))
+                               for c in cull_cands],
         "complexity_ratio": {
             "current_value": cratio,
             "options": ([cratio] if cratio is not None else []),
