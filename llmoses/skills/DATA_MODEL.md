@@ -19,7 +19,6 @@ Important MosesState sections:
 - `merge_summary`: merge counts and culling candidates.
 - `lineage_diff`: new, removed, retained, and selected ids across generations.
 - `moses_native_events.post_selection`: native exemplar selection event.
-- `score_vs_complexity_trend`: recent score and complexity direction.
 - `atom_evidence`: atom appearances and realized cooccurrences derived from candidate trees.
 
 Important ActionVector sections:

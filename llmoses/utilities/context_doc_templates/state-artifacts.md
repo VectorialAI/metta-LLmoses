@@ -21,7 +21,6 @@ Common `step-G.json` sections:
 - `merge_summary`: merge counts and culling context.
 - `lineage_diff`: selected, new, retained, and removed program ids.
 - `moses_native_events`: selected native MOSES events for this generation.
-- `score_vs_complexity_trend`: score and complexity direction over recent steps.
 - `atom_evidence`: atom appearances and realized cooccurrences.
 
 `step` means generation. Do not wait for renamed generation files; the current
