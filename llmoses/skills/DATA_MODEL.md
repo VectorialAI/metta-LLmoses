@@ -21,7 +21,6 @@ Important MosesState sections:
 - `merge_summary`: merge counts plus `resize_cull`, a membership partition — `incumbent_count` (the metapopulation) and `program_id` lists for `new_entrants`, `survivors`, and `culled`. Every id resolves to a full record in `metapopulation.members` or `action.culling_candidates`.
 - `lineage_diff`: new, removed, retained, and selected ids across generations.
 - `moses_native_events.post_selection`: native exemplar selection event.
-- `score_vs_complexity_trend`: recent score and complexity direction.
 - `atom_evidence`: atom appearances and realized cooccurrences derived from candidate trees.
 
 Important ActionVector sections:
