@@ -16,11 +16,11 @@ from boundary import _flat
 # One problem_type-keyed config drives THREE coupled choices so they can't
 # desync: the clause-op set, the ordered flag (which governs both dedupe rule
 # and key canonicalization), and whether contradictions are meaningful.
-#   logical  : AND/OR commutative -> set-dedupe, sorted keys, contradictions real
+#   boolean  : AND/OR commutative -> set-dedupe, sorted keys, contradictions real
 #   strategy : PRIORITIZED-OR ordered -> order-preserving dedupe, preserved keys,
 #              no contradiction concept (no negation in the move algebra)
 _PROBLEM_CONFIG = {
-    "logical":  {"ops": {"AND", "OR"},        "ordered": False, "contradiction": True},
+    "boolean":  {"ops": {"AND", "OR"},        "ordered": False, "contradiction": True},
     "strategy": {"ops": {"PRIORITIZED-OR"},   "ordered": True,  "contradiction": False},
 }
 _DEFAULT_CONFIG = {"ops": {"AND", "OR"}, "ordered": False, "contradiction": True}
@@ -33,7 +33,7 @@ _ATOM_LOSSLESS = os.environ.get("LLMOSES_ATOM_LOSSLESS", "").strip().lower() in 
 
 def build_atom_alphabet(problem_spec, ptype):
     """Resolve the static action-space alphabet from problem_spec.
-    Strategy -> moves (prefix 'move'); logical/default -> input_labels (prefix
+    Strategy -> moves (prefix 'move'); boolean/default -> input_labels (prefix
     'feature'). Returns (alphabet_block, alpha_map) where alpha_map is
     label -> {index, key} for the walker. Returns (None, {}) when no spec."""
     if not isinstance(problem_spec, dict):

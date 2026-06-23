@@ -17,14 +17,14 @@ import runspace
 from boundary import (
     _num, _flat, unwrap_atom, cons_to_list, expr_to_str,
     cr_or_none as _cr_or_none, present_atom as _present_atom,
-    canonical_problem_type as _canonical_problem_type, demeid as _demeid,
+    demeid as _demeid,
 )
 
 _VERSION = "0.5-mvp"
 
 # Per problem_type: which action-space levers are live (agent should not score inactive dims).
 _ACTIVE_LEVERS = {
-    "logical": ["exemplar_selection", "culling", "atom_evidence",
+    "boolean": ["exemplar_selection", "culling", "atom_evidence",
                 "complexity_ratio", "comparator_hook"],
     "strategy": ["exemplar_selection", "culling", "atom_evidence",
                  "complexity_ratio", "comparator_hook"],
@@ -73,13 +73,13 @@ def _effective_problem_type(raw_problem_type=None):
     falling back to _problem_spec. Returns None if genuinely unknown."""
     p = _present_atom(raw_problem_type)
     if p is not None:
-        return _canonical_problem_type(p)
+        return p
     if isinstance(_problem_spec, dict):
         p = _present_atom(_problem_spec.get("problem_type"))
         if p is not None:
-            return _canonical_problem_type(p)
+            return p
         if "input_labels" in _problem_spec:
-            return "logical"
+            return "boolean"
     return None
 
 
@@ -136,7 +136,7 @@ def _blank(gen):
 def _knob_kind(m):
     """Problem-agnostic: boolean LSK=3, strategy SSK=2, else 'other'
     (continuous coefficient knobs land in 'other' rather than being mislabeled)."""
-    return "logical" if m == 3 else "strategy" if m == 2 else "other"
+    return "boolean" if m == 3 else "strategy" if m == 2 else "other"
 
 
 def _dslot(s, did):
@@ -266,7 +266,7 @@ def add_member(gen, expr, tree, cscore, bscore):
     return 0
 
 
-_KIND_BY_TAG = {"LSK": "logical", "SSK": "strategy"}
+_KIND_BY_TAG = {"LSK": "boolean", "SSK": "strategy"}
 
 
 def add_knob(gen, deme_id, loc, multip, default, tag=None):
@@ -396,7 +396,7 @@ def set_problem_spec(labels, arity=None):
         raw_labels = list(labels) if isinstance(labels, list) else [labels]
     feature_labels = [_flat(label) for label in raw_labels]
     _problem_spec = {
-        "problem_type": "logical",
+        "problem_type": "boolean",
         "input_labels": feature_labels,
         "arity": (_num(arity) if arity is not None else len(feature_labels)),
     }
@@ -531,7 +531,7 @@ def flush_gen(gen):
     demes, evals_gen = [], 0
     for deme_id in s["deme_order"]:
         deme = s["demes"][deme_id]
-        knob_breakdown = {"logical": 0, "strategy": 0, "other": 0}
+        knob_breakdown = {"boolean": 0, "strategy": 0, "other": 0}
         for knob in deme["knobs"]:
             knob_breakdown[knob["kind"]] = knob_breakdown.get(knob["kind"], 0) + 1
         neighborhood_size = sum(max(_num(knob["multiplicity"]) - 1, 0)
