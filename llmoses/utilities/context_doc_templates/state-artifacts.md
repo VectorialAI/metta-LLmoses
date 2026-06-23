@@ -16,9 +16,12 @@ State files are written under `state/run-N/`.
 
 Common `step-G.json` sections:
 
-- `metapopulation`: candidate programs and scores.
-- `demes`: per-deme knobs, instance counts, and evaluation counts.
-- `merge_summary`: merge counts and culling context.
+- `metapopulation`: candidate programs and scores; each member's `tree_str` is the
+  canonical tree shape, referenced elsewhere by `program_id`.
+- `demes`: per-deme `exemplar_program_id`, knobs, instance counts, and evaluation counts.
+- `merge_summary`: merge counts and `resize_cull` (an `incumbent_count` plus `program_id`
+  lists for `new_entrants`, `survivors`, and `culled`; ids resolve in `metapopulation` or
+  `action.culling_candidates`).
 - `lineage_diff`: selected, new, retained, and removed program ids.
 - `moses_native_events`: selected native MOSES events for this generation.
 - `score_vs_complexity_trend`: score and complexity direction over recent steps.

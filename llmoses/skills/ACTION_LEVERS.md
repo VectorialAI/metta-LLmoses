@@ -4,6 +4,7 @@ Only score levers that are present in the current ActionVector or explicitly sup
 
 Exemplar selection:
 
+- `exemplar_candidates` carry `program_id` and scores; read each candidate's tree shape from `metapopulation.members` by `program_id` (the candidates do not repeat `tree_str`).
 - Prefer candidates with strong penalized score and plausible room for useful local search.
 - Preserve structural diversity when top scores are close.
 - Be cautious about repeatedly selecting already explored candidates unless the trend supports deeper local search.

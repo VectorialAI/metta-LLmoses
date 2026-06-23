@@ -5,11 +5,12 @@ MOSES scoring is multi-field. Do not rank candidates from one number unless the 
 Common fields:
 
 - `raw_score`: problem-level fitness before complexity penalties.
-- `complexity`: structural size or complexity measure.
+- `complexity`: structural size or complexity measure (under `cscore`).
 - `complexity_penalty`: penalty derived from complexity pressure.
-- `uniformity_penalty`: additional penalty where present.
 - `penalized_score`: score after penalties; often the best single ranking signal.
 - `bscore`: vector-valued behavior or table score, when present.
+
+`uniformity_penalty` is not emitted in Phase I (always 0.0, a no-op per D-014); do not expect it as a ranking field.
 
 Selection signals:
 
