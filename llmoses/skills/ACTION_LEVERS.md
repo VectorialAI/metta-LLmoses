@@ -19,7 +19,7 @@ Complexity ratio:
 - `increase` means reward complexity by reducing the effective complexity penalty.
 - `decrease` means penalize complexity by increasing pressure against complex programs.
 - `maintain` means leave complexity pressure unchanged.
-- Use `score_vs_complexity_trend` to decide whether complexity is paying for itself.
+- To decide whether complexity is paying for itself, reconstruct the score-vs-complexity trend from the per-member `complexity` and `cscore.penalized_score` numbers across recent steps (see `derived-metrics.md`); it is no longer emitted.
 
 Comparator ordering:
 
