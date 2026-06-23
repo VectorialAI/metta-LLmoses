@@ -1,9 +1,5 @@
 """Atom evidence: clause-walking over resolved post-merge candidate trees.
 
-This keeps sampling evidence out of the MeTTa knob-building hot path. The builder
-owns the run-scoped state (problem spec, alphabet map, cumulative counter) and
-passes it in; everything here is otherwise a pure function of the candidate ASTs.
-
 Two entry points:
   build_atom_alphabet(problem_spec, ptype) -> (alphabet_block, alpha_map)
   build_atom_evidence(members, g, ptype, gen_best, alpha_map, cumulative,
@@ -13,27 +9,25 @@ import os
 
 from boundary import _flat
 
-# One problem_type-keyed config drives THREE coupled choices so they can't
-# desync: the clause-op set, the ordered flag (which governs both dedupe rule
-# and key canonicalization), and whether contradictions are meaningful.
-#   logical  : AND/OR commutative -> set-dedupe, sorted keys, contradictions real
+#   problem_type-keyed config
+#   boolean  : AND/OR commutative -> set-dedupe, sorted keys, contradictions real
 #   strategy : PRIORITIZED-OR ordered -> order-preserving dedupe, preserved keys,
 #              no contradiction concept (no negation in the move algebra)
 _PROBLEM_CONFIG = {
-    "logical":  {"ops": {"AND", "OR"},        "ordered": False, "contradiction": True},
+    "boolean":  {"ops": {"AND", "OR"},        "ordered": False, "contradiction": True},
     "strategy": {"ops": {"PRIORITIZED-OR"},   "ordered": True,  "contradiction": False},
 }
 _DEFAULT_CONFIG = {"ops": {"AND", "OR"}, "ordered": False, "contradiction": True}
 
-# Lossless debug: when LLMOSES_ATOM_LOSSLESS is truthy, also write the raw
-# per-event appearance/cooccurrence lists to a SEPARATE side-file per gen.
+# Turn on to write the raw per-event appearance/cooccurrence lists
+# Useful for debug or potentially ablation studies
 _ATOM_LOSSLESS = os.environ.get("LLMOSES_ATOM_LOSSLESS", "").strip().lower() in (
     "1", "true", "yes", "on")
 
 
 def build_atom_alphabet(problem_spec, ptype):
     """Resolve the static action-space alphabet from problem_spec.
-    Strategy -> moves (prefix 'move'); logical/default -> input_labels (prefix
+    Strategy -> moves (prefix 'move'); boolean/default -> input_labels (prefix
     'feature'). Returns (alphabet_block, alpha_map) where alpha_map is
     label -> {index, key} for the walker. Returns (None, {}) when no spec."""
     if not isinstance(problem_spec, dict):
@@ -181,8 +175,7 @@ def _walk_member(tree_ast, cfg, alpha_map, pid, pen, acc):
 
         distinct, degenerate = _normalize_clause(raw_members, cfg, degen)
 
-        # Appearances: deduped distinct members stay honest even in a degenerate
-        # clause (each atom genuinely appeared). Aggregate into bucket records.
+        # dedupe distinct members even in a degenerate clause 
         for m in distinct:
             ak = (m["atom_key"], m["polarity"], op, op, bucket)
             b = app.get(ak)
@@ -233,8 +226,7 @@ def build_atom_evidence(members, g, ptype, gen_best, alpha_map, cumulative,
         pen = m.get("cscore", {}).get("penalized_score")
         _walk_member(ast, cfg, alpha_map, m["program_id"], pen, acc)
 
-    # Finalize appearance buckets (drop per-program score duplication: emit
-    # n_programs cardinality + a score summary, never one record per host).
+    # Appearance buckets drop per-program score duplication: emit n_programs cardinality + a score summary
     appearances = []
     for b in acc["app"].values():
         progs = b["programs"]
@@ -261,8 +253,7 @@ def build_atom_evidence(members, g, ptype, gen_best, alpha_map, cumulative,
         })
     cooccurrences.sort(key=lambda r: (r["key"], r["clause_type"]))
 
-    # Cumulative accumulator: per-alphabet-key totals across generations, fed
-    # from the (post-dedupe) aggregated appearance counts.
+    # Cumulative accumulator: per-alphabet-key totals across generations
     counts_this_gen = {}
     for b in acc["app"].values():
         counts_this_gen[b["atom"]] = counts_this_gen.get(b["atom"], 0) + b["count"]
