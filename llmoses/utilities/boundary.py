@@ -7,9 +7,6 @@ the builder, the atom-evidence walker, and any future emitter.
 """
 
 _ABSENT_ATOMS = {"", "None", "()", "Nil"}
-_PROBLEM_TYPE_ALIASES = {"boolean": "logical"}
-
-
 def _flat(x):
     """Best-effort string coercion; never raises."""
     try:
@@ -104,7 +101,3 @@ def present_atom(x):
     s = _flat(x)
     return None if s in _ABSENT_ATOMS else s
 
-
-def canonical_problem_type(x):
-    """Fold problem-type aliases ('boolean' -> 'logical')."""
-    return _PROBLEM_TYPE_ALIASES.get(x, x)

@@ -18,6 +18,7 @@ logs/
 #llmoses/llmoses-tests/*
 llmoses/temp
 llmoses/temp/*
+scripts
 
 # LLMOSES source documentation.
 !llmoses/readme.md
