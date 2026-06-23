@@ -6,6 +6,43 @@ __pycache__/
 logs/
 .DS_Store
 
+# ── Containerisation setup (branch-local, not merged to main) ──────────────
+#Dockerfile
+#.dockerignore
+#run_moses_demo.sh
+#run_logical_smoke_test.sh
+#run_strategy_smoke_test.sh
+#Makefile
+#llmoses-tests
+#llmoses-tests/*
+#llmoses/llmoses-tests/*
+llmoses/temp
+llmoses/temp/*
+scripts
+
+# LLMOSES source documentation.
+!llmoses/readme.md
+!llmoses/skills/
+!llmoses/skills/*.md
+
+# Container outputs – host-bound volume; runtime artefacts, not committed.
+# The outputs/ directory and logs/ subdirectory are kept in tree via .gitkeep;
+# everything else under them is ignored.
+outputs/*
+!outputs/.gitkeep
+!outputs/logs/
+outputs/logs/*
+!outputs/logs/.gitkeep
+llmoses/outputs/*
+!llmoses/outputs/.gitkeep
+
+# Auto-generated harness drivers.
+llmoses/llmoses-tests/_logical_*.metta
+llmoses/llmoses-tests/_boolean_*.metta
+llmoses/llmoses-tests/_strategy_*.metta
+llmoses/llmoses-tests/_moses_demo_*.metta
+llmoses/llmoses-tests/_regression_metta_*.metta
+
 myTest.metta
 todo
 tree-helper-registration-test.metta
@@ -14,3 +51,13 @@ run_python_tests.py
 # Ignore HTML and Prolog files
 *.html
 *.pl
+
+
+llmoses/design-spec/*
+llmoses/deme/tests/extractors-test.metta
+llmoses/drafts/*
+llmoses/drafts
+llmoses/tests
+llmoses/tests/*
+llmoses/logs
+llmoses/logs/*
