@@ -1,11 +1,6 @@
 """Run-directory bootstrap and shadow-agent guide-doc generation.
 
-Keeps filesystem/run-environment concerns out of the builder. `bootstrap()`
-resolves the run directory, creates the output subtree, opens the append-only
-native event log, and writes run_meta.json. `ensure_context_docs()` generates the
-run-local Markdown guides best-effort: a guide-doc failure must never block state
-emission, but unlike a bare `pass` it records the traceback to a sidecar so the
-failure is observable (and recoverable out-of-band via manage_outputs).
+Keeps filesystem/run-environment concerns out of the builder.
 """
 import json
 import os
@@ -27,9 +22,7 @@ _CTX_ERR_LOG = "context_docs_errors.log"
 
 
 def bootstrap(llmoses_dir, version):
-    """Resolve the run dir, create state/action/ready, open the native log, and
-    write run_meta.json. Called once at module import so the run dir exists before
-    the first py-call. Returns a RunSpace with the open native-log handle."""
+    """Resolve the run dir, create subdirs and log/meta artifacts"""
     run_dir = os.environ.get("LLMOSES_RUN_DIR")
     if not run_dir:
         run_id = os.environ.get("LLMOSES_RUN_ID") or time.strftime("%Y%m%d-%H%M%S")
@@ -59,8 +52,7 @@ def bootstrap(llmoses_dir, version):
 
 def ensure_context_docs(llmoses_dir, run_id, run_dir, run_seq=None,
                         problem_type=None, problem_spec=None, active_levers=None):
-    """Best-effort run-local guide generation. Non-fatal, but records failures to
-    a per-run sidecar instead of swallowing them silently."""
+    """run-local guide generation; records failures to a per-run sidecar"""
     if context_docs is None:
         return
     try:
