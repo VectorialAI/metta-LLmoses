@@ -1,14 +1,11 @@
 """Pure value-unwrap helpers for the MeTTa -> Python (py-call) boundary.
 
 Values arrive as native Python numbers, strings, nested lists (preOrder ASTs),
-Cons spines, or shallow wrapped atoms like ['mkMultip', 3]. Everything here is a
-pure function of its argument with no module state, so it is safe to share across
-the builder, the atom-evidence walker, and any future emitter.
+Cons spines, or shallow wrapped atoms like ['mkMultip', 3].
 """
 
 _ABSENT_ATOMS = {"", "None", "()", "Nil"}
 def _flat(x):
-    """Best-effort string coercion; never raises."""
     try:
         return str(x).strip()
     except Exception:
@@ -16,7 +13,6 @@ def _flat(x):
 
 
 def _num(x):
-    """Best-effort numeric coercion; falls back to a flat string. Never raises."""
     if isinstance(x, bool):
         return x
     if isinstance(x, (int, float)):
@@ -31,8 +27,8 @@ def _num(x):
 
 
 def unwrap_atom(x):
-    """['mkMultip', 3] -> 3 ; ['mkDemeId', '1'] -> '1' ; bare value -> unchanged.
-    Only unwraps the shallow [name, payload] atom shape; leaves anything else."""
+    """['mkMultip', 3] -> 3 ; ['mkDemeId', '1'] -> '1' ; 
+    only unwraps the shallow [name, payload] atom shape"""
     if isinstance(x, list) and len(x) == 2 and isinstance(x[0], str):
         return x[1]
     return x
@@ -79,21 +75,8 @@ def demeid(x):
 
 
 def cr_or_none(x):
-    """Coerce complexity_ratio to float/int or None.
-    The boolean context emits () (marshalled as '()' or [] or empty string);
-    treat any of those as absent -> JSON null. Real numeric values pass through _num.
-
-    NOTE: this defensive coercion is the prime candidate for collapse. It stays
-    until a boundary probe confirms what complexity_ratio actually marshals to
-    (always-float vs float-or-absent). See marshal_probe notes."""
-    if x is None:
-        return None
-    s = str(x).strip()
-    if s in ("", "()", "Nil"):
-        return None
-    if isinstance(x, list) and len(x) == 0:
-        return None
-    return _num(x)
+    """Coerce the complexity_ratio run param to a number, or None when absent."""
+    return _num(x) if x is not None else None
 
 
 def present_atom(x):

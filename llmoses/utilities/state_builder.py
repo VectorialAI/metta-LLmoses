@@ -199,12 +199,7 @@ def _max_existing_run_seq():
 
 
 def new_run():
-    """Open a fresh per-run subdir. Call once at the top of each runMoses.
-
-    Demo harnesses may invoke several PeTTa processes with one LLMOSES_RUN_ID.
-    Each process imports this module with _run_seq reset to 0, so consult the
-    existing output directories before choosing the next run-N slot.
-    """
+    """Open a fresh per-run subdir. Call once at the top of each runMoses."""
     global _run_seq, _cur_state_dir, _cur_action_dir, _pending_selection, _pending_merge
     global _pending_deme_evals, _depth, _total_evals, _explored_ids, _problem_spec
     global _last_complexity_ratio, _pending_run_params
@@ -244,8 +239,8 @@ _CSCORE_FIELDS = ("raw_score", "complexity", "complexity_penalty",
 
 def add_member(gen, expr, tree, cscore, bscore):
     """One member. expr = preOrder (lossless clean AST for resolved trees;
-    emitted as tree_str). tree = raw mkTree, used ONLY to derive the
-    collision-resistant program_id — not emitted (bloat, no info gain).
+    emitted as tree_str). tree = raw mkTree, used to derive the
+    collision-resistant program_id (not emitted currently)
     cscore = flat list in _CSCORE_FIELDS order; bscore = ['mkBScore', spine]|spine|Nil."""
     tree_str = expr_to_str(expr)        # preOrder — lossless for resolved members
     raw = expr_to_str(tree)             # full raw tree -> identity only
@@ -311,8 +306,7 @@ def add_merged_member(tree):
 
 
 def set_merge_count(name, value):
-    """Accumulate a named merge-pipeline count into _pending_merge["counts"].
-    Additive so nDeme>1 recurses correctly through mergeDemes."""
+    """Accumulate a named merge-pipeline count into _pending_merge["counts"]."""
     if _pending_merge is not None:
         k = _flat(name); c = _pending_merge["counts"]
         c[k] = (c.get(k) or 0) + (_num(value) or 0)
@@ -323,9 +317,7 @@ def add_cull_candidate(expr, tree, bscore, raw, cpx, pen):
     """A merge survivor (mkExemplar from removeDominated) entering the resize cull,
     fed one-per-call from sbEmitCullCands (state-builder.metta:110).
     Boundary shapes: expr = preOrder nested-list AST; tree = full raw mkTree
-    (hashed for program_id, same scheme as add_member); bscore = ['mkBScore', spine].
-    raw/cpx/pen are scalars pre-extracted by named cscore accessors in MeTTa, so
-    there is no field-alignment ambiguity from the raw mkCscore atom."""
+    (hashed for program_id, same scheme as add_member); bscore = ['mkBScore', spine]."""
     if _pending_merge is None:
         return 0
     _pending_merge["cull_candidates"].append({
@@ -341,8 +333,6 @@ def add_cull_candidate(expr, tree, bscore, raw, cpx, pen):
 
 def set_selection(tree):
     """post_selection hook: record the exemplar selectExemplar chose THIS gen.
-    Called from inside expandDeme with the FULL raw tree — same value the member
-    loop hashes — so the program_id matches a candidate's id.
     Buffered (expandDeme lacks $genIndex); flush_gen consumes + validates it.
     A MISMATCH signals a real defect (stale buffer / multi-or-zero selection /
     non-canonical id)."""
@@ -352,19 +342,15 @@ def set_selection(tree):
     return 0
 
 
-# Boundary shape — confirmed against the producer.
+# Boundary shape 
 #   `state` is the hill-climbing optimizer state tuple returned by optimizeDemes
-#   and passed in from expandDemeHelper (deme/expand-deme.metta:81-82). Its fields
-#   (hill-climbing-helpers.metta:235):
+#   and passed in from expandDemeHelper:
 #     0:alreadyXover 1:lastChance 2:_ 3:prevCenter 4:prevStart 5:prevSize
 #     6:bestSscore 7:bestScore 8:currentNInstances 9:d 10:i
 #   Index 8 (currentNInstances) is the deme's running fitness-eval count, in one
 #   of two marshalled forms:
 #     * a bare Number                  e.g.  240
-#     * an unreduced sum expr (+ a b)  e.g.  ['+', 180, 60]   (running total not
-#                                            yet evaluated when the state crossed)
-#   For the summed form, '+' is the operator symbol and [1]/[2] its two operands,
-#   totaled here into one per-deme count.
+#     * an unreduced sum expr (+ a b)  e.g.  ['+', 180, 60]   
 _EVAL_COUNT_INDEX = 8  # currentNInstances; see note above
 
 
@@ -385,8 +371,7 @@ def set_deme_evals(deme_id, state):
 
 def set_problem_spec(labels, arity=None):
     """Input feature space — the domain the pair-sampling / FS / operator-inclusion
-    action spaces are defined over. From getArgLabels (mkITable ...).
-    Called once at run start; persists into every state_doc for that run."""
+    action spaces are defined over. From getArgLabels (mkITable ...)."""
     global _problem_spec
     # labels crosses as a Cons spine of symbol strings from getArgLabels
     # (sbSetProblemSpec, state-builder.metta:17) -> ['Cons','X1',['Cons','X2','Nil']].
@@ -455,8 +440,7 @@ def emit_run_config():
 
 def set_problem_spec_strategy(moves, n_games, opponent_policy, complexity_ratio):
     """Strategy analog of set_problem_spec. Moves arrive as a marshalled flat list
-    of symbols (bare MeTTa tuple, not a Cons spine), from sbSetProblemSpecStrategy
-    (state-builder.metta:147)."""
+    of symbols (bare MeTTa tuple, not a Cons spine), from sbSetProblemSpecStrategy"""
     global _problem_spec
     move_list = moves if isinstance(moves, list) else [moves]
     _problem_spec = {
@@ -470,8 +454,7 @@ def set_problem_spec_strategy(moves, n_games, opponent_policy, complexity_ratio)
 
 
 def flush_terminal(gen):
-    """Final post-merge metapopulation -> terminal.json. Offline/experiment use;
-    no ready/ sentinel (not an agent step)."""
+    """Final post-merge metapopulation -> terminal.json."""
     g = _num(gen)
     s = _gs(g)
     members = s["members"]
