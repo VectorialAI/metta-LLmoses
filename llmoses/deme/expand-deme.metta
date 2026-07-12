@@ -183,6 +183,7 @@ $optimDeme
          ($topScore (getExemplarCscore $top))
          ($_ (sbEmitAllMerged $updatedMetaPop))
          ($_emit (sbEmitGeneration $genIndex $metaPop $optimizedDemes))
+         ($_resp (sbAwaitResponse $genIndex))
          ($_term (if (or (== $maxGen 1) (== $topScore $maxScore))
                      (sbEmitTerminal (+ $genIndex 1) $updatedMetaPop)
                      0))

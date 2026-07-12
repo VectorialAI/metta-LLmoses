@@ -348,7 +348,7 @@ for g in range(1, expected_gens + 1):
         if "operator_inclusion_set" in d:
             fail(f"operator_inclusion_set must not appear in deme step-{g}")
         kb = d.get("knob_type_breakdown", {})
-        if kb.get("logical", 0) != 0: fail(f"logical knobs present in strategy deme step-{g}: {kb}")
+        if kb.get("boolean", 0) != 0: fail(f"boolean knobs present in strategy deme step-{g}: {kb}")
         for k in d.get("knobs", []):
             if k.get("kind") == "strategy":
                 saw_strategy_knob = True

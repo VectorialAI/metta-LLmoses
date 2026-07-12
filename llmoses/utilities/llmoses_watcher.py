@@ -155,6 +155,12 @@ def _scan_and_process(run_dir, dirs, consumed_dir):
             continue
         try:
             _handle_step(run_dir, seq, gen, dirs)
+            # Phase II return leg: drop the response sentinel LAST (symmetric to the
+            # emitter writing ready/ last), so its presence means utilities + traces
+            # for this step are fully written. MOSES blocks on this in await_response.
+            resp = os.path.join(dirs["response"], f"run-{seq}-step-{gen}")
+            with open(resp, "w", encoding="utf-8") as fh:
+                fh.write(f"{int(time.time() * 1000)}\n")
             # Move the marker out of ready/ — drain == "ready/ is empty".
             os.replace(entry.path, os.path.join(consumed_dir, entry.name))
             processed += 1
@@ -178,8 +184,9 @@ def main():
         "ready":     os.path.join(run_dir, "ready"),
         "utilities": os.path.join(run_dir, "utilities"),
         "traces":    os.path.join(run_dir, "traces"),
+        "response":  os.path.join(run_dir, "response"),  # Phase II return leg
     }
-    for k in ("utilities", "traces"):
+    for k in ("utilities", "traces", "response"):
         os.makedirs(dirs[k], exist_ok=True)
     consumed_dir = os.path.join(dirs["ready"], ".consumed")
     os.makedirs(consumed_dir, exist_ok=True)

@@ -15,7 +15,8 @@ except Exception:  # pragma: no cover - guide docs must not block state emission
 
 RunSpace = namedtuple(
     "RunSpace",
-    ["run_id", "run_dir", "state_dir", "action_dir", "ready_dir", "native_log"],
+    ["run_id", "run_dir", "state_dir", "action_dir", "ready_dir", "response_dir",
+     "native_log"],
 )
 
 _CTX_ERR_LOG = "context_docs_errors.log"
@@ -33,7 +34,8 @@ def bootstrap(llmoses_dir, version):
     state_dir = os.path.join(run_dir, "state")
     action_dir = os.path.join(run_dir, "action")
     ready_dir = os.path.join(run_dir, "ready")
-    for d in (state_dir, action_dir, ready_dir):
+    response_dir = os.path.join(run_dir, "response")  # Phase II return leg
+    for d in (state_dir, action_dir, ready_dir, response_dir):
         os.makedirs(d, exist_ok=True)
 
     native_log = open(os.path.join(run_dir, "moses_native_log.jsonl"),
@@ -47,7 +49,8 @@ def bootstrap(llmoses_dir, version):
     except Exception:
         pass
 
-    return RunSpace(run_id, run_dir, state_dir, action_dir, ready_dir, native_log)
+    return RunSpace(run_id, run_dir, state_dir, action_dir, ready_dir, response_dir,
+                    native_log)
 
 
 def ensure_context_docs(llmoses_dir, run_id, run_dir, run_seq=None,

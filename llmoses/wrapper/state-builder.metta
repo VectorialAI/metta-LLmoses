@@ -11,6 +11,9 @@
 (= (sbNewRun)           (py-call (state_builder.new_run)))
 (= (sbBeginGen $g)      (py-call (state_builder.begin_gen $g)))
 (= (sbGetTotalEvals)    (py-call (state_builder.get_total_evals)))
+;; Phase II return leg: block for the watcher's response to gen $g, then continue.
+;; Returns 0 (shape-identical to every sb* hook); env-gated + timeout-safe in Python.
+(= (sbAwaitResponse $g) (py-call (state_builder.await_response $g)))
 
 ;; --- input feature spec: emit once per run from the ITable ----------------
 ;; Boolean problems have $itable in context; strategy problems pass 0 (no-op).

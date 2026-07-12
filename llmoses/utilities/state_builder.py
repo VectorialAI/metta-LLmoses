@@ -11,6 +11,7 @@ import math
 import time
 import hashlib
 import os
+import sys
 
 import atom_evidence
 import runspace
@@ -40,6 +41,7 @@ _RUN_DIR = _RS.run_dir
 _STATE_DIR = _RS.state_dir
 _ACTION_DIR = _RS.action_dir
 _READY_DIR = _RS.ready_dir
+_RESPONSE_DIR = _RS.response_dir
 _NFH = _RS.native_log
 
 # --- per-run + per-gen accumulator state -----------------------------------
@@ -59,6 +61,15 @@ _pending_run_params = {}   # name -> raw value; persists across gens, reset by n
 _atom_alphabet = None      # {problem_type, prefix, atoms:[{index,key,label}]}; static, run_config
 _atom_alphabet_map = {}    # label -> {index, key}; walker lookup, derived from _atom_alphabet
 _atom_cumulative = {}      # key -> {appearances_total, first_seen_gen, last_seen_gen} (run-scoped)
+_capture_failures = {}     # kind -> count; reset by new_run. Unifies flush-section
+                           # degradations and response_timeouts as one validity signal.
+
+# --- Phase II return leg (blocking watcher handshake) -----------------------
+# OFF by default so existing watcher-less smoke tests are byte-for-byte unchanged;
+# Phase II runs opt in with LLMOSES_AWAIT_RESPONSE=1 and a live watcher.
+_AWAIT_ENABLED = os.environ.get("LLMOSES_AWAIT_RESPONSE", "0") == "1"
+_RESP_POLL_S = float(os.environ.get("LLMOSES_RESPONSE_POLL_S", "0.05"))
+_RESP_TIMEOUT_S = float(os.environ.get("LLMOSES_RESPONSE_TIMEOUT_S", "30"))
 
 # Boltzmann selection constants; mirror exemplar-selection.metta COMPXY_TEMP / INV_TEMP.
 _COMPXY_TEMP = 6.0
@@ -203,7 +214,7 @@ def new_run():
     global _run_seq, _cur_state_dir, _cur_action_dir, _pending_selection, _pending_merge
     global _pending_deme_evals, _depth, _total_evals, _explored_ids, _problem_spec
     global _last_complexity_ratio, _pending_run_params
-    global _atom_alphabet, _atom_alphabet_map, _atom_cumulative
+    global _atom_alphabet, _atom_alphabet_map, _atom_cumulative, _capture_failures
     _run_seq = max(_run_seq + 1, _max_existing_run_seq() + 1)
     _cur_state_dir = os.path.join(_STATE_DIR, f"run-{_run_seq}")
     _cur_action_dir = os.path.join(_ACTION_DIR, f"run-{_run_seq}")
@@ -221,6 +232,7 @@ def new_run():
     _atom_alphabet = None
     _atom_alphabet_map = {}
     _atom_cumulative = {}
+    _capture_failures = {}
     runspace.ensure_context_docs(_LLMOSES_DIR, _RUN_ID, _RUN_DIR, run_seq=_run_seq)
     return _run_seq
 
@@ -469,8 +481,45 @@ def flush_terminal(gen):
                            "best_penalized_score": best, "members": members_out},
         "problem_spec": _problem_spec,
         "run_parameters": _build_run_parameters(),
+        # Run total, per-kind (incl. response_timeout): nonzero == partly-blind run.
+        "capture_failures": dict(_capture_failures),
     }
     _write_json(os.path.join(_cur_state_dir, "terminal.json"), doc)
+    return 0
+
+
+def await_response(g):
+    """Phase II foothold: block until the watcher signals a response for gen g,
+    then hand control back to MOSES. v0 reads nothing into the reduction — the
+    response is consumed Python-side and discarded; the run proceeds natively
+    regardless of content. Isolates round-trip plumbing from consumption.
+
+    Gated by LLMOSES_AWAIT_RESPONSE (default off) so non-Phase-II runs are
+    unaffected. §5.1.7 inverted: the run is now coupled to the responder, BUT a
+    broken/absent responder must degrade to native, never deadlock. Block <=
+    timeout, then proceed. Always returns 0 — shape-identical to every sb* hook.
+    """
+    if not _AWAIT_ENABLED:
+        return 0
+    g = _num(g)
+    sentinel = os.path.join(_RESPONSE_DIR, f"run-{_run_seq}-step-{g}")
+    deadline = time.monotonic() + _RESP_TIMEOUT_S
+    try:
+        while not os.path.exists(sentinel):
+            if time.monotonic() >= deadline:
+                _capture_failures["response_timeout"] = \
+                    _capture_failures.get("response_timeout", 0) + 1
+                _NFH.write(json.dumps({
+                    "run_seq": _run_seq, "generation": g,
+                    "event": "response_timeout", "ts_ms": int(time.time() * 1000),
+                }) + "\n")
+                sys.stderr.write(f"[await_response] timeout run {_run_seq} step {g}; "
+                                 "proceeding natively\n")
+                return 0
+            time.sleep(_RESP_POLL_S)
+        # response present — v0 discards it (future: read + return a bias payload).
+    except Exception as e:                       # never raise into the Prolog goal
+        sys.stderr.write(f"[await_response] error run {_run_seq} step {g}: {e}\n")
     return 0
 
 
@@ -505,47 +554,71 @@ def flush_gen(gen):
 
     ts = int(time.time() * 1000)
 
-    lineage_diff = {
+    # Flush-layer fail-flags: each section's assembly runs under _section so a
+    # malformed section degrades to a placeholder (carrying capture_status:"failed"
+    # when it's a dict) instead of taking down the run. Generalizes the long-standing
+    # atom_evidence try/except. failed_sections drives the per-gen capture_status
+    # summary; _capture_failures is the run-scoped, per-kind validity counter.
+    failed_sections = []
+
+    def _section(name, build_fn, placeholder):
+        try:
+            return build_fn()
+        except Exception as e:  # capture failure must never fail the run
+            _capture_failures[name] = _capture_failures.get(name, 0) + 1
+            failed_sections.append(name)
+            sys.stderr.write(f"[flush_gen] section '{name}' failed run {_run_seq} "
+                             f"gen {g}: {e}\n")
+            if isinstance(placeholder, dict):
+                return {**placeholder, "capture_status": "failed"}
+            return placeholder
+
+    lineage_diff = _section("lineage_diff", lambda: {
         "seed_exemplar_id": selected_id,
         "new_programs": sorted(post_ids - cur_ids),
         "culled": sorted(cur_ids - post_ids),
-    }
+    }, {"seed_exemplar_id": selected_id, "new_programs": [], "culled": []})
 
-    demes, evals_gen = [], 0
-    for deme_id in s["deme_order"]:
-        deme = s["demes"][deme_id]
-        knob_breakdown = {"boolean": 0, "strategy": 0, "other": 0}
-        for knob in deme["knobs"]:
-            knob_breakdown[knob["kind"]] = knob_breakdown.get(knob["kind"], 0) + 1
-        neighborhood_size = sum(max(_num(knob["multiplicity"]) - 1, 0)
-                                for knob in deme["knobs"]
-                                if isinstance(knob["multiplicity"], (int, float)))
-        deme_evaluations = (deme["evaluations"] if deme["evaluations"] is not None
-                            else (_num(deme["instances"]) or 0))
-        evals_gen += deme_evaluations or 0
-        demes.append({
-            "deme_id": deme_id, "exemplar_program_id": selected_id,
-            "exemplar_expr": deme["deme_tree"],
-            "knobs": deme["knobs"], "knob_count": len(deme["knobs"]),
-            "knob_type_breakdown": knob_breakdown,
-            "neighborhood_size": neighborhood_size,
-            "instances_evaluated": deme["instances"],
-            "hill_climb_evaluations": deme["evaluations"],
-        })
+    def _build_demes():
+        demes_l, evals_l = [], 0
+        for deme_id in s["deme_order"]:
+            deme = s["demes"][deme_id]
+            knob_breakdown = {"boolean": 0, "strategy": 0, "other": 0}
+            for knob in deme["knobs"]:
+                knob_breakdown[knob["kind"]] = knob_breakdown.get(knob["kind"], 0) + 1
+            neighborhood_size = sum(max(_num(knob["multiplicity"]) - 1, 0)
+                                    for knob in deme["knobs"]
+                                    if isinstance(knob["multiplicity"], (int, float)))
+            deme_evaluations = (deme["evaluations"] if deme["evaluations"] is not None
+                                else (_num(deme["instances"]) or 0))
+            evals_l += deme_evaluations or 0
+            demes_l.append({
+                "deme_id": deme_id, "exemplar_program_id": selected_id,
+                "exemplar_expr": deme["deme_tree"],
+                "knobs": deme["knobs"], "knob_count": len(deme["knobs"]),
+                "knob_type_breakdown": knob_breakdown,
+                "neighborhood_size": neighborhood_size,
+                "instances_evaluated": deme["instances"],
+                "hill_climb_evaluations": deme["evaluations"],
+            })
+        return demes_l, evals_l
+    demes, evals_gen = _section("demes", _build_demes, ([], 0))
     _total_evals += evals_gen
 
-    pool_ids = cur_ids | {c["program_id"] for c in cull_cands}
-    merge_summary = {
-        "candidates_produced":     counts.get("candidates_produced"),
-        "duplicates_dropped":      counts.get("duplicates_dropped"),
-        "dominated_count_removed": counts.get("dominated_removed"),
-        "resize_cull": {
-            "incumbents":   sorted(cur_ids),
-            "new_entrants": cull_cands,
-            "survivors":    sorted(post_ids),
-            "culled":       sorted(pool_ids - post_ids),
-        },
-    }
+    def _build_merge_summary():
+        pool_ids = cur_ids | {c["program_id"] for c in cull_cands}
+        return {
+            "candidates_produced":     counts.get("candidates_produced"),
+            "duplicates_dropped":      counts.get("duplicates_dropped"),
+            "dominated_count_removed": counts.get("dominated_removed"),
+            "resize_cull": {
+                "incumbents":   sorted(cur_ids),
+                "new_entrants": cull_cands,
+                "survivors":    sorted(post_ids),
+                "culled":       sorted(pool_ids - post_ids),
+            },
+        }
+    merge_summary = _section("merge_summary", _build_merge_summary, {})
 
     seed_depth = _depth.get(selected_id, 0)
     for pid in lineage_diff["new_programs"]:
@@ -553,44 +626,49 @@ def flush_gen(gen):
     for m in members:
         _depth.setdefault(m["program_id"], 0)
 
-    cratio = _cr_or_none(_pending_run_params.get("complexity_ratio"))
-    if cratio is None:
-        for m in members:
-            cpx, cpen = m["complexity"], m["cscore"]["complexity_penalty"]
-            if isinstance(cpx, (int, float)) and isinstance(cpen, (int, float)) and cpen:
-                cratio = cpx / cpen
-                break
+    def _build_cratio():
+        c = _cr_or_none(_pending_run_params.get("complexity_ratio"))
+        if c is None:
+            for m in members:
+                cpx, cpen = m["complexity"], m["cscore"]["complexity_penalty"]
+                if isinstance(cpx, (int, float)) and isinstance(cpen, (int, float)) and cpen:
+                    c = cpx / cpen
+                    break
+        return c
+    cratio = _section("complexity_ratio", _build_cratio, None)
     _last_complexity_ratio = cratio
 
     members_out = [_member_out(m) for m in members]
 
-    post_selection_evt = None
-    if selection_status != "no_selection":
+    def _build_post_selection():
+        if selection_status == "no_selection":
+            return None
         rank = None
         if selected_id not in (None, "MISMATCH"):
             rank = next((i for i, m in enumerate(members)
                          if m["program_id"] == selected_id), None)
-        post_selection_evt = {
+        return {
             "event_type": "post_selection", "generation": g, "timestamp_ms": ts,
             "chosen_program_id": selected_id,
             "native_boltzmann_probability": (probs[rank]
-                                              if rank is not None and rank < len(probs) else None),
+                                             if rank is not None and rank < len(probs) else None),
             "selected_position": rank, "llm_utility": None,
             "selection_status": selection_status,
         }
+    post_selection_evt = _section("post_selection", _build_post_selection,
+                                  {"event_type": "post_selection", "generation": g})
 
     # Atom evidence is best-effort emission metadata; malformed trees must not
-    # interrupt search or generation output. Settled-side only, but stays wrapped.
-    try:
-        atom_evidence_block, atom_lossless = atom_evidence.build_atom_evidence(
+    # interrupt search or generation output. Routed through _section so its
+    # failures land in the same per-kind counter as every other section.
+    atom_evidence_block, atom_lossless = _section(
+        "atom_evidence",
+        lambda: atom_evidence.build_atom_evidence(
             members, g, ptype, best, _atom_alphabet_map, _atom_cumulative,
-            _VERSION, _run_seq)
-    except Exception:  # pragma: no cover - defensive only
-        atom_evidence_block = {"atom_appearances": [], "realized_cooccurrences": [],
-                               "atom_cumulative": {},
-                               "degenerate_summary": {"contradiction_dropped": 0,
-                                                      "repeats_collapsed": 0}}
-        atom_lossless = None
+            _VERSION, _run_seq),
+        ({"atom_appearances": [], "realized_cooccurrences": [], "atom_cumulative": {},
+          "degenerate_summary": {"contradiction_dropped": 0, "repeats_collapsed": 0}},
+         None))
 
     state_doc = {
         "schema_version": _VERSION, "run_seq": _run_seq, "generation": g,
@@ -607,6 +685,10 @@ def flush_gen(gen):
         "lineage_diff": lineage_diff,
         "moses_native_events": {"post_selection": post_selection_evt},
         "atom_evidence": atom_evidence_block,
+        # Contract: ready/ now means "written + self-describing completeness".
+        # Consumers must read this rather than assume the step is fully captured.
+        "capture_status": {"failed_sections": failed_sections,
+                           "ok": not failed_sections},
     }
 
     action_doc = {
@@ -634,6 +716,7 @@ def flush_gen(gen):
     _NFH.write(json.dumps({
         "run_seq": _run_seq, "generation": g, "size": len(members),
         "best_penalized_score": best,
+        "capture_failures": len(failed_sections),  # live tail-able blind-spot signal
         "ts_ms": int(time.time() * 1000),
     }) + "\n")
 
