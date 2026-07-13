@@ -1,3 +1,35 @@
+;; ============================================================================
+;; llmoses/representation/sample-logical-perms.metta
+;;
+;; Drop-in replacement for representation/sample-logical-perms.metta — do NOT
+;; import the upstream file. Sampling evidence is emitted after merge by
+;; state_builder.py. Helpers genPairs / genTriplet / getArgs / getMoveArgs are
+;; inlined here so no upstream import is needed.
+;;
+;; Phase II lever 5 (atom prior): the draw over enumerated combinations goes
+;; through llmWeightedSelector. Python gates it — begin_combo_draw returns 0
+;; whenever the atom_prior lever is off, and the native lazyRandomSelector
+;; then runs UNTOUCHED (no behavioral deviation). When on, each pick is a
+;; without-replacement weighted draw whose combo weights come from the
+;; response's per-atom prior via the width-generic aggregate (D-027); a
+;; zero-mass pool degrades to uniform with a bias_degraded audit row.
+;; ============================================================================
+
+;; --- Phase II lever 5: weighted without-replacement selector ---------------
+(= (llmWeightedSelector $lower $upper $n $combos $labels)
+   (let* (($on (py-call (state_builder.begin_combo_draw $combos $labels))))
+     (if (== $on 1)
+         (llmWeightedPickLoop $lower $upper $n ())
+         (lazyRandomSelector $lower $upper $n))))
+
+(= (llmWeightedPickLoop $lower $upper $n $picked)
+   (if (<= $n 0)
+       $picked
+       (chain (py-call (state_builder.weighted_combo_pick $lower $upper $picked)) $rand
+           (llmWeightedPickLoop $lower $upper (- $n 1) (union-atom $picked ($rand))))))
+
+;; --- inlined helpers from representation/sample-logical-perms ---
+
 ;; A function to generate all pairs of numbers from a list, where a != b
 ;; (: genPairs (-> Expression Expression))
 ;; TODO: Rewrite using iterative logic
@@ -69,7 +101,7 @@
             (if (<= $nPairs 1)
                 (let $arg (car-atom $argLabels) ($arg (NOT $arg)))  ;; assuming at worst case, only one argument is returned -- representation building process makes sure that those with empty feature set do not make it to actual knob building stage
                 (let* (($upperbound (- (* $arity (- $arity 1)) 1))
-                        ($picked (lazyRandomSelector 0 $upperbound $nPairs))
+                        ($picked (llmWeightedSelector 0 $upperbound $nPairs $idxPairs $argLabels))
                         ($perms (collapse (getArgs $swapedOp $idxPairs $picked $argLabels))))
                    (concatT $argLabels $perms)))))
 
@@ -113,7 +145,7 @@
             (let*
                 (
                     ($upperbound (- (length $idxPairs) 1))
-                    ($picked (lazyRandomSelector 0 $upperbound $nPairs))
+                    ($picked (llmWeightedSelector 0 $upperbound $nPairs $idxPairs $moveLabels))
                     ($perms (collapse (getMoveArgs $op $idxPairs $picked $moveLabels)))
                 )
                    $perms

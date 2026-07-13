@@ -1153,6 +1153,98 @@ def compare_exemplars(tree1, tree2):
         return 2
 
 
+# --- Lever 5: atom-prior weighted combination sampling ---------------------------
+def _aggregate_prior(u_hats, fn):
+    """Width-generic combo weight from per-atom sharpened priors."""
+    if not u_hats:
+        return 1.0
+    if fn == "mean":
+        return sum(u_hats) / len(u_hats)
+    if fn == "geometric_mean":
+        prod = 1.0
+        for u in u_hats:
+            prod *= u
+        return prod ** (1.0 / len(u_hats)) if prod > 0 else 0.0
+    if fn == "softmax":  # exp-weighted mean of the atom priors
+        exps = [math.exp(min(u, 50.0)) for u in u_hats]
+        return sum(u * e for u, e in zip(u_hats, exps)) / sum(exps)
+    prod = 1.0           # default: product — a combo is only as strong as its
+    for u in u_hats:     # weakest atom
+        prod *= u
+    return prod
+
+
+def begin_combo_draw(combos, labels):
+    """Gate + setup for one sampler node draw. combos = enumerated index
+    combinations (pairs/triplets) into labels. Returns 1 when the atom_prior
+    lever applies (the fork then draws through weighted_combo_pick); 0 keeps
+    the native lazyRandomSelector untouched."""
+    global _combo_buf
+    try:
+        if not _lever_on("atom_prior", "atom_prior"):
+            _combo_buf = None
+            return 0
+        label_list = [_flat(l) for l in (labels if isinstance(labels, list) else [labels])]
+        combo_list = []
+        for c in (combos if isinstance(combos, list) else []):
+            idxs = [int(_num(v)) for v in (c if isinstance(c, list) else [c])]
+            combo_list.append(idxs)
+        prior = _pending_utilities["atom_prior"]
+        temp = _pending_utilities["sampling_temperature"]
+        fn = _pending_utilities["aggregate_fn"]
+        lam = _LEVER_WEIGHTS["atom_prior"]
+        weights, names = [], []
+        for idxs in combo_list:
+            atoms = [label_list[i] if 0 <= i < len(label_list) else None for i in idxs]
+            # missing atom in the prior => neutral factor 1.0
+            u_hats = [_sharpen(prior[a], temp) if a in prior else 1.0 for a in atoms]
+            weights.append(_mix(1.0, _aggregate_prior(u_hats, fn), lam))
+            names.append(atoms)
+        _combo_buf = {"weights": weights, "names": names}
+        _log_event("bias_applied", lever="atom_prior", response_gen=_utility_gen,
+                   lam=lam, aggregate_fn=fn, n_combos=len(weights),
+                   nonzero=sum(1 for w in weights if w > 0))
+        return 1
+    except Exception as e:
+        sys.stderr.write(f"[begin_combo_draw] error: {e}\n")
+        _combo_buf = None
+        return 0
+
+
+def weighted_combo_pick(lower, upper, picked):
+    """One without-replacement weighted draw over combo indices [lower, upper]
+    excluding picked. All-zero remaining mass degrades to uniform (logged)."""
+    try:
+        lo, hi = int(_num(lower)), int(_num(upper))
+        taken = {int(_num(p)) for p in (picked if isinstance(picked, list) else
+                                        ([picked] if picked is not None else []))}
+        remaining = [i for i in range(lo, hi + 1) if i not in taken]
+        if not remaining:
+            return lo
+        buf = _combo_buf or {}
+        weights = [(buf.get("weights") or [])[i]
+                   if i < len(buf.get("weights") or []) else 1.0
+                   for i in remaining]
+        pos = _roulette(weights)
+        if pos is None:  # zero mass left: deliberate diversity cut exhausted
+            pos = random.randint(0, len(remaining) - 1)
+            _log_event("bias_degraded", lever="atom_prior",
+                       reason="zero_mass_pool", remaining=len(remaining))
+            _log_event("combo_pick", lever="atom_prior", degraded=True,
+                       index=remaining[pos],
+                       atoms=(buf.get("names") or [[]])[remaining[pos]]
+                       if remaining[pos] < len(buf.get("names") or []) else None)
+            return remaining[pos]
+        _log_event("combo_pick", lever="atom_prior", degraded=False,
+                   index=remaining[pos],
+                   atoms=(buf.get("names") or [[]])[remaining[pos]]
+                   if remaining[pos] < len(buf.get("names") or []) else None)
+        return remaining[pos]
+    except Exception as e:
+        sys.stderr.write(f"[weighted_combo_pick] error: {e}\n")
+        return int(_num(lower)) if lower is not None else 0
+
+
 # --- Lever 4: complexity ratio ---------------------------------------------------
 def current_complexity_ratio(g):
     """Called once per generation from runMosesLoop. Returns 0 when the context
