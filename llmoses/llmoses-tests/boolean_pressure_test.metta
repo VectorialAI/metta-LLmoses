@@ -62,7 +62,7 @@
 !(import! &self llmoses/moses/neighborhood-sampling)
 !(import! &self metapopulation/exemplar-type)
 !(import! &self llmoses/metapopulation/exemplar-selection)
-!(import! &self metapopulation/metapopulation)
+!(import! &self llmoses/metapopulation/metapopulation)
 !(import! &self deme/deme-id-creation)
 !(import! &self deme/score-deme)
 !(import! &self llmoses/deme/merge-demes)

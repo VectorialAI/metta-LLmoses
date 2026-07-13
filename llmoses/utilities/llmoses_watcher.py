@@ -88,12 +88,15 @@ def _mock_utility(mode, state, run_config, gen):
     elif mode == "cull_targets":
         ordered = sorted(surv, key=lambda p: surv[p])       # worst first
         targets = set(ordered[:2])
-        doc["culling_utilities"] = [
-            {"program_id": p, "retention_utility": 0.0 if p in targets else 1.0}
-            for p in surv]
+        doc["culling_utilities"] = (
+            [{"program_id": p, "retention_utility": 0.0 if p in targets else 1.0}
+             for p in surv]
+            # '*' = default for candidates born after this response: protected.
+            + [{"program_id": "*", "retention_utility": 1.0}])
     elif mode == "retain_all":
-        doc["culling_utilities"] = [{"program_id": p, "retention_utility": 1.0}
-                                    for p in surv]
+        doc["culling_utilities"] = (
+            [{"program_id": p, "retention_utility": 1.0} for p in surv]
+            + [{"program_id": "*", "retention_utility": 1.0}])
     elif mode == "reverse_order":
         doc["comparator_bias"] = {
             "program_id_ordering": sorted(surv, key=lambda p: surv[p])}  # worst first

@@ -193,6 +193,15 @@
 (= (removeDominated (cons $exemplar (cons $next $rest)))
    (removeDominatedRec $exemplar (cons $next $rest) ()))
 
+;; LLMOSES Phase II lever 2b: dominated-candidate escape gate. Before a
+;; candidate is dropped for being pareto-dominated, Python may keep it with
+;; p(keep) = lam * retention_utility (culling lever). Returns 1 = keep
+;; (treat the pair as incomparable), 0 = native removal. eval forces runtime
+;; dispatch of the accessor, mirroring the sbEmitCullCands pattern below.
+(= (sbDominatedEscape $ex)
+   (let* (($tree (eval (getExemplarTree $ex))))
+     (py-call (state_builder.dominated_escape $tree))))
+
 ;; Helper: Compares an exemplar with others, accumulating non-dominated exemplars.
 ;; Params:
 ;;   $exemplar: Current exemplar to compare.
@@ -204,13 +213,17 @@
    (cons $exemplar $acc))
 (= (removeDominatedRec $exemplar (cons $other $rest) $acc)
    (let $domResult (dominates (getExemplarBScore $exemplar) (getExemplarBScore $other))
-      ;; (trace! (if (== $domResult True) Dominated $domResult)
-      (if (== $domResult True) ;; Could also be Indeterminate that's why we use explicit == comparison
-          (removeDominatedRec $exemplar $rest $acc)
+      (if (== $domResult True)
+          (let $esc (sbDominatedEscape $other)
+            (if (== $esc 1)
+                (removeDominatedRec $exemplar $rest (cons $other $acc))
+                (removeDominatedRec $exemplar $rest $acc)))
           (if (== $domResult False)
-              (removeDominated (cons $other $rest))
+              (let $esc2 (sbDominatedEscape $exemplar)
+                (if (== $esc2 1)
+                    (removeDominatedRec $exemplar $rest (cons $other $acc))
+                    (removeDominated (cons $other $rest))))
               (removeDominatedRec $exemplar $rest (cons $other $acc))))
-      ;; )
       ))
 
 ;; Merges a list of exemplars into the metapopulation, maintaining order based on exemplar comparison.

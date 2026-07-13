@@ -901,13 +901,21 @@ def _ingest_utilities(g):
         if isinstance(e, dict) and e.get("program_id") is not None:
             exemplar[str(e["program_id"])] = _clamp01(e.get("utility"))
     retention = {}
+    retention_default = None
     for e in doc.get("culling_utilities") or []:
         if not isinstance(e, dict) or e.get("program_id") is None:
             continue
         r = e.get("retention_utility", e.get("retain_utility"))
         if r is None and e.get("cull_utility") is not None:
             r = 1.0 - _clamp01(e.get("cull_utility"))
-        if r is not None:
+        if r is None:
+            continue
+        # program_id "*" = default retention for candidates the agent has not
+        # seen (programs born after the response) — without it, fresh
+        # candidates are structurally exempt from culling guidance.
+        if str(e["program_id"]) == "*":
+            retention_default = _clamp01(r)
+        else:
             retention[str(e["program_id"])] = _clamp01(r)
     atom_prior = {}
     for e in doc.get("atom_utility_prior") or []:
@@ -933,7 +941,8 @@ def _ingest_utilities(g):
         temp = None
 
     _pending_utilities = {
-        "exemplar": exemplar, "retention": retention, "atom_prior": atom_prior,
+        "exemplar": exemplar, "retention": retention,
+        "retention_default": retention_default, "atom_prior": atom_prior,
         "aggregate_fn": aggregate_fn, "comparator_rank": comparator_rank,
         "complexity_ratio_delta": delta, "sampling_temperature": temp,
     }
@@ -1042,17 +1051,30 @@ def add_cull_member(i, tree):
     return 0
 
 
+def _retention_of(pid):
+    """Retention for pid, honoring the '*' wildcard default; None = no guidance."""
+    ret = _pending_utilities["retention"]
+    return ret.get(pid, _pending_utilities.get("retention_default"))
+
+
+def _culling_lever_on():
+    """The culling lever has data when any explicit retention entry OR the '*'
+    wildcard default is present."""
+    return (_lever_on("culling") and
+            (_pending_utilities.get("retention") or
+             _pending_utilities.get("retention_default") is not None))
+
+
 def cull_index():
     try:
         cands = (_cull_buf or {}).get("cands") or []
         if not cands:  # degenerate; mirror native lower bound
             return max(int((_cull_buf or {}).get("offset", 1)) - 1, 0)
-        if _lever_on("culling", "retention"):
+        if _culling_lever_on():
             lam = _LEVER_WEIGHTS["culling"]
             temp = _pending_utilities["sampling_temperature"]
-            ret = _pending_utilities["retention"]
-            weights = [_mix(1.0, _sharpen(1.0 - ret[c["pid"]], temp), lam)
-                       if c["pid"] in ret else 1.0
+            weights = [_mix(1.0, _sharpen(1.0 - r, temp), lam)
+                       if (r := _retention_of(c["pid"])) is not None else 1.0
                        for c in cands]
             degraded = None
             if sum(weights) <= 0:
@@ -1077,15 +1099,15 @@ def dominated_escape(tree):
     """Bernoulli gate on removeDominated: p(keep) = lam * u_hat(retention).
     Returns 1 to KEEP the dominated candidate, 0 for the native removal."""
     try:
-        if not _lever_on("culling", "retention"):
+        if not _culling_lever_on():
             return 0
         pid = _pid(expr_to_str(tree))
-        ret = _pending_utilities["retention"]
-        if pid not in ret:
+        r = _retention_of(pid)
+        if r is None:
             return 0
         lam = _LEVER_WEIGHTS["culling"]
         temp = _pending_utilities["sampling_temperature"]
-        p_keep = _clamp01(lam * _sharpen(ret[pid], temp))
+        p_keep = _clamp01(lam * _sharpen(r, temp))
         keep = random.random() < p_keep
         if keep:
             _log_event("bias_applied", lever="dominated_escape",
@@ -1098,6 +1120,17 @@ def dominated_escape(tree):
 
 
 # --- Lever 3: comparator ordering ----------------------------------------------
+def comparator_resort_active():
+    """1 when the comparator lever should re-sort the current metapopulation.
+    Merge inserts always involve a candidate born AFTER the response (its id
+    cannot appear in program_id_ordering), so the ordering is applied by
+    re-sorting the KNOWN population at the top of each generation instead."""
+    try:
+        return 1 if _lever_on("comparator", "comparator_rank") else 0
+    except Exception:
+        return 0
+
+
 def compare_exemplars(tree1, tree2):
     """comparator lever: -1/0/1 when the response's program_id_ordering covers
     BOTH exemplars (lower rank = better = Greater); 2 = 'use the native

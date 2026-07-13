@@ -165,15 +165,17 @@ $optimDeme
          ($_ulog (sbLogUtilities $genIndex))
          ($ratioOverride (py-call (state_builder.current_complexity_ratio $genIndex)))
          ($ctx2 (if (== $ratioOverride 0) $context (llmRebuildContext $context $ratioOverride)))
+         ($cmpOn (py-call (state_builder.comparator_resort_active)))
+         ($mp2 (if (== $cmpOn 1) (llmResortMetapop $metaPop) $metaPop))
          ($optimizedDemes
            (case $ctx2
              ((($prune-exemplar $fs-algo $truthTableBScore $itable)
                (trace! "expand  deme returnn"
-                 (expandDeme $metaPop $nExpansion $nDeme $prune-exemplar $fs-algo
+                 (expandDeme $mp2 $nExpansion $nDeme $prune-exemplar $fs-algo
                              $truthTableBScore $optimize $itable mi)))
               (($nGames $complexityRatio)
               (trace! "expand deme return"
-                 (expandDeme $metaPop $nExpansion $nDeme $nGames $complexityRatio
+                 (expandDeme $mp2 $nExpansion $nDeme $nGames $complexityRatio
                              $maxScore $optimize))))))
          ;; Force expansion before opening the merge buffer without requiring
          ;; the optimized-deme list to contain exactly one element.
@@ -185,15 +187,15 @@ $optimDeme
              ((($prune-exemplar $fs-algo $truthTableBScore $itable)
                (trace! "Merging Deme"
                  (mergeDemes $optimizedDemes $nEval $maxCandsPerDeme $minPoolSize
-                             $complexityTemperature $itable $metaPop $nToKeep $capCoef $genCount)))
+                             $complexityTemperature $itable $mp2 $nToKeep $capCoef $genCount)))
               (($nGames $complexityRatio)
                (trace! "Merging Deme"
                  (mergeDemes $optimizedDemes $nEval $maxCandsPerDeme $minPoolSize
-                             $complexityTemperature $nGames $metaPop $nToKeep $capCoef $genCount))))))
-         ($top (OS.getByIdx 0 $metaPop))
+                             $complexityTemperature $nGames $mp2 $nToKeep $capCoef $genCount))))))
+         ($top (OS.getByIdx 0 $mp2))
          ($topScore (getExemplarCscore $top))
          ($_ (sbEmitAllMerged $updatedMetaPop))
-         ($_emit (sbEmitGeneration $genIndex $metaPop $optimizedDemes))
+         ($_emit (sbEmitGeneration $genIndex $mp2 $optimizedDemes))
          ($_resp (sbAwaitResponse $genIndex))
          ($_term (if (or (== $maxGen 1) (== $topScore $maxScore))
                      (sbEmitTerminal (+ $genIndex 1) $updatedMetaPop)
