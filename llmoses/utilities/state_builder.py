@@ -8,6 +8,7 @@ run-directory bootstrap (runspace.py), and the atom-evidence walker
 """
 import json
 import math
+import random
 import time
 import hashlib
 import os
@@ -30,6 +31,38 @@ _ACTIVE_LEVERS = {
     "strategy": ["exemplar_selection", "culling", "atom_evidence",
                  "complexity_ratio", "comparator_hook"],
 }
+
+# --- Phase II lever switches (two independent planes, env-driven) ------------
+# Outbound: which emission sections the agent gets to see (default: all).
+# Inbound: which UtilityResponse components are applied to policy (default:
+# NONE — pure shadow). Per-lever mixing weight lambda in [0,1]; the unified
+# formula everywhere is  w' = w_native * (lam*u_hat + (1-lam)), so lam=0 is
+# exactly native and lam=1 with 0/1 utilities is explicit control.
+_EMIT_LEVER_NAMES = ("exemplar_selection", "culling", "atom_evidence",
+                     "complexity_ratio", "comparator_hook")
+_APPLY_LEVER_NAMES = ("exemplar_selection", "culling", "comparator",
+                      "complexity_ratio", "atom_prior")
+
+
+def _csv_env(name, default):
+    raw = os.environ.get(name)
+    if raw is None:
+        return set(default)
+    return {tok.strip() for tok in raw.split(",") if tok.strip()}
+
+
+def _lever_weight_env(name):
+    raw = os.environ.get(f"LLMOSES_LEVER_WEIGHT_{name.upper()}")
+    try:
+        lam = float(raw) if raw is not None else 1.0
+    except (TypeError, ValueError):
+        lam = 1.0
+    return min(max(lam, 0.0), 1.0)
+
+
+_EMIT_LEVERS = _csv_env("LLMOSES_EMIT_LEVERS", _EMIT_LEVER_NAMES)
+_APPLY_LEVERS = _csv_env("LLMOSES_APPLY_LEVERS", ())
+_LEVER_WEIGHTS = {n: _lever_weight_env(n) for n in _APPLY_LEVER_NAMES}
 
 # --- run-directory bootstrap (paths, native log, run_meta) ------------------
 _THIS_DIR = os.path.dirname(os.path.abspath(__file__))      # .../llmoses/utilities
@@ -63,6 +96,14 @@ _atom_alphabet_map = {}    # label -> {index, key}; walker lookup, derived from 
 _atom_cumulative = {}      # key -> {appearances_total, first_seen_gen, last_seen_gen} (run-scoped)
 _capture_failures = {}     # kind -> count; reset by new_run. Unifies flush-section
                            # degradations and response_timeouts as one validity signal.
+_pending_utilities = None  # parsed UtilityResponse (latest ingested); None = native
+_utility_gen = None        # generation whose response filled _pending_utilities
+_effective_cratio = None   # complexity-ratio lever accumulator (persists across gens)
+_cratio_applied_for = None  # last response gen whose ratio delta was consumed
+_comparator_overrides = 0  # comparator-lever override count since last flush_gen
+_sel_buf = None            # streamed selection candidates (begin_selection..select_index)
+_cull_buf = None           # streamed cull candidates (begin_cull..cull_index)
+_combo_buf = None          # streamed sampler combos (begin_combo_draw..weighted pick)
 
 # --- Phase II return leg (blocking watcher handshake) -----------------------
 # OFF by default so existing watcher-less smoke tests are byte-for-byte unchanged;
@@ -215,6 +256,8 @@ def new_run():
     global _pending_deme_evals, _depth, _total_evals, _explored_ids, _problem_spec
     global _last_complexity_ratio, _pending_run_params
     global _atom_alphabet, _atom_alphabet_map, _atom_cumulative, _capture_failures
+    global _pending_utilities, _utility_gen, _effective_cratio, _cratio_applied_for
+    global _comparator_overrides, _sel_buf, _cull_buf, _combo_buf
     _run_seq = max(_run_seq + 1, _max_existing_run_seq() + 1)
     _cur_state_dir = os.path.join(_STATE_DIR, f"run-{_run_seq}")
     _cur_action_dir = os.path.join(_ACTION_DIR, f"run-{_run_seq}")
@@ -233,6 +276,14 @@ def new_run():
     _atom_alphabet_map = {}
     _atom_cumulative = {}
     _capture_failures = {}
+    _pending_utilities = None
+    _utility_gen = None
+    _effective_cratio = None
+    _cratio_applied_for = None
+    _comparator_overrides = 0
+    _sel_buf = None
+    _cull_buf = None
+    _combo_buf = None
     runspace.ensure_context_docs(_LLMOSES_DIR, _RUN_ID, _RUN_DIR, run_seq=_run_seq)
     return _run_seq
 
@@ -440,8 +491,17 @@ def emit_run_config():
         "problem_spec": _problem_spec,
         "atom_alphabet": _atom_alphabet,
         "run_parameters": _build_run_parameters(),
-        "active_levers": _ACTIVE_LEVERS.get(ptype, []),
+        "active_levers": [l for l in _ACTIVE_LEVERS.get(ptype, [])
+                          if l in _EMIT_LEVERS],
         "comparator_hook_available": True,
+        # Phase II switch state: runs are self-describing about which lever
+        # data went out and which utility components were applied back in.
+        "lever_switches": {
+            "emit": sorted(_EMIT_LEVERS & set(_EMIT_LEVER_NAMES)),
+            "apply": sorted(_APPLY_LEVERS & set(_APPLY_LEVER_NAMES)),
+            "weights": {n: _LEVER_WEIGHTS[n]
+                        for n in sorted(_APPLY_LEVERS & set(_APPLY_LEVER_NAMES))},
+        },
     }
     _write_json(os.path.join(_cur_state_dir, "run_config.json"), doc)
     runspace.ensure_context_docs(_LLMOSES_DIR, _RUN_ID, _RUN_DIR, run_seq=_run_seq,
@@ -517,7 +577,9 @@ def await_response(g):
                                  "proceeding natively\n")
                 return 0
             time.sleep(_RESP_POLL_S)
-        # response present — v0 discards it (future: read + return a bias payload).
+        # Response present — ingest the UtilityResponse payload into module
+        # state (Phase II consumption; supersedes the v0 discard).
+        _ingest_utilities(g)
     except Exception as e:                       # never raise into the Prolog goal
         sys.stderr.write(f"[await_response] error run {_run_seq} step {g}: {e}\n")
     return 0
@@ -661,14 +723,25 @@ def flush_gen(gen):
     # Atom evidence is best-effort emission metadata; malformed trees must not
     # interrupt search or generation output. Routed through _section so its
     # failures land in the same per-kind counter as every other section.
-    atom_evidence_block, atom_lossless = _section(
-        "atom_evidence",
-        lambda: atom_evidence.build_atom_evidence(
-            members, g, ptype, best, _atom_alphabet_map, _atom_cumulative,
-            _VERSION, _run_seq),
-        ({"atom_appearances": [], "realized_cooccurrences": [], "atom_cumulative": {},
-          "degenerate_summary": {"contradiction_dropped": 0, "repeats_collapsed": 0}},
-         None))
+    # Emit-gated: with the lever off the walker never runs.
+    if "atom_evidence" in _EMIT_LEVERS:
+        atom_evidence_block, atom_lossless = _section(
+            "atom_evidence",
+            lambda: atom_evidence.build_atom_evidence(
+                members, g, ptype, best, _atom_alphabet_map, _atom_cumulative,
+                _VERSION, _run_seq),
+            ({"atom_appearances": [], "realized_cooccurrences": [],
+              "atom_cumulative": {},
+              "degenerate_summary": {"contradiction_dropped": 0,
+                                     "repeats_collapsed": 0}},
+             None))
+    else:
+        atom_evidence_block = {"atom_appearances": [], "realized_cooccurrences": [],
+                               "atom_cumulative": {},
+                               "degenerate_summary": {"contradiction_dropped": 0,
+                                                      "repeats_collapsed": 0},
+                               "emit_disabled": True}
+        atom_lossless = None
 
     state_doc = {
         "schema_version": _VERSION, "run_seq": _run_seq, "generation": g,
@@ -694,31 +767,38 @@ def flush_gen(gen):
     action_doc = {
         "schema_version": _VERSION, "run_seq": _run_seq, "generation": g,
         "problem_type": ptype,
-        "exemplar_candidates": [
+        # Each action component is emit-gated by LLMOSES_EMIT_LEVERS; a gated
+        # section emits its empty shape so consumers see stable keys.
+        "exemplar_candidates": ([
             {"program_id": m["program_id"], "tree_str": m["tree_str"],
              "penalized_score": m["cscore"]["penalized_score"],
              "complexity": m["complexity"],
              "raw_score": m["cscore"]["raw_score"],
              "lineage_depth": _depth.get(m["program_id"])}
             for m in members
-        ],
-        "culling_candidates": cull_cands if cull_cands else [],
-        "complexity_ratio": {
+        ] if "exemplar_selection" in _EMIT_LEVERS else []),
+        "culling_candidates": ((cull_cands if cull_cands else [])
+                               if "culling" in _EMIT_LEVERS else []),
+        "complexity_ratio": ({
             "current_value": cratio,
             "options": ([cratio] if cratio is not None else []),
-        },
+        } if "complexity_ratio" in _EMIT_LEVERS
+            else {"current_value": None, "options": []}),
     }
 
     _write_json(os.path.join(_cur_state_dir, f"step-{g}.json"), state_doc)
     _write_json(os.path.join(_cur_action_dir, f"step-{g}.json"), action_doc)
     if atom_lossless is not None:
         _write_json(os.path.join(_cur_state_dir, f"atom_lossless-{g}.json"), atom_lossless)
+    global _comparator_overrides
     _NFH.write(json.dumps({
         "run_seq": _run_seq, "generation": g, "size": len(members),
         "best_penalized_score": best,
         "capture_failures": len(failed_sections),  # live tail-able blind-spot signal
+        "comparator_overrides": _comparator_overrides,  # lever-3 decisions this gen
         "ts_ms": int(time.time() * 1000),
     }) + "\n")
+    _comparator_overrides = 0
 
     if selection_status == "ok":
         _explored_ids.add(selected_id)
@@ -727,3 +807,354 @@ def flush_gen(gen):
     with open(ready, "w", encoding="utf-8") as fh:
         fh.write(f"{int(time.time()*1000)}\n")
     return 0
+
+
+# ===========================================================================
+# Phase II utility guidance: ingestion + policy application
+#
+# The watcher's UtilityResponse for generation G is ingested at the end of
+# gen G (await_response) and applied to the meta-loop's draws during gen G+1.
+# Every application site uses the one mixing formula
+#     w' = w_native * (lam * u_hat + (1 - lam)),   u_hat = u ** (1/T)
+# so lam=0 reproduces native behavior exactly and lam=1 with 0/1 utilities
+# hands the utility explicit control. Every function here is called from a
+# Prolog goal and must never raise: errors degrade to native + a log row.
+# ===========================================================================
+def _log_event(event, **fields):
+    """One JSONL audit row in moses_native_log.jsonl; never raises."""
+    try:
+        row = {"run_seq": _run_seq, "event": event, "ts_ms": int(time.time() * 1000)}
+        row.update(fields)
+        _NFH.write(json.dumps(row) + "\n")
+    except Exception:
+        pass
+
+
+def _clamp01(x):
+    try:
+        return min(max(float(x), 0.0), 1.0)
+    except (TypeError, ValueError):
+        return 0.0
+
+
+def _sharpen(u, temp):
+    """sampling_temperature: u ** (1/T). T<=0/None/1 leave u unchanged."""
+    u = max(float(u), 0.0)
+    if temp and temp > 0 and temp != 1.0:
+        try:
+            return u ** (1.0 / temp)
+        except (OverflowError, ZeroDivisionError):
+            return u
+    return u
+
+
+def _mix(native_w, u_hat, lam):
+    return native_w * (lam * u_hat + (1.0 - lam))
+
+
+def _lever_on(name, data_key=None):
+    """Lever applies iff switched on, lambda > 0, and a response is buffered
+    (pass=true clears the buffer, so it reads as native everywhere)."""
+    if _pending_utilities is None or name not in _APPLY_LEVERS:
+        return False
+    if _LEVER_WEIGHTS.get(name, 0.0) <= 0.0:
+        return False
+    if data_key is not None and not _pending_utilities.get(data_key):
+        return False
+    return True
+
+
+def _roulette(weights):
+    """Native rouletteSelect semantics: r*sum, walk subtracting. Returns the
+    positional index into weights, or None when the total mass is zero."""
+    total = sum(weights)
+    if total <= 0:
+        return None
+    adjusted = total * random.random()
+    for i, w in enumerate(weights):
+        adjusted -= w
+        if adjusted <= 0:
+            return i
+    return len(weights) - 1
+
+
+def _ingest_utilities(g):
+    """Parse utilities/run-N/step-G.json (written by the watcher BEFORE the
+    response sentinel) into normalized per-lever lookups."""
+    global _pending_utilities, _utility_gen
+    path = os.path.join(_RUN_DIR, "utilities", f"run-{_run_seq}", f"step-{g}.json")
+    try:
+        with open(path, encoding="utf-8") as fh:
+            doc = json.load(fh)
+        if not isinstance(doc, dict):
+            raise ValueError("UtilityResponse is not a JSON object")
+    except Exception as e:
+        _log_event("utility_ingest_error", generation=g, error=str(e)[:200])
+        return
+    if doc.get("pass", True):
+        _pending_utilities, _utility_gen = None, g
+        _log_event("utility_ingest", generation=g, decline=True)
+        return
+
+    exemplar = {}
+    for e in doc.get("exemplar_utilities") or []:
+        if isinstance(e, dict) and e.get("program_id") is not None:
+            exemplar[str(e["program_id"])] = _clamp01(e.get("utility"))
+    retention = {}
+    for e in doc.get("culling_utilities") or []:
+        if not isinstance(e, dict) or e.get("program_id") is None:
+            continue
+        r = e.get("retention_utility", e.get("retain_utility"))
+        if r is None and e.get("cull_utility") is not None:
+            r = 1.0 - _clamp01(e.get("cull_utility"))
+        if r is not None:
+            retention[str(e["program_id"])] = _clamp01(r)
+    atom_prior = {}
+    for e in doc.get("atom_utility_prior") or []:
+        if isinstance(e, dict) and e.get("atom") is not None:
+            atom_prior[str(e["atom"])] = _clamp01(e.get("utility"))
+    levers = doc.get("feature_utility_levers") or {}
+    aggregate_fn = levers.get("aggregate_fn") if isinstance(levers, dict) else None
+    if aggregate_fn not in ("product", "mean", "geometric_mean", "softmax"):
+        aggregate_fn = "product"
+    comparator_rank = {}
+    cb = doc.get("comparator_bias")
+    if isinstance(cb, dict):
+        for rank, pid in enumerate(cb.get("program_id_ordering") or []):
+            comparator_rank.setdefault(str(pid), rank)
+    delta = doc.get("complexity_ratio_delta")
+    if not (isinstance(delta, dict) and delta.get("direction") in
+            ("increase", "decrease", "maintain")):
+        delta = None
+    temp = doc.get("sampling_temperature")
+    try:
+        temp = float(temp) if temp is not None and float(temp) > 0 else None
+    except (TypeError, ValueError):
+        temp = None
+
+    _pending_utilities = {
+        "exemplar": exemplar, "retention": retention, "atom_prior": atom_prior,
+        "aggregate_fn": aggregate_fn, "comparator_rank": comparator_rank,
+        "complexity_ratio_delta": delta, "sampling_temperature": temp,
+    }
+    _utility_gen = g
+    _log_event("utility_ingest", generation=g, decline=False,
+               exemplar=len(exemplar), retention=len(retention),
+               atoms=len(atom_prior), comparator=len(comparator_rank),
+               ratio_delta=(delta or {}).get("direction"), temperature=temp)
+
+
+def utility_summary(g):
+    """sbLogUtilities probe: prove the buffered estimates are reachable from
+    the MeTTa loop. Prints a one-liner; returns the exemplar-utility count."""
+    g = _num(g)
+    try:
+        if _pending_utilities is None:
+            print(f"[utility] gen {g}: buffer empty (native)", flush=True)
+            return 0
+        p = _pending_utilities
+        delta = p["complexity_ratio_delta"]
+        print(f"[utility] gen {g}: from-step {_utility_gen} "
+              f"exemplar={len(p['exemplar'])} retention={len(p['retention'])} "
+              f"atoms={len(p['atom_prior'])} comparator={len(p['comparator_rank'])} "
+              f"ratio={(delta or {}).get('direction')} "
+              f"temp={p['sampling_temperature']}", flush=True)
+        return len(p["exemplar"])
+    except Exception as e:
+        sys.stderr.write(f"[utility_summary] error: {e}\n")
+        return 0
+
+
+# --- Lever 1: exemplar selection ---------------------------------------------
+# The exemplar-selection fork streams (index, native Boltzmann numerator, tree)
+# per member, then select_index() draws. Lever off => same roulette over the
+# same native numerators with the same process-wide RNG the native selector
+# used (py-call random.random), so the off path is distribution-identical.
+def begin_selection(n):
+    global _sel_buf
+    _sel_buf = {"n": _num(n), "cands": []}
+    return 0
+
+
+def add_selection_candidate(i, prob, tree):
+    try:
+        _sel_buf["cands"].append({
+            "i": int(_num(i)), "prob": max(_num(prob) or 0.0, 0.0),
+            "pid": _pid(expr_to_str(tree)),
+        })
+    except Exception as e:
+        sys.stderr.write(f"[add_selection_candidate] error: {e}\n")
+    return 0
+
+
+def select_index():
+    """Biased (or native) roulette over the streamed candidates. Returns the
+    metapop index of the chosen exemplar; always a valid int."""
+    try:
+        cands = (_sel_buf or {}).get("cands") or []
+        if not cands:
+            return 0
+        native = [c["prob"] for c in cands]
+        weights, degraded = native, None
+        if _lever_on("exemplar_selection", "exemplar"):
+            lam = _LEVER_WEIGHTS["exemplar_selection"]
+            temp = _pending_utilities["sampling_temperature"]
+            util = _pending_utilities["exemplar"]
+            # missing program_id => neutral (u_hat=1 keeps the native weight)
+            weights = [_mix(n, _sharpen(util[c["pid"]], temp), lam)
+                       if c["pid"] in util else n
+                       for n, c in zip(native, cands)]
+            if sum(weights) <= 0:
+                weights, degraded = native, "all_zero_bias"
+            idx = _roulette(weights)
+            if idx is None:
+                idx = 0
+            _log_event("bias_applied", lever="exemplar_selection",
+                       response_gen=_utility_gen, lam=lam, degraded=degraded,
+                       native_probs=[round(w, 6) for w in native],
+                       biased_probs=[round(w, 6) for w in weights],
+                       chosen_index=cands[idx]["i"], chosen_pid=cands[idx]["pid"])
+            return cands[idx]["i"]
+        idx = _roulette(weights)
+        return cands[idx]["i"] if idx is not None else 0
+    except Exception as e:
+        sys.stderr.write(f"[select_index] error: {e}\n")
+        return 0
+
+
+# --- Lever 2a: resize culling -------------------------------------------------
+# The metapopulation fork streams the removable tail [offset-1, popSize-1]
+# (exactly the native randint(offset, popSize)-1 range), then cull_index()
+# picks one to remove. Native weight is uniform 1; cull weight uses
+# u = 1 - retention, and members WITHOUT a retention entry stay native.
+def begin_cull(offset, pop_size):
+    global _cull_buf
+    _cull_buf = {"offset": _num(offset), "pop_size": _num(pop_size), "cands": []}
+    return 0
+
+
+def add_cull_member(i, tree):
+    try:
+        _cull_buf["cands"].append({"i": int(_num(i)),
+                                   "pid": _pid(expr_to_str(tree))})
+    except Exception as e:
+        sys.stderr.write(f"[add_cull_member] error: {e}\n")
+    return 0
+
+
+def cull_index():
+    try:
+        cands = (_cull_buf or {}).get("cands") or []
+        if not cands:  # degenerate; mirror native lower bound
+            return max(int((_cull_buf or {}).get("offset", 1)) - 1, 0)
+        if _lever_on("culling", "retention"):
+            lam = _LEVER_WEIGHTS["culling"]
+            temp = _pending_utilities["sampling_temperature"]
+            ret = _pending_utilities["retention"]
+            weights = [_mix(1.0, _sharpen(1.0 - ret[c["pid"]], temp), lam)
+                       if c["pid"] in ret else 1.0
+                       for c in cands]
+            degraded = None
+            if sum(weights) <= 0:
+                weights, degraded = [1.0] * len(cands), "all_zero_bias"
+            idx = _roulette(weights)
+            if idx is None:
+                idx = 0
+            _log_event("bias_applied", lever="culling",
+                       response_gen=_utility_gen, lam=lam, degraded=degraded,
+                       removable=[c["pid"] for c in cands],
+                       weights=[round(w, 6) for w in weights],
+                       culled_index=cands[idx]["i"], culled_pid=cands[idx]["pid"])
+            return cands[idx]["i"]
+        return cands[random.randint(0, len(cands) - 1)]["i"]
+    except Exception as e:
+        sys.stderr.write(f"[cull_index] error: {e}\n")
+        return max(int((_cull_buf or {}).get("offset", 1)) - 1, 0)
+
+
+# --- Lever 2b: dominated-candidate escape --------------------------------------
+def dominated_escape(tree):
+    """Bernoulli gate on removeDominated: p(keep) = lam * u_hat(retention).
+    Returns 1 to KEEP the dominated candidate, 0 for the native removal."""
+    try:
+        if not _lever_on("culling", "retention"):
+            return 0
+        pid = _pid(expr_to_str(tree))
+        ret = _pending_utilities["retention"]
+        if pid not in ret:
+            return 0
+        lam = _LEVER_WEIGHTS["culling"]
+        temp = _pending_utilities["sampling_temperature"]
+        p_keep = _clamp01(lam * _sharpen(ret[pid], temp))
+        keep = random.random() < p_keep
+        if keep:
+            _log_event("bias_applied", lever="dominated_escape",
+                       response_gen=_utility_gen, pid=pid,
+                       p_keep=round(p_keep, 4))
+        return 1 if keep else 0
+    except Exception as e:
+        sys.stderr.write(f"[dominated_escape] error: {e}\n")
+        return 0
+
+
+# --- Lever 3: comparator ordering ----------------------------------------------
+def compare_exemplars(tree1, tree2):
+    """comparator lever: -1/0/1 when the response's program_id_ordering covers
+    BOTH exemplars (lower rank = better = Greater); 2 = 'use the native
+    comparison' (lever off, missing ids, or any error). The native comparison
+    itself stays MeTTa-side in the fork, so the off path is exactly native."""
+    global _comparator_overrides
+    try:
+        if not _lever_on("comparator", "comparator_rank"):
+            return 2
+        rank = _pending_utilities["comparator_rank"]
+        pid1, pid2 = _pid(expr_to_str(tree1)), _pid(expr_to_str(tree2))
+        if pid1 not in rank or pid2 not in rank:
+            return 2
+        _comparator_overrides += 1
+        if rank[pid1] == rank[pid2]:
+            return 0
+        return 1 if rank[pid1] < rank[pid2] else -1
+    except Exception as e:
+        sys.stderr.write(f"[compare_exemplars] error: {e}\n")
+        return 2
+
+
+# --- Lever 4: complexity ratio ---------------------------------------------------
+def current_complexity_ratio(g):
+    """Called once per generation from runMosesLoop. Returns 0 when the context
+    should stay as-is; otherwise the new effective ratio (the loop rebuilds the
+    scoring context with it, and the rebuilt context persists via recursion).
+    Each response's delta is consumed exactly once."""
+    global _effective_cratio, _cratio_applied_for
+    try:
+        if not _lever_on("complexity_ratio", "complexity_ratio_delta"):
+            return 0
+        if _utility_gen is None or _cratio_applied_for == _utility_gen:
+            return 0
+        delta = _pending_utilities["complexity_ratio_delta"]
+        _cratio_applied_for = _utility_gen          # consume even on maintain
+        direction = delta.get("direction")
+        mag = _num(delta.get("magnitude")) or 0.0
+        if direction == "maintain" or mag <= 0:
+            return 0
+        base = _effective_cratio
+        if base is None:
+            base = _cr_or_none(_pending_run_params.get("complexity_ratio"))
+        if base is None:
+            base = _last_complexity_ratio
+        if base is None:
+            _log_event("bias_degraded", lever="complexity_ratio",
+                       reason="no_base_ratio", generation=_num(g))
+            return 0
+        lam = _LEVER_WEIGHTS["complexity_ratio"]
+        new = base + lam * mag * (1.0 if direction == "increase" else -1.0)
+        new = max(new, 0.01)                        # ratio<=0 disables penalties
+        _effective_cratio = new
+        _log_event("bias_applied", lever="complexity_ratio", generation=_num(g),
+                   response_gen=_utility_gen, lam=lam, direction=direction,
+                   magnitude=mag, old=round(base, 6), new=round(new, 6))
+        return float(new)
+    except Exception as e:
+        sys.stderr.write(f"[current_complexity_ratio] error: {e}\n")
+        return 0

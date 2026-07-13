@@ -14,6 +14,12 @@
 ;; Phase II return leg: block for the watcher's response to gen $g, then continue.
 ;; Returns 0 (shape-identical to every sb* hook); env-gated + timeout-safe in Python.
 (= (sbAwaitResponse $g) (py-call (state_builder.await_response $g)))
+;; Phase II ingestion probe: print the buffered utility estimates (ingested from
+;; the PREVIOUS generation's response) from inside the loop — proves the agent's
+;; estimates are reachable in MeTTa program memory before this gen's selection.
+(= (sbLogUtilities $g)
+   (let* (($n (py-call (state_builder.utility_summary $g))))
+     (println! (UtilityBuffer gen $g exemplar-utilities $n))))
 
 ;; --- input feature spec: emit once per run from the ITable ----------------
 ;; Boolean problems have $itable in context; strategy problems pass 0 (no-op).

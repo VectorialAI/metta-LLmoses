@@ -146,6 +146,14 @@ $optimDeme
                    $context $optimize $nEval $maxCandsPerDeme $minPoolSize
                    $complexityTemperature $nToKeep $capCoef $genCount)))
 
+;; Phase II lever 4 rebuilds the scoring context with a new complexity ratio.
+(= (llmRebuildContext $ctx $newRatio)
+   (case $ctx
+     ((($pe $fs (mkTruthTableBScore $cr $size $tbl) $itable)
+        ($pe $fs (mkTruthTableBScore $newRatio $size $tbl) $itable))
+      (($nGames $cr) ($nGames $newRatio))
+      ($other $other))))
+
 (= (runMosesLoop $maxGen $totalGen $maxScore $maxCandOutput $metaPop $nExpansion $nDeme $context $optimize $nEval $maxCandsPerDeme $minPoolSize $complexityTemperature $nToKeep $capCoef $genCount)
    (if (== $maxGen 0)
        (if (<= $maxCandOutput (OS.length $metaPop))
@@ -154,8 +162,11 @@ $optimDeme
        (let* (
          ($_ (println! (Generation $maxGen)))
          ($genIndex (+ (- $totalGen $maxGen) 1))
+         ($_ulog (sbLogUtilities $genIndex))
+         ($ratioOverride (py-call (state_builder.current_complexity_ratio $genIndex)))
+         ($ctx2 (if (== $ratioOverride 0) $context (llmRebuildContext $context $ratioOverride)))
          ($optimizedDemes
-           (case $context
+           (case $ctx2
              ((($prune-exemplar $fs-algo $truthTableBScore $itable)
                (trace! "expand  deme returnn"
                  (expandDeme $metaPop $nExpansion $nDeme $prune-exemplar $fs-algo
@@ -170,7 +181,7 @@ $optimDeme
          ($_ (println! (FirstOptimizedDeme: (List.length (second $sInst)))))
          ($_ (sbBeginMerge))
          ($updatedMetaPop
-           (case $context
+           (case $ctx2
              ((($prune-exemplar $fs-algo $truthTableBScore $itable)
                (trace! "Merging Deme"
                  (mergeDemes $optimizedDemes $nEval $maxCandsPerDeme $minPoolSize
@@ -197,7 +208,7 @@ $optimDeme
        (if (== $topScore $maxScore)
            $resultCandi
            (runMosesLoop (- $maxGen 1) $totalGen $maxScore $maxCandOutput $updatedMetaPop
-                         $nExpansion $nDeme $context $optimize $nEval $maxCandsPerDeme
+                         $nExpansion $nDeme $ctx2 $optimize $nEval $maxCandsPerDeme
                          $minPoolSize $complexityTemperature $nToKeep $capCoef $genCount)))))
 
 

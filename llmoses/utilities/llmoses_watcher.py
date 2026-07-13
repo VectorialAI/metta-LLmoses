@@ -20,6 +20,99 @@ HEAD_N = 10
 # watchdog library, to reduce latency and CPU overhead on high-generation runs.
 POLL_S = float(os.environ.get("LLMOSES_WATCH_POLL_S", "0.1"))
 
+# Deterministic mock estimator modes for Phase II lever validation. "neutral"
+# (default) preserves the original stub byte-for-byte: pass=true, no guidance.
+# Every other mode emits pass=false with exactly one lever's worth of
+# deterministic utilities, derived from the step's own state/action JSON, so
+# tests can assert the meta-loop obeyed them. Any error while building a mock
+# response falls back to neutral — the handshake must never break.
+MOCK_MODE = os.environ.get("LLMOSES_MOCK_UTILITY_MODE", "neutral")
+
+_NEUTRAL_DOC = {
+    "pass": True,
+    "sampling_temperature": None,
+    "exemplar_utilities": [],
+    "pair_utilities": [],
+    "culling_utilities": [],
+    "complexity_ratio_delta": None,
+    "comparator_bias": None,
+}
+
+
+def _load_json(path):
+    with open(path, "r", encoding="utf-8") as fh:
+        return json.load(fh)
+
+
+def _survivor_scores(state):
+    """{program_id: penalized_score} over the post-merge population, joining
+    pre-merge members with merge_summary.resize_cull.new_entrants (which carry
+    scores) and restricting to resize_cull.survivors."""
+    scores = {}
+    for m in state.get("metapopulation", {}).get("members", []):
+        pen = (m.get("cscore") or {}).get("penalized_score")
+        if m.get("program_id") is not None and pen is not None:
+            scores[m["program_id"]] = pen
+    rc = (state.get("merge_summary") or {}).get("resize_cull") or {}
+    for e in rc.get("new_entrants") or []:
+        if isinstance(e, dict) and e.get("program_id") is not None \
+                and e.get("penalized_score") is not None:
+            scores[e["program_id"]] = e["penalized_score"]
+    survivors = rc.get("survivors") or list(scores)
+    return {pid: scores[pid] for pid in survivors if pid in scores}
+
+
+def _mock_utility(mode, state, run_config, gen):
+    """Build one deterministic non-neutral UtilityResponse for the given mode."""
+    doc = dict(_NEUTRAL_DOC)
+    doc["pass"] = False
+    doc["sampling_temperature"] = 1.0
+    surv = _survivor_scores(state)
+    if mode == "ingest_probe":
+        u = round(int(gen) / 100.0, 4)
+        doc["exemplar_utilities"] = [{"program_id": p, "utility": u} for p in surv]
+        doc["culling_utilities"] = [{"program_id": p, "retention_utility": 1.0}
+                                    for p in surv]
+        labels = [a.get("label") for a in
+                  (run_config.get("atom_alphabet") or {}).get("atoms") or []]
+        doc["atom_utility_prior"] = [{"atom": l, "utility": 0.5}
+                                     for l in labels if l is not None]
+        doc["complexity_ratio_delta"] = {"direction": "maintain", "magnitude": 0.0}
+    elif mode == "force_worst":
+        if not surv:
+            raise ValueError("no scored survivors")
+        target = min(surv, key=lambda p: surv[p])
+        doc["exemplar_utilities"] = [
+            {"program_id": p, "utility": 1.0 if p == target else 0.0}
+            for p in surv]
+    elif mode == "cull_targets":
+        ordered = sorted(surv, key=lambda p: surv[p])       # worst first
+        targets = set(ordered[:2])
+        doc["culling_utilities"] = [
+            {"program_id": p, "retention_utility": 0.0 if p in targets else 1.0}
+            for p in surv]
+    elif mode == "retain_all":
+        doc["culling_utilities"] = [{"program_id": p, "retention_utility": 1.0}
+                                    for p in surv]
+    elif mode == "reverse_order":
+        doc["comparator_bias"] = {
+            "program_id_ordering": sorted(surv, key=lambda p: surv[p])}  # worst first
+    elif mode == "ratio_increase":
+        doc["complexity_ratio_delta"] = {"direction": "increase", "magnitude": 1.0}
+    elif mode == "atom_pair":
+        alphabet = run_config.get("atom_alphabet") or {}
+        labels = [a.get("label") for a in alphabet.get("atoms") or []
+                  if a.get("label") is not None]
+        width = 3 if alphabet.get("problem_type") == "strategy" else 2
+        chosen = set(labels[:width])
+        doc["atom_utility_prior"] = [
+            {"atom": l, "utility": 1.0 if l in chosen else 0.0} for l in labels]
+        doc["feature_utility_levers"] = {"aggregate_fn": "product",
+                                         "lever_weights": {}}
+    else:
+        raise ValueError(f"unknown mock mode {mode!r}")
+    return doc
+
 _stop = False
 
 
@@ -85,15 +178,17 @@ def _handle_step(run_dir, seq, gen, dirs):
     util_dir = os.path.join(dirs["utilities"], f"run-{seq}")
     os.makedirs(util_dir, exist_ok=True)
     util_p = os.path.join(util_dir, f"step-{gen}.json")
-    utility_doc = {
-        "pass": True,
-        "sampling_temperature": None,
-        "exemplar_utilities": [],
-        "pair_utilities": [],
-        "culling_utilities": [],
-        "complexity_ratio_delta": None,
-        "comparator_bias": None,
-    }
+    utility_doc = dict(_NEUTRAL_DOC)
+    if MOCK_MODE != "neutral":
+        try:
+            state = _load_json(state_p)
+            run_config = _load_json(os.path.join(dirs["state"], f"run-{seq}",
+                                                 "run_config.json"))
+            utility_doc = _mock_utility(MOCK_MODE, state, run_config, gen)
+        except Exception as e:  # mock failure must never break the handshake
+            sys.stderr.write(f"[watcher] mock mode {MOCK_MODE!r} failed for "
+                             f"run-{seq}-step-{gen}: {e}; emitting neutral\n")
+            utility_doc = dict(_NEUTRAL_DOC)
     raw_model_response = json.dumps(utility_doc, sort_keys=True)
     _write_json(util_p, utility_doc)
 
@@ -104,6 +199,7 @@ def _handle_step(run_dir, seq, gen, dirs):
         "schema_version": "agent-trace-v0",
         "record_type": "AgentTrace",
         "stub": True,
+        "mock_mode": MOCK_MODE,
         "run_seq": seq,
         "generation": gen,
         "timestamp_ms": ts,
