@@ -874,16 +874,23 @@ def _lever_on(name, data_key=None):
 
 def _roulette(weights):
     """Native rouletteSelect semantics: r*sum, walk subtracting. Returns the
-    positional index into weights, or None when the total mass is zero."""
+    positional index into weights, or None when the total mass is zero.
+    Zero-weight entries are never selectable — without the skip, a draw of
+    exactly 0.0 would land on a leading zero-weight entry, violating the
+    lambda=1 'zero eliminates the option' guarantee."""
     total = sum(weights)
     if total <= 0:
         return None
     adjusted = total * random.random()
+    last_positive = None
     for i, w in enumerate(weights):
+        if w <= 0:
+            continue
+        last_positive = i
         adjusted -= w
         if adjusted <= 0:
             return i
-    return len(weights) - 1
+    return last_positive
 
 
 # Contextual-prior vocabulary: context keys on atom_utility_prior entries map
@@ -924,7 +931,8 @@ def _ingest_utilities(g):
             ignored[k] = len(v) if isinstance(v, (list, dict)) else "present"
     # Diagnostic-only schema check: logged, never enforced — ingest still
     # normalizes what it can and the run proceeds natively where it cannot.
-    schema_ok, schema_errors = utility_schema.validate_utility_response(doc)
+    schema_ok, schema_errors = utility_schema.validate_utility_response(
+        doc, _atom_alphabet)
     if doc.get("pass", True):
         _pending_utilities, _utility_gen = None, g
         _log_event("utility_ingest", generation=g, decline=True,
@@ -993,6 +1001,26 @@ def _ingest_utilities(g):
                 lever_weights[k] = _clamp01(v)
             else:
                 ignored[f"lever_weights.{k}"] = "unknown_axis"
+    # Inert-entry pruning: a contextual entry whose named axes multiply to a
+    # zero blend weight, or synergy under a zero combination_synergy axis,
+    # can never affect a draw. Prune here so begin_combo_draw's gate stays 0
+    # and the native selector path (and its RNG consumption) is untouched —
+    # the all-zero lever_weights => v1-byte-identical guarantee is a gate
+    # property, not just a weight property.
+    inert = {}
+    kept_ctx = []
+    for e in atom_prior_ctx:
+        w = 1.0
+        for k in e["context"]:
+            w *= lever_weights.get(_CTX_KEY_AXIS[k], 0.0)
+        if w > 0.0:
+            kept_ctx.append(e)
+    if len(kept_ctx) != len(atom_prior_ctx):
+        inert["atom_prior_ctx"] = len(atom_prior_ctx) - len(kept_ctx)
+        atom_prior_ctx = kept_ctx
+    if synergy and lever_weights.get("combination_synergy", 0.0) <= 0.0:
+        inert["combination_synergy"] = len(synergy)
+        synergy = []
     comparator_rank = {}
     cb = doc.get("comparator_bias")
     if isinstance(cb, dict):
@@ -1031,7 +1059,8 @@ def _ingest_utilities(g):
                               or None),
                comparator=len(comparator_rank),
                ratio_delta=(delta or {}).get("direction"), temperature=temp,
-               ignored=ignored or None, schema_ok=schema_ok,
+               ignored=ignored or None, inert=inert or None,
+               schema_ok=schema_ok,
                schema_errors=schema_errors[:3] or None)
 
 

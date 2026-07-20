@@ -29,9 +29,9 @@ POLL_S = float(os.environ.get("LLMOSES_WATCH_POLL_S", "0.1"))
 # deterministic utilities, derived from the step's own state/action JSON, so
 # tests can assert the meta-loop obeyed them. Modes: ingest_probe, force_worst,
 # cull_targets, retain_all, reverse_order, ratio_increase, atom_pair,
-# ctx_parent_op, ctx_depth, ctx_polarity, synergy_pair, evidence_pair. Any error
-# while building a mock response falls back to neutral — the handshake must
-# never break.
+# ctx_parent_op, ctx_depth, ctx_polarity, ctx_zero_weights, synergy_pair,
+# evidence_pair. Any error while building a mock response falls back to
+# neutral — the handshake must never break.
 MOCK_MODE = os.environ.get("LLMOSES_MOCK_UTILITY_MODE", "neutral")
 
 _NEUTRAL_DOC = {
@@ -155,6 +155,21 @@ def _mock_utility(mode, state, run_config, gen):
                 "context": {"polarity": "-"}} for l in labels])
         doc["feature_utility_levers"] = {"aggregate_fn": "mean",
                                          "lever_weights": {"polarity": 1.0}}
+    elif mode == "ctx_zero_weights":
+        # Contextual + synergy entries present but every lever_weights axis
+        # absent: all entries are inert, ingest prunes them, and the draw
+        # gate must stay 0 — the native-selector off-switch converse for the
+        # INNER axis plane (the outer plane converses are 12a-12e).
+        labels, width = _alphabet_labels(run_config)
+        chosen = set(labels[:width])
+        doc["atom_utility_prior"] = [
+            {"atom": l, "utility": 1.0, "context": {"parent_operator": "OR"}}
+            for l in labels]
+        doc["combination_synergy"] = [
+            {"atoms": list(c), "utility": 1.0 if set(c) == chosen else 0.0}
+            for c in itertools.combinations(labels, width)]
+        doc["feature_utility_levers"] = {"aggregate_fn": "product",
+                                         "lever_weights": {}}
     elif mode == "synergy_pair":
         # One atom set together = 1, every other combination = 0; no per-atom
         # prior at all — only the non-separable channel carries signal.
@@ -272,6 +287,7 @@ def _handle_step(run_dir, seq, gen, dirs):
     os.makedirs(util_dir, exist_ok=True)
     util_p = os.path.join(util_dir, f"step-{gen}.json")
     utility_doc = dict(_NEUTRAL_DOC)
+    run_config = None
     if MOCK_MODE != "neutral":
         try:
             state = _load_json(state_p)
@@ -287,7 +303,8 @@ def _handle_step(run_dir, seq, gen, dirs):
     # retry, so an invalid mock degrades to neutral — loudly, because the
     # policy phase that expected its bias will then fail its assertions.
     parse_diagnostics = []
-    schema_ok, schema_errors = utility_schema.validate_utility_response(utility_doc)
+    schema_ok, schema_errors = utility_schema.validate_utility_response(
+        utility_doc, (run_config or {}).get("atom_alphabet"))
     if not schema_ok:
         sys.stderr.write(f"[watcher] SCHEMA INVALID (mock mode {MOCK_MODE!r}) "
                          f"for run-{seq}-step-{gen}: {schema_errors[:5]}; "

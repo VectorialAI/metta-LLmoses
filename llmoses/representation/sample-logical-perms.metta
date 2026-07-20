@@ -18,8 +18,9 @@
 ;; node's operator and its node id (= tree path) into begin_combo_draw, so
 ;; contextual atom priors (clause_type / parent_operator / depth_bucket /
 ;; polarity / exemplar_id) and combination_synergy can condition the weights.
-;; The 3-arg sampler entrypoints remain as shims passing an empty path
-;; (context-free draw) for any caller not forked to thread the node id.
+;; The 3-arg sampler entrypoints remain as shims passing an empty path for
+;; any caller not forked to thread the node id: depth context is absent
+;; there, but operator-derived and polarity context stay live.
 ;; ============================================================================
 
 ;; --- Phase II lever 5: weighted without-replacement selector ---------------
@@ -120,8 +121,9 @@
                         ($perms (collapse (getArgs $swapedOp $idxPairs $picked $argLabels))))
                    (concatT $argLabels $perms)))))
 
-;; Context-free shim: callers that do not thread a node id draw without
-;; positional context (depth/exemplar-conditioned entries simply never match).
+;; Empty-path shim: callers that do not thread a node id draw without depth
+;; context (depth-conditioned entries never match); operator, polarity, and
+;; exemplar context remain live.
 (= (sampleLogicalPerms $op $arity $argLabels)
    (sampleLogicalPerms $op $arity $argLabels ()))
 

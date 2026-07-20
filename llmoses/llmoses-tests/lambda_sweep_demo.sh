@@ -23,7 +23,8 @@ cat > "$REPO/$DRIVER_STD_REL" <<'METTA'
 METTA
 # LLMOSES_SWEEP_DRIVER=cull runs the longer resize-cull loop instead: its
 # retained programs grow multi-literal clauses, so realized_cooccurrences
-# evidence exists for the evidence_pair mock to read (std stays too small).
+# evidence exists for the evidence_pair mock to read (std-scale runs did not
+# reliably yield usable width-2 evidence in stored samples).
 DRIVER_CULL_REL="llmoses/llmoses-tests/_lambda_sweep_cull_$$.metta"
 cat > "$REPO/$DRIVER_CULL_REL" <<'METTA'
 ;; AUTO-GENERATED lambda-sweep culling driver (deleted on exit).
@@ -49,11 +50,11 @@ cleanup() {
   done
 }
 trap cleanup EXIT
+# Sets CUR_RUNDIR in the parent shell (a $(new_rundir) substitution would run
+# in a subshell and the RUN_DIRS cleanup registration would be lost).
 new_rundir() {
-  local d
-  d="$(mktemp -d)" || { echo "ERROR: mktemp failed" >&2; exit 2; }
-  RUN_DIRS+=("$d")
-  echo "$d"
+  CUR_RUNDIR="$(mktemp -d)" || { echo "ERROR: mktemp failed" >&2; exit 2; }
+  RUN_DIRS+=("$CUR_RUNDIR")
 }
 start_watcher() {
   local mode="$1"
@@ -114,19 +115,22 @@ def b(v):
 def read_json(path):
     with open(path, encoding="utf-8") as fh:
         return json.load(fh)
-def chosen_atoms(rundir, gen):
-    chosen = set()
+def chosen_of(rundir, gen):
+    """(prior_atoms, synergy_sets) scored 1.0 in the response file. Synergy
+    stays a set of unordered sets — a union would falsely accept cross-set
+    combinations when more than one set is scored 1.0."""
+    prior, sets_ = set(), set()
     if gen in (None, ""):
-        return chosen
+        return prior, sets_
     path = os.path.join(rundir, "utilities", "run-1", f"step-{int(gen)}.json")
     try:
         doc = read_json(path)
     except (FileNotFoundError, ValueError, TypeError):
-        return chosen
+        return prior, sets_
     for e in doc.get("atom_utility_prior") or []:
         try:
             if float(e.get("utility")) == 1.0 and e.get("atom") is not None:
-                chosen.add(str(e["atom"]))
+                prior.add(str(e["atom"]))
         except (TypeError, ValueError):
             pass
     for e in doc.get("combination_synergy") or []:
@@ -135,16 +139,20 @@ def chosen_atoms(rundir, gen):
         except (TypeError, ValueError):
             is_one = False
         if is_one:
-            chosen.update(str(a) for a in (e.get("atoms") or []))
-    return chosen
+            sets_.add(frozenset(str(a) for a in (e.get("atoms") or [])))
+    return prior, sets_
 def pick_atoms(pick):
     atoms = pick.get("atoms") if isinstance(pick, dict) else None
     return sorted(str(a) for a in atoms) if isinstance(atoms, list) else []
-def in_chosen(pick, chosen):
+def in_chosen(pick, prior, sets_):
     atoms = set(pick_atoms(pick))
-    return bool(atoms) and atoms.issubset(chosen)
+    if not atoms:
+        return False
+    if prior and atoms.issubset(prior):
+        return True
+    return frozenset(atoms) in sets_
 def block_row(block, picks, counts):
-    chosen = chosen_atoms(os.environ["RUNDIR"], block.get("response_gen"))
+    prior, sets_ = chosen_of(os.environ["RUNDIR"], block.get("response_gen"))
     first = picks[0] if picks else None
     nondeg = [p for p in picks if p.get("degraded") is False]
     return {
@@ -160,10 +168,11 @@ def block_row(block, picks, counts):
         "synergy": b(block.get("synergy")),
         "first_pick_atoms": "|".join(pick_atoms(first)) if first else "",
         "first_pick_degraded": b(first.get("degraded")) if first else "",
-        "first_pick_in_chosen": b(in_chosen(first, chosen)) if first else "",
+        "first_pick_in_chosen": b(in_chosen(first, prior, sets_)) if first else "",
         "picks_total": len(picks),
         "picks_nondegraded": len(nondeg),
-        "picks_in_chosen_nondegraded": sum(1 for p in nondeg if in_chosen(p, chosen)),
+        "picks_in_chosen_nondegraded": sum(1 for p in nondeg
+                                           if in_chosen(p, prior, sets_)),
         "degraded_picks": sum(1 for p in picks if p.get("degraded") is True),
         **counts,
     }
@@ -229,10 +238,12 @@ for lambda in $LAMBDAS; do
   rep=1
   while [[ "$rep" -le "$REPS" ]]; do
     echo "=== mode=$MODE lambda=$lambda rep=$rep/$REPS ==="
-    rundir="$(new_rundir)"
+    new_rundir; rundir="$CUR_RUNDIR"
     start_watcher "$MODE" "$rundir"
-    # Seed paired across lambda cells: rep N sees the same RNG stream at
-    # every lambda, so cell differences come from the weights alone.
+    # Matched-seed assignment: rep N gets the same seed at every lambda.
+    # Note this pairs seeds, not random variates — the native (lambda=0)
+    # and weighted paths consume the RNG differently, and trajectories
+    # diverge after the first differing pick.
     run_driver "$rundir" "$lambda" "$((SEED_BASE + rep))"; rc=$?
     stop_watcher
     extract_blocks "$rundir" "$lambda" "$rep"
@@ -295,7 +306,7 @@ for lam in lambdas:
         if (lam, str(rep)) not in run_rows:
             violations.append(f"missing CSV rows for lambda={lam} rep={rep}")
 print("REPORT")
-print("lambda,n_blocks,first_pick_share_95ci,all_picks_share,degraded_pick_rate,expected_first_pick_share")
+print("lambda,n_blocks,first_pick_share_95ci,nondeg_picks_share,degraded_pick_rate,excluded_first_frac,expected_first_pick_share")
 headline = {}
 for lam in sorted(lambdas, key=dec):
     br = [r for r in rows if r["lambda"] == lam and num(r, "n_combos") == 6]
@@ -307,9 +318,27 @@ for lam in sorted(lambdas, key=dec):
     deg = sum(num(r, "degraded_picks") for r in br)
     total = sum(num(r, "picks_total") for r in br)
     headline[lam] = (first_ok / first_n) if first_n else None
-    all_share = "n/a" if pick_n == 0 else f"{pick_ok / pick_n:.3f}"
+    nondeg_share = "n/a" if pick_n == 0 else f"{pick_ok / pick_n:.3f}"
     deg_rate = "n/a" if total == 0 else f"{deg / total:.3f}"
-    print(f"{lam},{len(br)},{fmt_share(first_ok, first_n)},{all_share},{deg_rate},{expected(lam):.3f}")
+    excl = ((len(br) - first_n) / len(br)) if br else 0.0
+    if br and excl > 0.25:
+        violations.append(f"lambda={lam}: {excl:.2f} of blocks excluded by a "
+                          "degraded first pick (cap 0.25)")
+    # Intermediate cells must not just be monotone: the measured share must
+    # contain the theoretical first-pick share in its 95% Wilson interval.
+    if 0 < dec(lam) < 1 and first_n:
+        lo, hi = wilson(first_ok, first_n)
+        exp = expected(lam)
+        if not (lo <= exp <= hi):
+            violations.append(f"lambda={lam}: expected first-pick share "
+                              f"{exp:.3f} outside Wilson CI [{lo:.3f}, {hi:.3f}]")
+    print(f"{lam},{len(br)},{fmt_share(first_ok, first_n)},{nondeg_share},{deg_rate},{excl:.3f},{expected(lam):.3f}")
+# Every run at every lambda must have a live handshake: >=2 schema-ok
+# ingests. Without this, a rep whose watcher died (sentinel row, zero
+# counts) could silently prop up a passing cell.
+for (lam, rep), r in sorted(run_rows.items(), key=lambda kv: (dec(kv[0][0]), int(kv[0][1]))):
+    if num(r, "utility_ingest_schema_ok") < 2:
+        violations.append(f"lambda={lam} rep={rep} had utility_ingest_schema_ok={num(r, 'utility_ingest_schema_ok')} (< 2)")
 for lam in lambdas:
     if dec(lam) == 0:
         for rep in range(1, reps + 1):
@@ -318,8 +347,6 @@ for lam in lambdas:
                 continue
             if num(r, "bias_applied_rows") != 0 or num(r, "combo_pick_rows") != 0:
                 violations.append(f"lambda=0 rep={rep} had bias_applied={num(r, 'bias_applied_rows')} combo_pick={num(r, 'combo_pick_rows')}")
-            if num(r, "utility_ingest_schema_ok") < 2:
-                violations.append(f"lambda=0 rep={rep} had utility_ingest_schema_ok={num(r, 'utility_ingest_schema_ok')}")
     if dec(lam) == 1:
         br = [r for r in rows if r["lambda"] == lam and num(r, "n_combos") == 6
               and r.get("first_pick_degraded") == "false"]
@@ -417,7 +444,22 @@ if violations:
     for v in violations:
         print(f"VERDICT FAIL: {v}")
     sys.exit(1)
-print("VERDICT PASS: lambda=0 native proof, lambda=1 hard constraint, monotone headline, and schema_ok checks passed")
+# The verdict names only the proofs this invocation actually exercised —
+# an endpoint that was not in the lambda list is reported as such, never
+# claimed.
+proofs = []
+if any(dec(l) == 0 for l in lambdas):
+    proofs.append("lambda=0 native proof")
+if any(dec(l) == 1 for l in lambdas):
+    proofs.append("lambda=1 hard constraint")
+if any(0 < dec(l) < 1 for l in lambdas):
+    proofs.append("intermediate cells monotone and theory-contained")
+proofs.append("ingest and schema_ok checks")
+missing = [e for e, present in (("lambda=0", any(dec(l) == 0 for l in lambdas)),
+                                ("lambda=1", any(dec(l) == 1 for l in lambdas)))
+           if not present]
+suffix = f" (endpoints not exercised: {', '.join(missing)})" if missing else ""
+print(f"VERDICT PASS: {', '.join(proofs)} passed{suffix}")
 PY
 rc=${PIPESTATUS[0]}
 exit "$rc"

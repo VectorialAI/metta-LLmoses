@@ -16,6 +16,8 @@ in llmoses/skills/UTILITY_RESPONSE.md. Consumers:
     where it does not — the run must never deadlock on a bad responder).
 """
 
+import math
+
 RESPONSE_KEYS = ("pass", "sampling_temperature", "exemplar_utilities",
                  "atom_utility_prior", "combination_synergy",
                  "feature_utility_levers", "culling_utilities",
@@ -24,16 +26,18 @@ AGGREGATE_FNS = ("product", "mean", "geometric_mean", "softmax")
 LEVER_WEIGHT_AXES = ("polarity", "clause_type", "parent_operator",
                      "tree_depth", "selected_exemplar", "combination_synergy",
                      "novelty")
+CLAUSE_OPS = ("AND", "OR", "PRIORITIZED-OR")
 # context key -> closed vocabulary (None = any non-empty string)
 CONTEXT_KEYS = {"polarity": ("+", "-"),
-                "clause_type": None, "parent_operator": None,
+                "clause_type": CLAUSE_OPS, "parent_operator": CLAUSE_OPS,
                 "depth_bucket": ("shallow", "mid", "deep"),
                 "exemplar_id": None}
 RATIO_DIRECTIONS = ("increase", "decrease", "maintain")
 
 
 def _is_num(x):
-    return isinstance(x, (int, float)) and not isinstance(x, bool)
+    return (isinstance(x, (int, float)) and not isinstance(x, bool)
+            and math.isfinite(x))
 
 
 def _is_unit(x):
@@ -112,9 +116,76 @@ def _check_culling(errs, at, e):
         errs.append(f"{at}.{next(iter(util_keys))}: must be a number in [0, 1]")
 
 
-def validate_utility_response(doc):
+def _check_duplicates(errs, doc):
+    """Entries that would silently collapse at ingest (dict construction,
+    last value wins) are contract violations at the source."""
+    seen = set()
+    for i, e in enumerate(doc.get("atom_utility_prior") or []):
+        if not isinstance(e, dict):
+            continue
+        ctx = e.get("context")
+        sig = (e.get("atom"),
+               frozenset(ctx.items()) if isinstance(ctx, dict) else None)
+        if sig in seen:
+            errs.append(f"atom_utility_prior[{i}]: duplicate entry for atom "
+                        f"{e.get('atom')!r} with identical context")
+        seen.add(sig)
+    seen = set()
+    for i, e in enumerate(doc.get("combination_synergy") or []):
+        if not isinstance(e, dict) or not isinstance(e.get("atoms"), list):
+            continue
+        atoms = [a for a in e["atoms"] if isinstance(a, str)]
+        if len(set(atoms)) != len(atoms):
+            errs.append(f"combination_synergy[{i}].atoms: atoms must be "
+                        "distinct (sets are unordered)")
+            continue
+        sig = frozenset(atoms)
+        if sig in seen:
+            errs.append(f"combination_synergy[{i}]: duplicate atom set "
+                        f"{sorted(sig)}")
+        seen.add(sig)
+    for field in ("exemplar_utilities", "culling_utilities"):
+        seen = set()
+        for i, e in enumerate(doc.get(field) or []):
+            if not isinstance(e, dict):
+                continue
+            pid = e.get("program_id")
+            if pid in seen:
+                errs.append(f"{field}[{i}]: duplicate program_id {pid!r}")
+            seen.add(pid)
+
+
+def _check_alphabet(errs, doc, atom_alphabet):
+    """Run-context checks (optional): atom labels must exist in the run's
+    alphabet and synergy sets must be exactly the problem width — a response
+    that validates but can never match a draw-site label is the silent-drop
+    failure mode this gate exists to prevent."""
+    labels = {a.get("label") for a in atom_alphabet.get("atoms") or []}
+    width = 3 if atom_alphabet.get("problem_type") == "strategy" else 2
+    for i, e in enumerate(doc.get("atom_utility_prior") or []):
+        if isinstance(e, dict) and isinstance(e.get("atom"), str) \
+                and e["atom"] not in labels:
+            errs.append(f"atom_utility_prior[{i}].atom: {e['atom']!r} is not "
+                        "in the run's atom_alphabet")
+    for i, e in enumerate(doc.get("combination_synergy") or []):
+        if not isinstance(e, dict) or not isinstance(e.get("atoms"), list):
+            continue
+        atoms = e["atoms"]
+        if len(atoms) != width:
+            errs.append(f"combination_synergy[{i}].atoms: width must be "
+                        f"exactly {width} for this problem type")
+        for a in atoms:
+            if isinstance(a, str) and a not in labels:
+                errs.append(f"combination_synergy[{i}].atoms: {a!r} is not "
+                            "in the run's atom_alphabet")
+
+
+def validate_utility_response(doc, atom_alphabet=None):
     """Return (ok, errors). errors is a list of human-readable strings; the
-    document is valid iff it is empty."""
+    document is valid iff it is empty. atom_alphabet (optional) is the
+    run_config.json atom_alphabet block; when supplied, atom labels and
+    synergy widths are checked against the live run — the form a live agent's
+    retry gate must use."""
     if not isinstance(doc, dict):
         return False, ["UtilityResponse must be a JSON object"]
     errs = []
@@ -137,6 +208,9 @@ def validate_utility_response(doc):
     _check_entries(errs, doc, "atom_utility_prior", _check_atom_prior)
     _check_entries(errs, doc, "combination_synergy", _check_synergy)
     _check_entries(errs, doc, "culling_utilities", _check_culling)
+    _check_duplicates(errs, doc)
+    if atom_alphabet is not None and isinstance(atom_alphabet, dict):
+        _check_alphabet(errs, doc, atom_alphabet)
 
     levers = doc["feature_utility_levers"]
     if levers is not None:

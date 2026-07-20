@@ -20,7 +20,8 @@
 #   Phase 11 - SYNERGY: combination_synergy alone (no per-atom prior)
 #              constrains non-degraded picks to the chosen atom set (D-033).
 #   Phase 12 - OFFSWITCH: disabled, zero-weight, and neutral responses stay
-#              native — including contextual and synergy responses.
+#              native — including contextual and synergy responses, and the
+#              inner-axis converse (entries present, lever_weights all absent).
 #
 # This needs the PeTTa runtime (run.sh) + PYTHONPATH for llmoses/utilities, so
 # run it inside the project container. From the repo root:
@@ -105,11 +106,11 @@ bad()  { echo "  FAIL: $1"; fail=1; }
 count_files() { find "$1" -type f "${@:2}" 2>/dev/null | wc -l | tr -d ' '; }
 count_grep()  { local n; n="$(grep -c "$1" "$2" 2>/dev/null)"; echo "${n:-0}"; }
 
+# Sets CUR_RUNDIR in the parent shell (a $(new_rundir) substitution would run
+# in a subshell and the RUN_DIRS cleanup registration would be lost).
 new_rundir() {
-  local d
-  d="$(mktemp -d)" || { echo "ERROR: mktemp failed" >&2; exit 2; }
-  RUN_DIRS+=("$d")
-  echo "$d"
+  CUR_RUNDIR="$(mktemp -d)" || { echo "ERROR: mktemp failed" >&2; exit 2; }
+  RUN_DIRS+=("$CUR_RUNDIR")
 }
 
 start_watcher() {
@@ -179,7 +180,7 @@ check_offswitch_run() {
 
   echo
   echo "=== Phase 12${label}: OFFSWITCH mode=${mode} apply='${apply}' ==="
-  rundir="$(new_rundir)"
+  new_rundir; rundir="$CUR_RUNDIR"
   start_watcher "$mode" "$rundir"
   run_driver "$rundir" "$DRIVER_STD_REL" "$apply" "$@"; rc=$?
   stop_watcher
@@ -219,7 +220,7 @@ PY
 
 # ---------------------------------------------------------------------------
 echo "=== Phase 1: INGEST mode=ingest_probe apply='' ==="
-T_INGEST="$(new_rundir)"
+new_rundir; T_INGEST="$CUR_RUNDIR"
 start_watcher ingest_probe "$T_INGEST"
 run_driver "$T_INGEST" "$DRIVER_STD_REL" ""; rc=$?
 stop_watcher
@@ -277,7 +278,7 @@ pyrc=$?
 # ---------------------------------------------------------------------------
 echo
 echo "=== Phase 2: EXEMPLAR mode=force_worst apply=exemplar_selection ==="
-T_EXEMPLAR="$(new_rundir)"
+new_rundir; T_EXEMPLAR="$CUR_RUNDIR"
 start_watcher force_worst "$T_EXEMPLAR"
 run_driver "$T_EXEMPLAR" "$DRIVER_STD_REL" "exemplar_selection"; rc=$?
 stop_watcher
@@ -363,7 +364,7 @@ pyrc=$?
 # ---------------------------------------------------------------------------
 echo
 echo "=== Phase 3: CULL mode=cull_targets apply=culling ==="
-T_CULL="$(new_rundir)"
+new_rundir; T_CULL="$CUR_RUNDIR"
 start_watcher cull_targets "$T_CULL"
 run_driver "$T_CULL" "$DRIVER_CULL_REL" "culling"; rc=$?
 stop_watcher
@@ -424,7 +425,7 @@ pyrc=$?
 # ---------------------------------------------------------------------------
 echo
 echo "=== Phase 4a: DOMUNIT apply=culling ==="
-T_DOM_ON="$(new_rundir)"
+new_rundir; T_DOM_ON="$CUR_RUNDIR"
 seed_domunit_response "$T_DOM_ON"
 run_driver "$T_DOM_ON" "$DRIVER_DOM_REL" "culling"; rc=$?
 assert_run_ok "DOMUNIT culling-on" "$rc"
@@ -474,7 +475,7 @@ pyrc=$?
 
 echo
 echo "=== Phase 4b: DOMUNIT apply='' ==="
-T_DOM_OFF="$(new_rundir)"
+new_rundir; T_DOM_OFF="$CUR_RUNDIR"
 seed_domunit_response "$T_DOM_OFF"
 run_driver "$T_DOM_OFF" "$DRIVER_DOM_REL" ""; rc=$?
 assert_run_ok "DOMUNIT culling-off" "$rc"
@@ -500,7 +501,7 @@ pyrc=$?
 # ---------------------------------------------------------------------------
 echo
 echo "=== Phase 5: COMPARATOR mode=reverse_order apply=comparator ==="
-T_COMPARATOR="$(new_rundir)"
+new_rundir; T_COMPARATOR="$CUR_RUNDIR"
 start_watcher reverse_order "$T_COMPARATOR"
 run_driver "$T_COMPARATOR" "$DRIVER_CULL_REL" "comparator"; rc=$?
 stop_watcher
@@ -574,7 +575,7 @@ pyrc=$?
 # ---------------------------------------------------------------------------
 echo
 echo "=== Phase 6: RATIO mode=ratio_increase apply=complexity_ratio ==="
-T_RATIO="$(new_rundir)"
+new_rundir; T_RATIO="$CUR_RUNDIR"
 start_watcher ratio_increase "$T_RATIO"
 run_driver "$T_RATIO" "$DRIVER_STD_REL" "complexity_ratio"; rc=$?
 stop_watcher
@@ -648,7 +649,7 @@ pyrc=$?
 # ---------------------------------------------------------------------------
 echo
 echo "=== Phase 7: ATOM mode=atom_pair apply=atom_prior ==="
-T_ATOM="$(new_rundir)"
+new_rundir; T_ATOM="$CUR_RUNDIR"
 start_watcher atom_pair "$T_ATOM"
 run_driver "$T_ATOM" "$DRIVER_STD_REL" "atom_prior"; rc=$?
 stop_watcher
@@ -712,7 +713,7 @@ pyrc=$?
 # ---------------------------------------------------------------------------
 echo
 echo "=== Phase 8: CTXOP mode=ctx_parent_op apply=atom_prior ==="
-T_CTXOP="$(new_rundir)"
+new_rundir; T_CTXOP="$CUR_RUNDIR"
 start_watcher ctx_parent_op "$T_CTXOP"
 run_driver "$T_CTXOP" "$DRIVER_STD_REL" "atom_prior"; rc=$?
 stop_watcher
@@ -763,7 +764,7 @@ pyrc=$?
 # ---------------------------------------------------------------------------
 echo
 echo "=== Phase 9: CTXDEPTH mode=ctx_depth apply=atom_prior ==="
-T_CTXDEPTH="$(new_rundir)"
+new_rundir; T_CTXDEPTH="$CUR_RUNDIR"
 start_watcher ctx_depth "$T_CTXDEPTH"
 run_driver "$T_CTXDEPTH" "$DRIVER_STD_REL" "atom_prior"; rc=$?
 stop_watcher
@@ -806,13 +807,13 @@ print(f"mid_full={mid_full} other_empty={other_empty}")
 PY
 )"
 pyrc=$?
-[[ "$pyrc" -eq 0 ]] && pass "CTXDEPTH pools full in the mid band, empty elsewhere" \
-                     || bad "CTXDEPTH pools full in the mid band, empty elsewhere: $out"
+[[ "$pyrc" -eq 0 ]] && pass "CTXDEPTH mid-band pools full; non-mid draws (if any) empty" \
+                     || bad "CTXDEPTH mid-band pools full; non-mid draws (if any) empty: $out"
 
 # ---------------------------------------------------------------------------
 echo
 echo "=== Phase 10: CTXPOL mode=ctx_polarity apply=atom_prior ==="
-T_CTXPOL="$(new_rundir)"
+new_rundir; T_CTXPOL="$CUR_RUNDIR"
 start_watcher ctx_polarity "$T_CTXPOL"
 run_driver "$T_CTXPOL" "$DRIVER_STD_REL" "atom_prior"; rc=$?
 stop_watcher
@@ -855,7 +856,7 @@ pyrc=$?
 # ---------------------------------------------------------------------------
 echo
 echo "=== Phase 11: SYNERGY mode=synergy_pair apply=atom_prior ==="
-T_SYNERGY="$(new_rundir)"
+new_rundir; T_SYNERGY="$CUR_RUNDIR"
 start_watcher synergy_pair "$T_SYNERGY"
 run_driver "$T_SYNERGY" "$DRIVER_STD_REL" "atom_prior"; rc=$?
 stop_watcher
@@ -923,6 +924,10 @@ check_offswitch_run "b" force_worst "exemplar_selection" LLMOSES_LEVER_WEIGHT_EX
 check_offswitch_run "c" neutral "exemplar_selection,culling,comparator,complexity_ratio,atom_prior"
 check_offswitch_run "d" ctx_parent_op ""
 check_offswitch_run "e" synergy_pair "atom_prior" LLMOSES_LEVER_WEIGHT_ATOM_PRIOR=0
+# 12f: the INNER-axis converse — lever enabled, outer lambda 1, contextual +
+# synergy entries present, but every response lever_weights axis absent.
+# Ingest must prune the inert entries and the draw gate must stay native.
+check_offswitch_run "f" ctx_zero_weights "atom_prior"
 
 echo
 if [[ $fail -eq 0 ]]; then
