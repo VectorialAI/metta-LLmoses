@@ -180,6 +180,90 @@ def _check_alphabet(errs, doc, atom_alphabet):
                             "in the run's atom_alphabet")
 
 
+_LIST_FIELDS = ("exemplar_utilities", "atom_utility_prior",
+                "combination_synergy", "culling_utilities")
+_VALUE_FIELDS = ("sampling_temperature", "feature_utility_levers",
+                 "complexity_ratio_delta", "comparator_bias")
+
+
+def _empty_doc(decline):
+    return {"pass": bool(decline), "sampling_temperature": None,
+            "exemplar_utilities": [], "atom_utility_prior": [],
+            "combination_synergy": [], "feature_utility_levers": None,
+            "culling_utilities": [], "complexity_ratio_delta": None,
+            "comparator_bias": None}
+
+
+def salvage_utility_response(doc, atom_alphabet=None):
+    """Component-level salvage of an invalid UtilityResponse: keep every
+    entry/field that validates in isolation (duplicate semantics preserved by
+    accumulating accepted entries into each probe), drop and report the rest.
+    Returns (salvaged_doc, report) where report maps field -> {"dropped": n,
+    "first_error": str}; salvaged_doc is always contract-valid, or None when
+    doc is not an object at all.
+
+    This is the post-retry fallback for a response WRITER (watcher today, the
+    live-agent harness after its retry budget): one bad entry must not cost a
+    generation of otherwise-good guidance. It is deliberately NOT used at
+    ingest — what reaches MOSES is fully valid or accounted for here."""
+    if not isinstance(doc, dict):
+        return None, {"document": {"dropped": 1,
+                                   "first_error": "not a JSON object"}}
+    decline = doc.get("pass") is True
+    out = _empty_doc(decline)
+    report = {}
+    if decline:
+        return out, report
+    for k in doc:
+        if k not in RESPONSE_KEYS:
+            report[k] = {"dropped": 1, "first_error": "unknown top-level field"}
+    for field in _LIST_FIELDS:
+        val = doc.get(field)
+        if not isinstance(val, list):
+            if val not in (None, []):
+                report[field] = {"dropped": 1, "first_error": "must be a list"}
+            continue
+        kept, dropped, first_err = [], 0, None
+        for e in val:
+            probe = _empty_doc(False)
+            probe[field] = kept + [e]
+            ok, errs = validate_utility_response(probe, atom_alphabet)
+            if ok:
+                kept.append(e)
+            else:
+                dropped += 1
+                first_err = first_err or (errs[0] if errs else "invalid")
+        out[field] = kept
+        if dropped:
+            report[field] = {"dropped": dropped, "first_error": first_err}
+    for field in _VALUE_FIELDS:
+        val = doc.get(field)
+        if val is None:
+            continue
+        probe = _empty_doc(False)
+        probe[field] = val
+        ok, errs = validate_utility_response(probe, atom_alphabet)
+        if ok:
+            out[field] = val
+        else:
+            report[field] = {"dropped": 1,
+                             "first_error": errs[0] if errs else "invalid"}
+    ok, errs = validate_utility_response(out, atom_alphabet)
+    if not ok:  # structurally unreachable; fail closed to a valid decline
+        return _empty_doc(True), {"document": {"dropped": 1,
+                                               "first_error": str(errs[:1])}}
+    return out, report
+
+
+def has_guidance(doc):
+    """True when a non-decline document carries at least one estimation."""
+    if not isinstance(doc, dict) or doc.get("pass") is True:
+        return False
+    return any(doc.get(f) for f in _LIST_FIELDS) or any(
+        doc.get(f) is not None for f in ("complexity_ratio_delta",
+                                         "comparator_bias"))
+
+
 def validate_utility_response(doc, atom_alphabet=None):
     """Return (ok, errors). errors is a list of human-readable strings; the
     document is valid iff it is empty. atom_alphabet (optional) is the

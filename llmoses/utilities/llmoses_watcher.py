@@ -299,18 +299,35 @@ def _handle_step(run_dir, seq, gen, dirs):
                              f"run-{seq}-step-{gen}: {e}; emitting neutral\n")
             utility_doc = dict(_NEUTRAL_DOC)
     # Constrained-output gate: never write a response that violates the
-    # UtilityResponse contract. A live agent retries here; the mock has no
-    # retry, so an invalid mock degrades to neutral — loudly, because the
-    # policy phase that expected its bias will then fail its assertions.
+    # UtilityResponse contract. A live agent retries here first; when the
+    # retry budget is spent (or for a mock, which has no retry), the invalid
+    # document is SALVAGED component-by-component — one bad entry must not
+    # cost a generation of otherwise-good guidance — and only a document
+    # with nothing salvageable degrades to the neutral decline. Loud either
+    # way: an invalid mock is a defect and the policy phase that expected
+    # its bias will fail its assertions.
     parse_diagnostics = []
+    _alpha = (run_config or {}).get("atom_alphabet")
     schema_ok, schema_errors = utility_schema.validate_utility_response(
-        utility_doc, (run_config or {}).get("atom_alphabet"))
+        utility_doc, _alpha)
     if not schema_ok:
-        sys.stderr.write(f"[watcher] SCHEMA INVALID (mock mode {MOCK_MODE!r}) "
-                         f"for run-{seq}-step-{gen}: {schema_errors[:5]}; "
-                         f"emitting neutral\n")
-        parse_diagnostics = [f"schema: {e}" for e in schema_errors]
-        utility_doc = dict(_NEUTRAL_DOC)
+        salvaged, salvage_report = utility_schema.salvage_utility_response(
+            utility_doc, _alpha)
+        parse_diagnostics = [f"schema: {e}" for e in schema_errors] + \
+            [f"salvage: {f}: dropped={r['dropped']} ({r['first_error']})"
+             for f, r in sorted(salvage_report.items())]
+        if salvaged is not None and utility_schema.has_guidance(salvaged):
+            sys.stderr.write(
+                f"[watcher] SCHEMA INVALID (mock mode {MOCK_MODE!r}) for "
+                f"run-{seq}-step-{gen}: {schema_errors[:5]}; salvaged with "
+                f"drops {salvage_report}\n")
+            utility_doc = salvaged
+        else:
+            sys.stderr.write(
+                f"[watcher] SCHEMA INVALID (mock mode {MOCK_MODE!r}) for "
+                f"run-{seq}-step-{gen}: {schema_errors[:5]}; nothing "
+                f"salvageable, emitting neutral\n")
+            utility_doc = dict(_NEUTRAL_DOC)
     raw_model_response = json.dumps(utility_doc, sort_keys=True)
     _write_json(util_p, utility_doc)
 
