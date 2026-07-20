@@ -58,3 +58,8 @@ llmoses/tests
 llmoses/tests/*
 llmoses/logs
 llmoses/logs/*
+llmoses/llmoses-tests
+llmoses/llmoses-tests/*
+
+HANDOFF-milestone2-D033.md
+HANDOFF-milestone2.md

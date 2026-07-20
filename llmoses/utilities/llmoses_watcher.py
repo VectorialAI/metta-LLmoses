@@ -27,8 +27,11 @@ POLL_S = float(os.environ.get("LLMOSES_WATCH_POLL_S", "0.1"))
 # (default) preserves the original stub byte-for-byte: pass=true, no guidance.
 # Every other mode emits pass=false with exactly one lever's worth of
 # deterministic utilities, derived from the step's own state/action JSON, so
-# tests can assert the meta-loop obeyed them. Any error while building a mock
-# response falls back to neutral — the handshake must never break.
+# tests can assert the meta-loop obeyed them. Modes: ingest_probe, force_worst,
+# cull_targets, retain_all, reverse_order, ratio_increase, atom_pair,
+# ctx_parent_op, ctx_depth, ctx_polarity, synergy_pair, evidence_pair. Any error
+# while building a mock response falls back to neutral — the handshake must
+# never break.
 MOCK_MODE = os.environ.get("LLMOSES_MOCK_UTILITY_MODE", "neutral")
 
 _NEUTRAL_DOC = {
@@ -163,6 +166,42 @@ def _mock_utility(mode, state, run_config, gen):
         doc["feature_utility_levers"] = {
             "aggregate_fn": "product",
             "lever_weights": {"combination_synergy": 1.0}}
+    elif mode == "evidence_pair":
+        # Same synergy-only channel, but choose the most frequent realized
+        # cooccurrence in the current state evidence instead of the prefix.
+        # Evidence members carry alphabet keys ('feature:X1'); map back to
+        # the bare labels the sampler and the response contract use.
+        labels, width = _alphabet_labels(run_config)
+        label_set = set(labels)
+        key_to_label = {a.get("key"): a.get("label")
+                        for a in (run_config.get("atom_alphabet") or {}).get("atoms") or []}
+        best = None
+        for e in (state.get("atom_evidence") or {}).get("realized_cooccurrences") or []:
+            members = []
+            for m in e.get("members") or []:
+                raw = m.get("atom") if isinstance(m, dict) else m
+                members.append(key_to_label.get(raw, raw))
+            members = tuple(sorted(str(m) for m in members if m is not None))
+            if e.get("width") != width or len(members) != width:
+                continue
+            if not set(members).issubset(label_set):
+                continue
+            count = int(e.get("count") or 0)
+            if best is None or count > best[0] or \
+                    (count == best[0] and members < best[1]):
+                best = (count, members)
+        source = "evidence" if best is not None else "positional_fallback"
+        count = best[0] if best is not None else 0
+        chosen = set(best[1] if best is not None else labels[:width])
+        doc["combination_synergy"] = [
+            {"atoms": list(c), "utility": 1.0 if set(c) == chosen else 0.0}
+            for c in itertools.combinations(labels, width)]
+        doc["feature_utility_levers"] = {
+            "aggregate_fn": "product",
+            "lever_weights": {"combination_synergy": 1.0}}
+        sys.stderr.write(f"[watcher] evidence_pair gen={gen} "
+                         f"chosen={sorted(chosen)} count={count} "
+                         f"source={source}\n")
     else:
         raise ValueError(f"unknown mock mode {mode!r}")
     return doc

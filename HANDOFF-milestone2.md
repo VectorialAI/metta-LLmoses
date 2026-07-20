@@ -1,5 +1,9 @@
 # LLMOSES Milestone-2 Handoff (2026-07-13; updated 2026-07-18)
 
+> **SUPERSEDED as the entry point: read `HANDOFF-milestone2-D033.md` first** — it pins
+> this doc as the base state and carries the full 2026-07-18/19 session delta.
+> The note below is the short form of the same session.
+
 > **2026-07-18 session (D-033, uncommitted at time of writing — commit same-day!):**
 > resolution audit of the m1 sim (53 handshakes; exemplar 4,374/4,374 and culling
 > 1,262/1,262 flow through; 940 pair_utilities + 52 string ratio deltas were dropped

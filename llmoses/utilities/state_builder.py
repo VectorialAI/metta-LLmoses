@@ -65,6 +65,12 @@ _EMIT_LEVERS = _csv_env("LLMOSES_EMIT_LEVERS", _EMIT_LEVER_NAMES)
 _APPLY_LEVERS = _csv_env("LLMOSES_APPLY_LEVERS", ())
 _LEVER_WEIGHTS = {n: _lever_weight_env(n) for n in _APPLY_LEVER_NAMES}
 
+# The embedding runtime seeds Python's RNG deterministically, so bias-path
+# draws repeat run to run unless a seed is forced (sweep/experiment reps).
+_RNG_SEED = os.environ.get("LLMOSES_RNG_SEED")
+if _RNG_SEED:
+    random.seed(_RNG_SEED)
+
 # --- run-directory bootstrap (paths, native log, run_meta) ------------------
 _THIS_DIR = os.path.dirname(os.path.abspath(__file__))      # .../llmoses/utilities
 _LLMOSES_DIR = os.path.dirname(_THIS_DIR)                   # .../llmoses
@@ -502,6 +508,7 @@ def emit_run_config():
             "apply": sorted(_APPLY_LEVERS & set(_APPLY_LEVER_NAMES)),
             "weights": {n: _LEVER_WEIGHTS[n]
                         for n in sorted(_APPLY_LEVERS & set(_APPLY_LEVER_NAMES))},
+            "rng_seed": _RNG_SEED,
         },
     }
     _write_json(os.path.join(_cur_state_dir, "run_config.json"), doc)
