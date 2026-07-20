@@ -1,0 +1,724 @@
+{
+  "pass": false,
+  "sampling_temperature": null,
+  "exemplar_utilities": [
+    {
+      "program_id": "p322c9de9df",
+      "utility": 0.785
+    },
+    {
+      "program_id": "p378e196ea6",
+      "utility": 0.785
+    },
+    {
+      "program_id": "p39e99e8196",
+      "utility": 0.785
+    },
+    {
+      "program_id": "p2e0162c410",
+      "utility": 0.785
+    },
+    {
+      "program_id": "p518b2321e8",
+      "utility": 0.635
+    },
+    {
+      "program_id": "pa910114e83",
+      "utility": 0.785
+    },
+    {
+      "program_id": "p08c7622768",
+      "utility": 0.595
+    },
+    {
+      "program_id": "p9e581927ae",
+      "utility": 0.595
+    },
+    {
+      "program_id": "pb658b3627f",
+      "utility": 0.595
+    },
+    {
+      "program_id": "pc53ae1025e",
+      "utility": 0.595
+    },
+    {
+      "program_id": "pd871022aa9",
+      "utility": 0.595
+    },
+    {
+      "program_id": "p91fe0c7163",
+      "utility": 0.595
+    },
+    {
+      "program_id": "p1161f3e9a9",
+      "utility": 0.595
+    },
+    {
+      "program_id": "p5e8ba9826b",
+      "utility": 0.595
+    },
+    {
+      "program_id": "pf682b36091",
+      "utility": 0.615
+    },
+    {
+      "program_id": "pe11cd27124",
+      "utility": 0.615
+    },
+    {
+      "program_id": "p7b57411b5d",
+      "utility": 0.615
+    },
+    {
+      "program_id": "p9388be6a4d",
+      "utility": 0.615
+    },
+    {
+      "program_id": "pde78536ad9",
+      "utility": 0.615
+    },
+    {
+      "program_id": "pc7d5b33573",
+      "utility": 0.615
+    },
+    {
+      "program_id": "pe99d4452e2",
+      "utility": 0.615
+    },
+    {
+      "program_id": "p626e58cd66",
+      "utility": 0.615
+    },
+    {
+      "program_id": "p5e692c3f97",
+      "utility": 0.615
+    },
+    {
+      "program_id": "pd8d1aa4837",
+      "utility": 0.615
+    },
+    {
+      "program_id": "p03ad5cc8a0",
+      "utility": 0.615
+    },
+    {
+      "program_id": "pcc2990686d",
+      "utility": 0.615
+    },
+    {
+      "program_id": "pd4438c5b2a",
+      "utility": 0.615
+    },
+    {
+      "program_id": "p3498a30a83",
+      "utility": 0.615
+    },
+    {
+      "program_id": "pecd65e9a24",
+      "utility": 0.615
+    },
+    {
+      "program_id": "p1671f2ba7d",
+      "utility": 0.615
+    },
+    {
+      "program_id": "pc492ef4b31",
+      "utility": 0.615
+    },
+    {
+      "program_id": "p427cc716f9",
+      "utility": 0.615
+    },
+    {
+      "program_id": "pdd67c20644",
+      "utility": 0.615
+    },
+    {
+      "program_id": "pf7d66f6a70",
+      "utility": 0.615
+    },
+    {
+      "program_id": "pbd5028ba5e",
+      "utility": 0.615
+    },
+    {
+      "program_id": "p6f05db8a39",
+      "utility": 0.615
+    },
+    {
+      "program_id": "p89ab3de025",
+      "utility": 0.615
+    },
+    {
+      "program_id": "p5db1be3857",
+      "utility": 0.615
+    },
+    {
+      "program_id": "p4d6fad34f4",
+      "utility": 0.615
+    },
+    {
+      "program_id": "p2aa7c27bdb",
+      "utility": 0.615
+    },
+    {
+      "program_id": "p138e2cf44f",
+      "utility": 0.615
+    },
+    {
+      "program_id": "pb640f9b54b",
+      "utility": 0.615
+    },
+    {
+      "program_id": "pf11448175c",
+      "utility": 0.615
+    },
+    {
+      "program_id": "p2a6c5d8a23",
+      "utility": 0.615
+    },
+    {
+      "program_id": "p74a0bedcdb",
+      "utility": 0.615
+    },
+    {
+      "program_id": "p6bf07143c2",
+      "utility": 0.615
+    },
+    {
+      "program_id": "p2d4e5bf577",
+      "utility": 0.615
+    },
+    {
+      "program_id": "p8d60f1f8b1",
+      "utility": 0.615
+    },
+    {
+      "program_id": "p8762c5c463",
+      "utility": 0.615
+    },
+    {
+      "program_id": "pd06a178a76",
+      "utility": 0.615
+    },
+    {
+      "program_id": "p53b5a9341d",
+      "utility": 0.425
+    },
+    {
+      "program_id": "pe699170a2f",
+      "utility": 0.425
+    },
+    {
+      "program_id": "p66d5f4185b",
+      "utility": 0.425
+    },
+    {
+      "program_id": "p63f63cbb7c",
+      "utility": 0.425
+    },
+    {
+      "program_id": "pd366a5198b",
+      "utility": 0.425
+    },
+    {
+      "program_id": "pf398ea9a72",
+      "utility": 0.425
+    },
+    {
+      "program_id": "p62a2db7efe",
+      "utility": 0.425
+    },
+    {
+      "program_id": "pd5da7c0213",
+      "utility": 0.425
+    },
+    {
+      "program_id": "p4ff838670f",
+      "utility": 0.425
+    },
+    {
+      "program_id": "p89c66b3e74",
+      "utility": 0.425
+    },
+    {
+      "program_id": "p9ad9c059a3",
+      "utility": 0.425
+    },
+    {
+      "program_id": "p0fa10d5625",
+      "utility": 0.425
+    },
+    {
+      "program_id": "p3a9177ecb4",
+      "utility": 0.445
+    },
+    {
+      "program_id": "p8a6ef80758",
+      "utility": 0.445
+    },
+    {
+      "program_id": "pd0fdcc2227",
+      "utility": 0.445
+    },
+    {
+      "program_id": "p03efe348ab",
+      "utility": 0.445
+    },
+    {
+      "program_id": "p93cbe679db",
+      "utility": 0.445
+    },
+    {
+      "program_id": "p2caf72a069",
+      "utility": 0.445
+    },
+    {
+      "program_id": "pa373d8a8c4",
+      "utility": 0.445
+    },
+    {
+      "program_id": "pf4e4bbad21",
+      "utility": 0.445
+    },
+    {
+      "program_id": "pf71e2cb484",
+      "utility": 0.445
+    },
+    {
+      "program_id": "p5046499eff",
+      "utility": 0.445
+    },
+    {
+      "program_id": "pb4f970f308",
+      "utility": 0.445
+    },
+    {
+      "program_id": "pb44b1d78ee",
+      "utility": 0.445
+    },
+    {
+      "program_id": "p37847d66d0",
+      "utility": 0.445
+    },
+    {
+      "program_id": "pb25d4fdc67",
+      "utility": 0.445
+    },
+    {
+      "program_id": "p973a3e031e",
+      "utility": 0.445
+    },
+    {
+      "program_id": "p94a4c39417",
+      "utility": 0.445
+    },
+    {
+      "program_id": "p410b96dbd6",
+      "utility": 0.445
+    },
+    {
+      "program_id": "p9ae680a968",
+      "utility": 0.445
+    },
+    {
+      "program_id": "p8fb61b3f2b",
+      "utility": 0.445
+    },
+    {
+      "program_id": "peca581ae25",
+      "utility": 0.445
+    },
+    {
+      "program_id": "p77c7ecf1ca",
+      "utility": 0.445
+    },
+    {
+      "program_id": "p48e78fcbd5",
+      "utility": 0.445
+    },
+    {
+      "program_id": "p2769a17c93",
+      "utility": 0.445
+    },
+    {
+      "program_id": "p9f459f1d63",
+      "utility": 0.445
+    },
+    {
+      "program_id": "pdea132c234",
+      "utility": 0.445
+    },
+    {
+      "program_id": "p449b219d28",
+      "utility": 0.445
+    },
+    {
+      "program_id": "p7453a4b764",
+      "utility": 0.445
+    },
+    {
+      "program_id": "pca5f1bb29e",
+      "utility": 0.445
+    },
+    {
+      "program_id": "p28f09e8c07",
+      "utility": 0.445
+    },
+    {
+      "program_id": "p6cef1ec6ff",
+      "utility": 0.445
+    },
+    {
+      "program_id": "p70a570f5ef",
+      "utility": 0.445
+    },
+    {
+      "program_id": "p350220c42f",
+      "utility": 0.445
+    },
+    {
+      "program_id": "p6a0bb2f720",
+      "utility": 0.445
+    },
+    {
+      "program_id": "pdec5b142ee",
+      "utility": 0.445
+    },
+    {
+      "program_id": "p676c4b9aed",
+      "utility": 0.445
+    },
+    {
+      "program_id": "p187aa6cd04",
+      "utility": 0.445
+    },
+    {
+      "program_id": "p82b2d2047a",
+      "utility": 0.255
+    },
+    {
+      "program_id": "pf62298417c",
+      "utility": 0.255
+    },
+    {
+      "program_id": "p7010136101",
+      "utility": 0.255
+    },
+    {
+      "program_id": "p4cbd918877",
+      "utility": 0.255
+    },
+    {
+      "program_id": "p0f8e3b2f0b",
+      "utility": 0.255
+    },
+    {
+      "program_id": "p70b6a7efea",
+      "utility": 0.255
+    },
+    {
+      "program_id": "pf5f9d55e5f",
+      "utility": 0.085
+    },
+    {
+      "program_id": "pa35284f077",
+      "utility": 0.085
+    },
+    {
+      "program_id": "pcafdf6f656",
+      "utility": 0.085
+    },
+    {
+      "program_id": "p201d7fc48c",
+      "utility": 0.085
+    },
+    {
+      "program_id": "pb60d9132c0",
+      "utility": 0.085
+    },
+    {
+      "program_id": "p2c46f8abb1",
+      "utility": 0.085
+    },
+    {
+      "program_id": "p9bac5e0ba6",
+      "utility": 0.085
+    },
+    {
+      "program_id": "p2b7bf47e88",
+      "utility": 0.085
+    },
+    {
+      "program_id": "pad3b9f59e8",
+      "utility": 0.085
+    },
+    {
+      "program_id": "p9bc43ce253",
+      "utility": 0.085
+    }
+  ],
+  "pair_utilities": [
+    {
+      "key": "-X1&+X4",
+      "utility": 0.74
+    },
+    {
+      "key": "-X1&-X4",
+      "utility": 0.74
+    },
+    {
+      "key": "+X1&+X2",
+      "utility": 0.64
+    },
+    {
+      "key": "+X1&-X2",
+      "utility": 0.64
+    },
+    {
+      "key": "+X2&+X3",
+      "utility": 0.64
+    },
+    {
+      "key": "+X2&-X3",
+      "utility": 0.64
+    },
+    {
+      "key": "-X1&+X2",
+      "utility": 0.64
+    },
+    {
+      "key": "-X1&-X2",
+      "utility": 0.64
+    },
+    {
+      "key": "-X2&+X3",
+      "utility": 0.64
+    },
+    {
+      "key": "-X2&-X3",
+      "utility": 0.64
+    },
+    {
+      "key": "+X1&-X2",
+      "utility": 0.6
+    },
+    {
+      "key": "+X2&+X3",
+      "utility": 0.6
+    },
+    {
+      "key": "+X2&-X3",
+      "utility": 0.6
+    },
+    {
+      "key": "-X2&+X3",
+      "utility": 0.6
+    },
+    {
+      "key": "-X2&-X3",
+      "utility": 0.6
+    },
+    {
+      "key": "+X1&+X2",
+      "utility": 0.44
+    },
+    {
+      "key": "-X1&-X2",
+      "utility": 0.4
+    },
+    {
+      "key": "+X2&+X4",
+      "utility": 0.36
+    },
+    {
+      "key": "-X2&-X4",
+      "utility": 0.36
+    },
+    {
+      "key": "-X1&+X2&+X4",
+      "utility": 0.32
+    },
+    {
+      "key": "-X1&-X2&-X4",
+      "utility": 0.32
+    },
+    {
+      "key": "+X1&+X4",
+      "utility": 0.28
+    },
+    {
+      "key": "-X1&+X2",
+      "utility": 0.28
+    },
+    {
+      "key": "-X1&+X4",
+      "utility": 0.255999
+    },
+    {
+      "key": "-X1&-X4",
+      "utility": 0.224001
+    },
+    {
+      "key": "+X1&-X4",
+      "utility": 0.02
+    },
+    {
+      "key": "+X2&+X4",
+      "utility": 0.02
+    },
+    {
+      "key": "-X2&+X4",
+      "utility": 0.02
+    },
+    {
+      "key": "-X1&+X2&-X4",
+      "utility": 0.0
+    },
+    {
+      "key": "-X1&-X2&-X4",
+      "utility": 0.0
+    }
+  ],
+  "culling_utilities": [
+    {
+      "program_id": "p4694d69340",
+      "retain_utility": 0.87
+    },
+    {
+      "program_id": "pdde27908bc",
+      "retain_utility": 0.09
+    },
+    {
+      "program_id": "pf5137e89a9",
+      "retain_utility": 0.09
+    },
+    {
+      "program_id": "pee00042a53",
+      "retain_utility": 0.09
+    },
+    {
+      "program_id": "p81b60a10cc",
+      "retain_utility": 0.09
+    },
+    {
+      "program_id": "pb0f1850f2e",
+      "retain_utility": 0.09
+    },
+    {
+      "program_id": "p0cab15073c",
+      "retain_utility": 0.09
+    },
+    {
+      "program_id": "p41ab5227b3",
+      "retain_utility": 0.35
+    },
+    {
+      "program_id": "p146f819f2f",
+      "retain_utility": 0.35
+    },
+    {
+      "program_id": "paa391178e8",
+      "retain_utility": 0.35
+    },
+    {
+      "program_id": "pe4258a07f9",
+      "retain_utility": 0.35
+    },
+    {
+      "program_id": "p5acd4da819",
+      "retain_utility": 0.61
+    },
+    {
+      "program_id": "pebffce7636",
+      "retain_utility": 0.61
+    },
+    {
+      "program_id": "pbab5572492",
+      "retain_utility": 0.61
+    },
+    {
+      "program_id": "p2495e14d60",
+      "retain_utility": 0.61
+    },
+    {
+      "program_id": "pe2707d47ac",
+      "retain_utility": 0.61
+    },
+    {
+      "program_id": "p7148df190d",
+      "retain_utility": 0.61
+    },
+    {
+      "program_id": "pa81306d85f",
+      "retain_utility": 0.61
+    },
+    {
+      "program_id": "p7da60cc7ee",
+      "retain_utility": 0.61
+    },
+    {
+      "program_id": "p83a8aabdaf",
+      "retain_utility": 0.87
+    },
+    {
+      "program_id": "p35e40b8d40",
+      "retain_utility": 0.87
+    },
+    {
+      "program_id": "ped53ed2ca1",
+      "retain_utility": 0.87
+    },
+    {
+      "program_id": "pfd3dbb7bc9",
+      "retain_utility": 0.87
+    },
+    {
+      "program_id": "p0152fc5473",
+      "retain_utility": 0.87
+    },
+    {
+      "program_id": "pb631d380c5",
+      "retain_utility": 0.87
+    },
+    {
+      "program_id": "p68bfbb335a",
+      "retain_utility": 0.87
+    },
+    {
+      "program_id": "pbf709d61a9",
+      "retain_utility": 0.61
+    },
+    {
+      "program_id": "pc671ea60ba",
+      "retain_utility": 0.09
+    },
+    {
+      "program_id": "p97f1e82f23",
+      "retain_utility": 0.09
+    },
+    {
+      "program_id": "pe4d8bff61d",
+      "retain_utility": 0.09
+    },
+    {
+      "program_id": "p01dd100111",
+      "retain_utility": 0.35
+    },
+    {
+      "program_id": "p98ffed929a",
+      "retain_utility": 0.35
+    },
+    {
+      "program_id": "pb3ae4439d3",
+      "retain_utility": 0.61
+    },
+    {
+      "program_id": "pbe9f7d9ab2",
+      "retain_utility": 0.61
+    }
+  ],
+  "complexity_ratio_delta": "decrease",
+  "comparator_bias": null
+}

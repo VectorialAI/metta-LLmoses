@@ -1,0 +1,327 @@
+{
+  "pass": false,
+  "sampling_temperature": null,
+  "exemplar_utilities": [
+    {
+      "program_id": "pd3827bf9e3",
+      "utility": 0.5
+    }
+  ],
+  "pair_utilities": [],
+  "culling_utilities": [
+    {
+      "program_id": "pa910114e83",
+      "retain_utility": 0.876667
+    },
+    {
+      "program_id": "p9ae680a968",
+      "retain_utility": 0.09
+    },
+    {
+      "program_id": "p410b96dbd6",
+      "retain_utility": 0.09
+    },
+    {
+      "program_id": "p973a3e031e",
+      "retain_utility": 0.09
+    },
+    {
+      "program_id": "p94a4c39417",
+      "retain_utility": 0.09
+    },
+    {
+      "program_id": "p37847d66d0",
+      "retain_utility": 0.09
+    },
+    {
+      "program_id": "pb25d4fdc67",
+      "retain_utility": 0.09
+    },
+    {
+      "program_id": "pb4f970f308",
+      "retain_utility": 0.09
+    },
+    {
+      "program_id": "pb44b1d78ee",
+      "retain_utility": 0.09
+    },
+    {
+      "program_id": "pf4e4bbad21",
+      "retain_utility": 0.09
+    },
+    {
+      "program_id": "pa373d8a8c4",
+      "retain_utility": 0.09
+    },
+    {
+      "program_id": "p5046499eff",
+      "retain_utility": 0.09
+    },
+    {
+      "program_id": "pf71e2cb484",
+      "retain_utility": 0.09
+    },
+    {
+      "program_id": "p93cbe679db",
+      "retain_utility": 0.09
+    },
+    {
+      "program_id": "p2caf72a069",
+      "retain_utility": 0.09
+    },
+    {
+      "program_id": "p03efe348ab",
+      "retain_utility": 0.09
+    },
+    {
+      "program_id": "pd0fdcc2227",
+      "retain_utility": 0.09
+    },
+    {
+      "program_id": "p8a6ef80758",
+      "retain_utility": 0.09
+    },
+    {
+      "program_id": "p3a9177ecb4",
+      "retain_utility": 0.09
+    },
+    {
+      "program_id": "pc492ef4b31",
+      "retain_utility": 0.483333
+    },
+    {
+      "program_id": "p427cc716f9",
+      "retain_utility": 0.483333
+    },
+    {
+      "program_id": "p1671f2ba7d",
+      "retain_utility": 0.483333
+    },
+    {
+      "program_id": "pecd65e9a24",
+      "retain_utility": 0.483333
+    },
+    {
+      "program_id": "p3498a30a83",
+      "retain_utility": 0.483333
+    },
+    {
+      "program_id": "pd4438c5b2a",
+      "retain_utility": 0.483333
+    },
+    {
+      "program_id": "pcc2990686d",
+      "retain_utility": 0.483333
+    },
+    {
+      "program_id": "pd8d1aa4837",
+      "retain_utility": 0.483333
+    },
+    {
+      "program_id": "p03ad5cc8a0",
+      "retain_utility": 0.483333
+    },
+    {
+      "program_id": "p5e692c3f97",
+      "retain_utility": 0.483333
+    },
+    {
+      "program_id": "pc7d5b33573",
+      "retain_utility": 0.483333
+    },
+    {
+      "program_id": "pde78536ad9",
+      "retain_utility": 0.483333
+    },
+    {
+      "program_id": "p626e58cd66",
+      "retain_utility": 0.483333
+    },
+    {
+      "program_id": "pe99d4452e2",
+      "retain_utility": 0.483333
+    },
+    {
+      "program_id": "p9388be6a4d",
+      "retain_utility": 0.483333
+    },
+    {
+      "program_id": "p7b57411b5d",
+      "retain_utility": 0.483333
+    },
+    {
+      "program_id": "pe11cd27124",
+      "retain_utility": 0.483333
+    },
+    {
+      "program_id": "pf682b36091",
+      "retain_utility": 0.483333
+    },
+    {
+      "program_id": "p322c9de9df",
+      "retain_utility": 0.876667
+    },
+    {
+      "program_id": "p378e196ea6",
+      "retain_utility": 0.876667
+    },
+    {
+      "program_id": "p39e99e8196",
+      "retain_utility": 0.876667
+    },
+    {
+      "program_id": "p2e0162c410",
+      "retain_utility": 0.876667
+    },
+    {
+      "program_id": "p054fba282f",
+      "retain_utility": 0.09
+    },
+    {
+      "program_id": "pe02b9d6850",
+      "retain_utility": 0.09
+    },
+    {
+      "program_id": "pebe2c03bda",
+      "retain_utility": 0.09
+    },
+    {
+      "program_id": "p1e09fedec6",
+      "retain_utility": 0.09
+    },
+    {
+      "program_id": "p70511416a4",
+      "retain_utility": 0.09
+    },
+    {
+      "program_id": "p7dfc927f11",
+      "retain_utility": 0.09
+    },
+    {
+      "program_id": "p89f8a54d92",
+      "retain_utility": 0.09
+    },
+    {
+      "program_id": "p3e7e618e47",
+      "retain_utility": 0.09
+    },
+    {
+      "program_id": "p2041809739",
+      "retain_utility": 0.09
+    },
+    {
+      "program_id": "p1d8f4e7e81",
+      "retain_utility": 0.09
+    },
+    {
+      "program_id": "p661614c3ad",
+      "retain_utility": 0.09
+    },
+    {
+      "program_id": "p900edaed07",
+      "retain_utility": 0.09
+    },
+    {
+      "program_id": "p1a50f80fb9",
+      "retain_utility": 0.09
+    },
+    {
+      "program_id": "p1fa1987a08",
+      "retain_utility": 0.09
+    },
+    {
+      "program_id": "pc0265140c3",
+      "retain_utility": 0.09
+    },
+    {
+      "program_id": "p9e441b1351",
+      "retain_utility": 0.09
+    },
+    {
+      "program_id": "p2ddd5a4d71",
+      "retain_utility": 0.09
+    },
+    {
+      "program_id": "p0af99fcba7",
+      "retain_utility": 0.09
+    },
+    {
+      "program_id": "pbd5028ba5e",
+      "retain_utility": 0.483333
+    },
+    {
+      "program_id": "p5db1be3857",
+      "retain_utility": 0.483333
+    },
+    {
+      "program_id": "p4d6fad34f4",
+      "retain_utility": 0.483333
+    },
+    {
+      "program_id": "pf7d66f6a70",
+      "retain_utility": 0.483333
+    },
+    {
+      "program_id": "p82a3906894",
+      "retain_utility": 0.483333
+    },
+    {
+      "program_id": "p6f05db8a39",
+      "retain_utility": 0.483333
+    },
+    {
+      "program_id": "p89ab3de025",
+      "retain_utility": 0.483333
+    },
+    {
+      "program_id": "pdd67c20644",
+      "retain_utility": 0.483333
+    },
+    {
+      "program_id": "p2aa7c27bdb",
+      "retain_utility": 0.483333
+    },
+    {
+      "program_id": "p7711b59718",
+      "retain_utility": 0.483333
+    },
+    {
+      "program_id": "pd06a178a76",
+      "retain_utility": 0.483333
+    },
+    {
+      "program_id": "p2a6c5d8a23",
+      "retain_utility": 0.483333
+    },
+    {
+      "program_id": "pf11448175c",
+      "retain_utility": 0.483333
+    },
+    {
+      "program_id": "p8d60f1f8b1",
+      "retain_utility": 0.483333
+    },
+    {
+      "program_id": "p74a0bedcdb",
+      "retain_utility": 0.483333
+    },
+    {
+      "program_id": "p8762c5c463",
+      "retain_utility": 0.483333
+    },
+    {
+      "program_id": "p2d4e5bf577",
+      "retain_utility": 0.483333
+    },
+    {
+      "program_id": "pb640f9b54b",
+      "retain_utility": 0.483333
+    },
+    {
+      "program_id": "p518b2321e8",
+      "retain_utility": 0.876667
+    }
+  ],
+  "complexity_ratio_delta": "maintain",
+  "comparator_bias": null
+}

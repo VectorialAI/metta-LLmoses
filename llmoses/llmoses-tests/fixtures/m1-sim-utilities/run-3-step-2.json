@@ -1,0 +1,136 @@
+{
+  "pass": false,
+  "sampling_temperature": null,
+  "exemplar_utilities": [
+    {
+      "program_id": "p8fa65d9044",
+      "utility": 0.896667
+    },
+    {
+      "program_id": "p35d7d2e230",
+      "utility": 0.896667
+    },
+    {
+      "program_id": "p928d725afd",
+      "utility": 0.896667
+    },
+    {
+      "program_id": "p4f961ea67d",
+      "utility": 0.833333
+    },
+    {
+      "program_id": "pbe5d3484da",
+      "utility": 0.833333
+    },
+    {
+      "program_id": "p353b3db430",
+      "utility": 0.833333
+    },
+    {
+      "program_id": "pe03f962c4e",
+      "utility": 0.833333
+    },
+    {
+      "program_id": "p767ec674c2",
+      "utility": 0.833333
+    },
+    {
+      "program_id": "p8e0f8621c8",
+      "utility": 0.833333
+    },
+    {
+      "program_id": "p38e096b927",
+      "utility": 0.833333
+    },
+    {
+      "program_id": "pdc59207fee",
+      "utility": 0.833333
+    },
+    {
+      "program_id": "p58750becfa",
+      "utility": 0.77
+    },
+    {
+      "program_id": "p26155cba52",
+      "utility": 0.77
+    },
+    {
+      "program_id": "p1815dac185",
+      "utility": 0.77
+    },
+    {
+      "program_id": "p9ca526f55e",
+      "utility": 0.77
+    },
+    {
+      "program_id": "pd3827bf9e3",
+      "utility": 0.0
+    }
+  ],
+  "pair_utilities": [
+    {
+      "key": "+A&+B",
+      "utility": 0.86
+    },
+    {
+      "key": "+B&+C",
+      "utility": 0.86
+    },
+    {
+      "key": "+A&+B",
+      "utility": 0.76
+    },
+    {
+      "key": "+B&+C",
+      "utility": 0.76
+    },
+    {
+      "key": "+A&-B",
+      "utility": 0.0
+    },
+    {
+      "key": "+B&-C",
+      "utility": 0.0
+    }
+  ],
+  "culling_utilities": [
+    {
+      "program_id": "p8af383587c",
+      "retain_utility": 0.4
+    },
+    {
+      "program_id": "pd0014c5376",
+      "retain_utility": 0.06
+    },
+    {
+      "program_id": "pd4428a1fe0",
+      "retain_utility": 0.12
+    },
+    {
+      "program_id": "p76bdd77a52",
+      "retain_utility": 0.34
+    },
+    {
+      "program_id": "pb0668c69c7",
+      "retain_utility": 0.34
+    },
+    {
+      "program_id": "p6c2751636b",
+      "retain_utility": 0.4
+    },
+    {
+      "program_id": "pbd1410b916",
+      "retain_utility": 0.4
+    },
+    {
+      "program_id": "pdcecbdb5d2",
+      "retain_utility": 0.4
+    },
+    {
+      "program_id": "p926be3de76",
+      "retain_utility": 0.9
+    }
+  ],
+  "complexity_ratio_delta": "increase",
+  "comparator_bias": null
+}

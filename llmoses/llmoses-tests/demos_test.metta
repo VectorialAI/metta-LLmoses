@@ -48,7 +48,7 @@
 !(import! &self representation/logical-probe)
 !(import! &self representation/logical-canonize)
 !(import! &self llmoses/representation/sample-logical-perms)
-!(import! &self representation/add-logical-knobs)
+!(import! &self llmoses/representation/add-logical-knobs)
 !(import! &self representation/build-logical)
 !(import! &self representation/build-knobs)
 !(import! &self representation/knob-mapper)

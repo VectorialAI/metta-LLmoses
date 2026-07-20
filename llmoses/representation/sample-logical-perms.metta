@@ -13,11 +13,18 @@
 ;; without-replacement weighted draw whose combo weights come from the
 ;; response's per-atom prior via the width-generic aggregate (D-027); a
 ;; zero-mass pool degrades to uniform with a bias_degraded audit row.
+;;
+;; D-033 contextual application: the selector also carries the exemplar
+;; node's operator and its node id (= tree path) into begin_combo_draw, so
+;; contextual atom priors (clause_type / parent_operator / depth_bucket /
+;; polarity / exemplar_id) and combination_synergy can condition the weights.
+;; The 3-arg sampler entrypoints remain as shims passing an empty path
+;; (context-free draw) for any caller not forked to thread the node id.
 ;; ============================================================================
 
 ;; --- Phase II lever 5: weighted without-replacement selector ---------------
-(= (llmWeightedSelector $lower $upper $n $combos $labels)
-   (let* (($on (py-call (state_builder.begin_combo_draw $combos $labels))))
+(= (llmWeightedSelector $lower $upper $n $combos $labels $op $nodePath)
+   (let* (($on (py-call (state_builder.begin_combo_draw $combos $labels $op $nodePath))))
      (if (== $on 1)
          (llmWeightedPickLoop $lower $upper $n ())
          (lazyRandomSelector $lower $upper $n))))
@@ -87,10 +94,18 @@
 ;; Returns:
 ;;          Union of $perms (the list of logical expressions generated) with args
 
-; (= (sampleLogicalPerms $op $arity) (sampleLogicalPerms $op $arity ()))
-;; (: sampleLogicalPerms (-> Atom Number Expression Expression))
-;; TODO: Rewrite using iterative logic
-(= (sampleLogicalPerms $op $arity $argLabels)
+(= (getMoveArgs $op $PermPairs $picked $moveLabels)
+    (let*
+        (
+            (($a $b $c) (index-atom $PermPairs (superpose $picked)))
+            (($move1 $move2 $move3) ((index-atom $moveLabels $a) (index-atom $moveLabels $b) (index-atom $moveLabels $c)))
+        )
+        ($op $move1 $move2 $move3)
+    ))
+
+;; --- overlay definitions ---
+
+(= (sampleLogicalPerms $op $arity $argLabels $nodePath)
     (let*
         (
             ($swapedOp (swapAndOr $op))
@@ -101,39 +116,16 @@
             (if (<= $nPairs 1)
                 (let $arg (car-atom $argLabels) ($arg (NOT $arg)))  ;; assuming at worst case, only one argument is returned -- representation building process makes sure that those with empty feature set do not make it to actual knob building stage
                 (let* (($upperbound (- (* $arity (- $arity 1)) 1))
-                        ($picked (llmWeightedSelector 0 $upperbound $nPairs $idxPairs $argLabels))
+                        ($picked (llmWeightedSelector 0 $upperbound $nPairs $idxPairs $argLabels $op $nodePath))
                         ($perms (collapse (getArgs $swapedOp $idxPairs $picked $argLabels))))
                    (concatT $argLabels $perms)))))
 
-;; getMoveArgs -> generate move expressions from pairs of move indices
-;; Params:
-;;          $op: move operator (PRIORITIZED-OR)
-;;          $PermPairs: list of pairs of idx permutations
-;;          $picked: list of picked move idxs
-;;          $moveLabels: list of move labels (playcenter, playcorner, etc.)
-;; Returns: move expressions with operator and move combinations
-;; (: getMoveArgs (-> Atom Expression Expression Expression Expression))
-;; TODO: Rewrite using iterative logic
-(= (getMoveArgs $op $PermPairs $picked $moveLabels)
-    (let*
-        (
-            ; ($triplet (index-atom $PermPairs (superpose $picked)))
-            (($a $b $c)(index-atom $PermPairs (superpose $picked)))
-            (($move1 $move2 $move3) ((index-atom $moveLabels $a) (index-atom $moveLabels $b) (index-atom $moveLabels $c)))
-        )
-        ($op $move1 $move2 $move3)
-    ))
+;; Context-free shim: callers that do not thread a node id draw without
+;; positional context (depth/exemplar-conditioned entries simply never match).
+(= (sampleLogicalPerms $op $arity $argLabels)
+   (sampleLogicalPerms $op $arity $argLabels ()))
 
-;; sampleStrategyPerms -> generate strategy permutations for game strategy evolution
-;; Params:
-;;          $op: the strategy operator (PRIORITIZED-OR)
-;;          $arity: the number of moves in the strategy sequence
-;;          $moveLabels: list of move labels (playcenter, playblock, playcorner, etc.)
-;; Returns:
-;;          Union of original moves with alternative move strategy expressions
-;; (: sampleStrategyPerms (-> Atom Number Expression Expression))
-;; TODO: Rewrite using iterative logic
-(= (sampleStrategyPerms $op $arity $moveLabels)
+(= (sampleStrategyPerms $op $arity $moveLabels $nodePath)
     (let*
         (
             ($list (genList (- (length $moveLabels) 1)))
@@ -145,10 +137,13 @@
             (let*
                 (
                     ($upperbound (- (length $idxPairs) 1))
-                    ($picked (llmWeightedSelector 0 $upperbound $nPairs $idxPairs $moveLabels))
+                    ($picked (llmWeightedSelector 0 $upperbound $nPairs $idxPairs $moveLabels $op $nodePath))
                     ($perms (collapse (getMoveArgs $op $idxPairs $picked $moveLabels)))
                 )
                    $perms
             )
         )
 ))
+
+(= (sampleStrategyPerms $op $arity $moveLabels)
+   (sampleStrategyPerms $op $arity $moveLabels ()))

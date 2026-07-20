@@ -11,7 +11,16 @@
 #   Phase 5  - COMPARATOR: comparator ordering re-sorts the metapopulation.
 #   Phase 6  - RATIO: complexity-ratio deltas persist and affect scoring.
 #   Phase 7  - ATOM: atom priors constrain non-degraded combination picks.
-#   Phase 8  - OFFSWITCH: disabled, zero-weight, and neutral responses stay native.
+#   Phase 8  - CTXOP: parent_operator-conditioned priors partition draw pools
+#              by the clause operator at the draw site (D-033).
+#   Phase 9  - CTXDEPTH: depth_bucket-conditioned priors partition draw pools
+#              by the depth band of the clause being created (D-033).
+#   Phase 10 - CTXPOL: polarity-conditioned priors steer picks to the
+#              order-encoded negated combinations (D-033).
+#   Phase 11 - SYNERGY: combination_synergy alone (no per-atom prior)
+#              constrains non-degraded picks to the chosen atom set (D-033).
+#   Phase 12 - OFFSWITCH: disabled, zero-weight, and neutral responses stay
+#              native — including contextual and synergy responses.
 #
 # This needs the PeTTa runtime (run.sh) + PYTHONPATH for llmoses/utilities, so
 # run it inside the project container. From the repo root:
@@ -169,7 +178,7 @@ check_offswitch_run() {
   local rundir rc out pyrc
 
   echo
-  echo "=== Phase 8${label}: OFFSWITCH mode=${mode} apply='${apply}' ==="
+  echo "=== Phase 12${label}: OFFSWITCH mode=${mode} apply='${apply}' ==="
   rundir="$(new_rundir)"
   start_watcher "$mode" "$rundir"
   run_driver "$rundir" "$DRIVER_STD_REL" "$apply" "$@"; rc=$?
@@ -701,9 +710,219 @@ pyrc=$?
                      || bad "ATOM constrained non-degraded combo picks to utility-1.0 atoms: $out"
 
 # ---------------------------------------------------------------------------
+echo
+echo "=== Phase 8: CTXOP mode=ctx_parent_op apply=atom_prior ==="
+T_CTXOP="$(new_rundir)"
+start_watcher ctx_parent_op "$T_CTXOP"
+run_driver "$T_CTXOP" "$DRIVER_STD_REL" "atom_prior"; rc=$?
+stop_watcher
+assert_run_ok "CTXOP" "$rc"
+
+out="$(RUNDIR="$T_CTXOP" python3 - <<'PY'
+import json, os, sys
+path = os.path.join(os.environ["RUNDIR"], "moses_native_log.jsonl")
+or_full = and_empty = 0
+errors = []
+try:
+    with open(path, encoding="utf-8") as fh:
+        for line in fh:
+            if not line.strip():
+                continue
+            row = json.loads(line)
+            if row.get("event") != "bias_applied" or row.get("lever") != "atom_prior":
+                continue
+            clause, nz, n = row.get("clause_type"), row.get("nonzero"), row.get("n_combos")
+            if clause == "OR":
+                if nz == n:
+                    or_full += 1
+                else:
+                    errors.append(f"OR draw nonzero={nz}/{n}")
+            elif clause == "AND":
+                if nz == 0:
+                    and_empty += 1
+                else:
+                    errors.append(f"AND draw nonzero={nz}/{n}")
+            else:
+                errors.append(f"unexpected clause_type={clause}")
+except FileNotFoundError:
+    print("native log missing")
+    sys.exit(1)
+if errors:
+    print("; ".join(errors[:3]))
+    sys.exit(1)
+if or_full < 1 or and_empty < 1:
+    print(f"or_full={or_full} and_empty={and_empty}")
+    sys.exit(1)
+print(f"or_full={or_full} and_empty={and_empty}")
+PY
+)"
+pyrc=$?
+[[ "$pyrc" -eq 0 ]] && pass "CTXOP pools full under OR clauses, empty under AND clauses" \
+                     || bad "CTXOP pools full under OR clauses, empty under AND clauses: $out"
+
+# ---------------------------------------------------------------------------
+echo
+echo "=== Phase 9: CTXDEPTH mode=ctx_depth apply=atom_prior ==="
+T_CTXDEPTH="$(new_rundir)"
+start_watcher ctx_depth "$T_CTXDEPTH"
+run_driver "$T_CTXDEPTH" "$DRIVER_STD_REL" "atom_prior"; rc=$?
+stop_watcher
+assert_run_ok "CTXDEPTH" "$rc"
+
+out="$(RUNDIR="$T_CTXDEPTH" python3 - <<'PY'
+import json, os, sys
+path = os.path.join(os.environ["RUNDIR"], "moses_native_log.jsonl")
+mid_full = other_empty = 0
+errors = []
+try:
+    with open(path, encoding="utf-8") as fh:
+        for line in fh:
+            if not line.strip():
+                continue
+            row = json.loads(line)
+            if row.get("event") != "bias_applied" or row.get("lever") != "atom_prior":
+                continue
+            bucket, nz, n = row.get("depth_bucket"), row.get("nonzero"), row.get("n_combos")
+            if bucket == "mid":
+                if nz == n:
+                    mid_full += 1
+                else:
+                    errors.append(f"mid draw nonzero={nz}/{n}")
+            else:
+                if nz == 0:
+                    other_empty += 1
+                else:
+                    errors.append(f"{bucket} draw nonzero={nz}/{n}")
+except FileNotFoundError:
+    print("native log missing")
+    sys.exit(1)
+if errors:
+    print("; ".join(errors[:3]))
+    sys.exit(1)
+if mid_full < 1:
+    print(f"mid_full={mid_full}")
+    sys.exit(1)
+print(f"mid_full={mid_full} other_empty={other_empty}")
+PY
+)"
+pyrc=$?
+[[ "$pyrc" -eq 0 ]] && pass "CTXDEPTH pools full in the mid band, empty elsewhere" \
+                     || bad "CTXDEPTH pools full in the mid band, empty elsewhere: $out"
+
+# ---------------------------------------------------------------------------
+echo
+echo "=== Phase 10: CTXPOL mode=ctx_polarity apply=atom_prior ==="
+T_CTXPOL="$(new_rundir)"
+start_watcher ctx_polarity "$T_CTXPOL"
+run_driver "$T_CTXPOL" "$DRIVER_STD_REL" "atom_prior"; rc=$?
+stop_watcher
+assert_run_ok "CTXPOL" "$rc"
+
+out="$(RUNDIR="$T_CTXPOL" python3 - <<'PY'
+import json, os, sys
+path = os.path.join(os.environ["RUNDIR"], "moses_native_log.jsonl")
+picks = 0
+errors = []
+try:
+    with open(path, encoding="utf-8") as fh:
+        for line in fh:
+            if not line.strip():
+                continue
+            row = json.loads(line)
+            if row.get("event") != "combo_pick" or row.get("degraded") is not False:
+                continue
+            picks += 1
+            lits = row.get("literals")
+            if not isinstance(lits, list) or not any(
+                    isinstance(l, str) and l.startswith("-") for l in lits):
+                errors.append(f"literals={lits}")
+except FileNotFoundError:
+    print("native log missing")
+    sys.exit(1)
+if errors:
+    print("; ".join(errors[:3]))
+    sys.exit(1)
+if picks < 1:
+    print("no non-degraded picks")
+    sys.exit(1)
+print(f"non_degraded_picks={picks} all contain a negated literal")
+PY
+)"
+pyrc=$?
+[[ "$pyrc" -eq 0 ]] && pass "CTXPOL non-degraded picks all carry a negated literal" \
+                     || bad "CTXPOL non-degraded picks all carry a negated literal: $out"
+
+# ---------------------------------------------------------------------------
+echo
+echo "=== Phase 11: SYNERGY mode=synergy_pair apply=atom_prior ==="
+T_SYNERGY="$(new_rundir)"
+start_watcher synergy_pair "$T_SYNERGY"
+run_driver "$T_SYNERGY" "$DRIVER_STD_REL" "atom_prior"; rc=$?
+stop_watcher
+assert_run_ok "SYNERGY" "$rc"
+
+out="$(RUNDIR="$T_SYNERGY" python3 - <<'PY'
+import json, os, sys
+
+rd = os.environ["RUNDIR"]
+util_path = os.path.join(rd, "utilities", "run-1", "step-1.json")
+try:
+    util = json.load(open(util_path, encoding="utf-8"))
+except FileNotFoundError:
+    print("step-1 utility missing")
+    sys.exit(1)
+allowed = set()
+for e in util.get("combination_synergy") or []:
+    if float(e.get("utility", -1.0)) == 1.0:
+        allowed.update(str(a) for a in e.get("atoms") or [])
+if not allowed:
+    print("allowed synergy atom set empty")
+    sys.exit(1)
+if util.get("atom_utility_prior"):
+    print("atom_utility_prior unexpectedly non-empty")
+    sys.exit(1)
+
+bias_syn = picks = 0
+errors = []
+log_path = os.path.join(rd, "moses_native_log.jsonl")
+try:
+    with open(log_path, encoding="utf-8") as fh:
+        for line in fh:
+            if not line.strip():
+                continue
+            row = json.loads(line)
+            if (row.get("event") == "bias_applied"
+                    and row.get("lever") == "atom_prior"
+                    and row.get("synergy")):
+                bias_syn += 1
+            if row.get("event") == "combo_pick" and row.get("degraded") is False:
+                picks += 1
+                atoms = row.get("atoms")
+                if not isinstance(atoms, list) or \
+                        not {str(a) for a in atoms}.issubset(allowed):
+                    errors.append(f"atoms={atoms} allowed={sorted(allowed)}")
+except FileNotFoundError:
+    print("native log missing")
+    sys.exit(1)
+if errors:
+    print("; ".join(errors[:3]))
+    sys.exit(1)
+if bias_syn < 1 or picks < 1:
+    print(f"bias_synergy_rows={bias_syn} non_degraded_picks={picks}")
+    sys.exit(1)
+print(f"bias_synergy_rows={bias_syn} non_degraded_picks={picks} allowed={sorted(allowed)}")
+PY
+)"
+pyrc=$?
+[[ "$pyrc" -eq 0 ]] && pass "SYNERGY alone constrained non-degraded picks to the chosen atom set" \
+                     || bad "SYNERGY alone constrained non-degraded picks to the chosen atom set: $out"
+
+# ---------------------------------------------------------------------------
 check_offswitch_run "a" force_worst ""
 check_offswitch_run "b" force_worst "exemplar_selection" LLMOSES_LEVER_WEIGHT_EXEMPLAR_SELECTION=0
 check_offswitch_run "c" neutral "exemplar_selection,culling,comparator,complexity_ratio,atom_prior"
+check_offswitch_run "d" ctx_parent_op ""
+check_offswitch_run "e" synergy_pair "atom_prior" LLMOSES_LEVER_WEIGHT_ATOM_PRIOR=0
 
 echo
 if [[ $fail -eq 0 ]]; then

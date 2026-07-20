@@ -16,6 +16,7 @@ import sys
 
 import atom_evidence
 import runspace
+import utility_schema
 from boundary import (
     _num, _flat, unwrap_atom, cons_to_list, expr_to_str,
     cr_or_none as _cr_or_none, present_atom as _present_atom,
@@ -878,9 +879,27 @@ def _roulette(weights):
     return len(weights) - 1
 
 
+# Contextual-prior vocabulary: context keys on atom_utility_prior entries map
+# to feature_utility_levers.lever_weights axes (D-033). Mirrors the
+# atom_evidence bucket vocabulary so the agent reads and writes one language.
+_CTX_KEY_AXIS = {
+    "polarity": "polarity", "clause_type": "clause_type",
+    "parent_operator": "parent_operator", "depth_bucket": "tree_depth",
+    "exemplar_id": "selected_exemplar",
+}
+_LEVER_WEIGHT_AXES = ("polarity", "clause_type", "parent_operator", "tree_depth",
+                      "selected_exemplar", "combination_synergy", "novelty")
+_RESPONSE_KEYS = ("pass", "sampling_temperature", "exemplar_utilities",
+                  "atom_utility_prior", "combination_synergy",
+                  "feature_utility_levers", "culling_utilities",
+                  "complexity_ratio_delta", "comparator_bias")
+
+
 def _ingest_utilities(g):
     """Parse utilities/run-N/step-G.json (written by the watcher BEFORE the
-    response sentinel) into normalized per-lever lookups."""
+    response sentinel) into normalized per-lever lookups. Anything supplied
+    but not usable is reported in the utility_ingest row's `ignored` map —
+    an estimation must never drop silently."""
     global _pending_utilities, _utility_gen
     path = os.path.join(_RUN_DIR, "utilities", f"run-{_run_seq}", f"step-{g}.json")
     try:
@@ -891,24 +910,39 @@ def _ingest_utilities(g):
     except Exception as e:
         _log_event("utility_ingest_error", generation=g, error=str(e)[:200])
         return
+    ignored = {}
+    for k in doc:
+        if k not in _RESPONSE_KEYS:
+            v = doc[k]
+            ignored[k] = len(v) if isinstance(v, (list, dict)) else "present"
+    # Diagnostic-only schema check: logged, never enforced — ingest still
+    # normalizes what it can and the run proceeds natively where it cannot.
+    schema_ok, schema_errors = utility_schema.validate_utility_response(doc)
     if doc.get("pass", True):
         _pending_utilities, _utility_gen = None, g
-        _log_event("utility_ingest", generation=g, decline=True)
+        _log_event("utility_ingest", generation=g, decline=True,
+                   ignored=ignored or None, schema_ok=schema_ok,
+                   schema_errors=schema_errors[:3] or None)
         return
 
     exemplar = {}
     for e in doc.get("exemplar_utilities") or []:
         if isinstance(e, dict) and e.get("program_id") is not None:
             exemplar[str(e["program_id"])] = _clamp01(e.get("utility"))
+        else:
+            ignored["exemplar_utilities"] = \
+                ignored.get("exemplar_utilities", 0) + 1
     retention = {}
     retention_default = None
     for e in doc.get("culling_utilities") or []:
         if not isinstance(e, dict) or e.get("program_id") is None:
+            ignored["culling_utilities"] = ignored.get("culling_utilities", 0) + 1
             continue
         r = e.get("retention_utility", e.get("retain_utility"))
         if r is None and e.get("cull_utility") is not None:
             r = 1.0 - _clamp01(e.get("cull_utility"))
         if r is None:
+            ignored["culling_utilities"] = ignored.get("culling_utilities", 0) + 1
             continue
         # program_id "*" = default retention for candidates the agent has not
         # seen (programs born after the response) — without it, fresh
@@ -918,21 +952,54 @@ def _ingest_utilities(g):
         else:
             retention[str(e["program_id"])] = _clamp01(r)
     atom_prior = {}
+    atom_prior_ctx = []   # contextual entries, response order preserved (D-033)
     for e in doc.get("atom_utility_prior") or []:
-        if isinstance(e, dict) and e.get("atom") is not None:
-            atom_prior[str(e["atom"])] = _clamp01(e.get("utility"))
+        if not (isinstance(e, dict) and e.get("atom") is not None):
+            continue
+        ctx = e.get("context")
+        if isinstance(ctx, dict) and ctx:
+            keys = {k: str(v) for k, v in ctx.items()
+                    if k in _CTX_KEY_AXIS and v is not None}
+            if keys:
+                atom_prior_ctx.append({"atom": str(e["atom"]),
+                                       "utility": _clamp01(e.get("utility")),
+                                       "context": keys})
+            else:
+                ignored["atom_utility_prior.context"] = \
+                    ignored.get("atom_utility_prior.context", 0) + 1
+            continue
+        atom_prior[str(e["atom"])] = _clamp01(e.get("utility"))
+    synergy = []
+    for e in doc.get("combination_synergy") or []:
+        if isinstance(e, dict) and isinstance(e.get("atoms"), list) and e["atoms"]:
+            synergy.append({"atoms": frozenset(str(a) for a in e["atoms"]),
+                            "utility": _clamp01(e.get("utility"))})
     levers = doc.get("feature_utility_levers") or {}
     aggregate_fn = levers.get("aggregate_fn") if isinstance(levers, dict) else None
     if aggregate_fn not in ("product", "mean", "geometric_mean", "softmax"):
         aggregate_fn = "product"
+    lever_weights = {}
+    lw = levers.get("lever_weights") if isinstance(levers, dict) else None
+    if isinstance(lw, dict):
+        for k, v in lw.items():
+            if k in _LEVER_WEIGHT_AXES:
+                lever_weights[k] = _clamp01(v)
+            else:
+                ignored[f"lever_weights.{k}"] = "unknown_axis"
     comparator_rank = {}
     cb = doc.get("comparator_bias")
     if isinstance(cb, dict):
         for rank, pid in enumerate(cb.get("program_id_ordering") or []):
             comparator_rank.setdefault(str(pid), rank)
+    elif cb is not None:
+        ignored["comparator_bias"] = "invalid_shape"
     delta = doc.get("complexity_ratio_delta")
     if not (isinstance(delta, dict) and delta.get("direction") in
             ("increase", "decrease", "maintain")):
+        if delta is not None:
+            # Pre-D-030 bare strings land here: rejected by design — the agent
+            # must constrained-generate the {direction, magnitude} object.
+            ignored["complexity_ratio_delta"] = "invalid_shape"
         delta = None
     temp = doc.get("sampling_temperature")
     try:
@@ -943,14 +1010,22 @@ def _ingest_utilities(g):
     _pending_utilities = {
         "exemplar": exemplar, "retention": retention,
         "retention_default": retention_default, "atom_prior": atom_prior,
+        "atom_prior_ctx": atom_prior_ctx, "synergy": synergy,
+        "lever_weights": lever_weights,
         "aggregate_fn": aggregate_fn, "comparator_rank": comparator_rank,
         "complexity_ratio_delta": delta, "sampling_temperature": temp,
     }
     _utility_gen = g
     _log_event("utility_ingest", generation=g, decline=False,
                exemplar=len(exemplar), retention=len(retention),
-               atoms=len(atom_prior), comparator=len(comparator_rank),
-               ratio_delta=(delta or {}).get("direction"), temperature=temp)
+               atoms=len(atom_prior), atoms_ctx=len(atom_prior_ctx),
+               synergy=len(synergy),
+               lever_weights=({k: v for k, v in lever_weights.items() if v > 0}
+                              or None),
+               comparator=len(comparator_rank),
+               ratio_delta=(delta or {}).get("direction"), temperature=temp,
+               ignored=ignored or None, schema_ok=schema_ok,
+               schema_errors=schema_errors[:3] or None)
 
 
 def utility_summary(g):
@@ -1174,14 +1249,25 @@ def _aggregate_prior(u_hats, fn):
     return prod
 
 
-def begin_combo_draw(combos, labels):
+def begin_combo_draw(combos, labels, op=None, path=None):
     """Gate + setup for one sampler node draw. combos = enumerated index
-    combinations (pairs/triplets) into labels. Returns 1 when the atom_prior
+    combinations (pairs/triplets) into labels; op = the exemplar node's
+    operator; path = the node id (its tree path — root is (0), a child of the
+    root is (n), deeper nodes concatenate). Returns 1 when the atom_prior
     lever applies (the fork then draws through weighted_combo_pick); 0 keeps
-    the native lazyRandomSelector untouched."""
+    the native lazyRandomSelector untouched.
+
+    D-033 contextual application: each atom's effective utility starts from
+    the global prior (missing => neutral 1.0) and blends matching contextual
+    entries, weighted by the product of the lever_weights of the axes the
+    entry conditions on — all-zero lever_weights reproduces the global-only
+    v1 behavior exactly. The aggregated combo weight is then multiplied by
+    the combination_synergy factor (the non-separable channel)."""
     global _combo_buf
     try:
-        if not _lever_on("atom_prior", "atom_prior"):
+        p = _pending_utilities
+        if not (_lever_on("atom_prior") and
+                (p["atom_prior"] or p["atom_prior_ctx"] or p["synergy"])):
             _combo_buf = None
             return 0
         label_list = [_flat(l) for l in (labels if isinstance(labels, list) else [labels])]
@@ -1189,21 +1275,87 @@ def begin_combo_draw(combos, labels):
         for c in (combos if isinstance(combos, list) else []):
             idxs = [int(_num(v)) for v in (c if isinstance(c, list) else [c])]
             combo_list.append(idxs)
-        prior = _pending_utilities["atom_prior"]
-        temp = _pending_utilities["sampling_temperature"]
-        fn = _pending_utilities["aggregate_fn"]
+        prior = p["atom_prior"]
+        prior_ctx = p["atom_prior_ctx"]
+        synergy = p["synergy"]
+        lw = p["lever_weights"]
+        temp = p["sampling_temperature"]
+        fn = p["aggregate_fn"]
         lam = _LEVER_WEIGHTS["atom_prior"]
-        weights, names = [], []
+
+        # Live draw context. The drawn perm becomes a clause under the SWAPPED
+        # operator (getArgs builds ($swapedOp ...)); under alternating AND/OR
+        # canonicalization clause_type and parent_operator coincide, exactly
+        # as atom_evidence records them. Depth: the node id is its tree path
+        # (root (0) is depth 0; elsewhere depth = path length); the new clause
+        # sits one below the node, bucketed with atom_evidence's bands.
+        op_s = _flat(op) if op is not None else None
+        clause_op = {"AND": "OR", "OR": "AND"}.get(op_s, op_s)
+        path_l = [int(_num(v)) for v in (path if isinstance(path, list)
+                                         else ([] if path in (None, ()) else [path]))]
+        node_depth = 0 if path_l == [0] else len(path_l)
+        depth_bucket = (atom_evidence._depth_bucket(node_depth + 1)
+                        if path_l else None)
+        exemplar_id = (_pending_selection or {}).get("program_id")
+        draw_ctx = {"clause_type": clause_op, "parent_operator": clause_op,
+                    "depth_bucket": depth_bucket, "exemplar_id": exemplar_id}
+
+        def u_eff(atom, pol):
+            """Blend global + matching contextual priors; None = no entry
+            touched this atom (stay neutral, unsharpened)."""
+            touched = atom in prior
+            u = prior[atom] if touched else 1.0
+            for e in prior_ctx:
+                if e["atom"] != atom:
+                    continue
+                w, match = 1.0, True
+                for k, v in e["context"].items():
+                    cur = pol if k == "polarity" else draw_ctx.get(k)
+                    if cur is None or str(cur) != v:
+                        match = False
+                        break
+                    w *= lw.get(_CTX_KEY_AXIS[k], 0.0)
+                if not match or w <= 0.0:
+                    continue
+                if not touched:
+                    touched, u = True, 1.0
+                u = (1.0 - w) * u + w * e["utility"]
+            return u if touched else None
+
+        syn_w = lw.get("combination_synergy", 0.0)
+        syn_map = ({e["atoms"]: e["utility"] for e in synergy}
+                   if syn_w > 0.0 else {})
+
+        weights, names, literals = [], [], []
         for idxs in combo_list:
             atoms = [label_list[i] if 0 <= i < len(label_list) else None for i in idxs]
-            # missing atom in the prior => neutral factor 1.0
-            u_hats = [_sharpen(prior[a], temp) if a in prior else 1.0 for a in atoms]
-            weights.append(_mix(1.0, _aggregate_prior(u_hats, fn), lam))
+            # Boolean pair polarity is order-encoded at the draw: getArgs emits
+            # (NOT first, second) for ascending index pairs, a positive pair
+            # otherwise. Strategy triplets carry no NOT at the draw.
+            if len(idxs) == 2 and idxs[0] < idxs[1]:
+                pols = ["-", "+"]
+            else:
+                pols = ["+"] * len(idxs)
+            u_hats = []
+            for a, pol in zip(atoms, pols):
+                u = u_eff(a, pol)
+                u_hats.append(_sharpen(u, temp) if u is not None else 1.0)
+            w = _mix(1.0, _aggregate_prior(u_hats, fn), lam)
+            if syn_map:
+                key = frozenset(a for a in atoms if a is not None)
+                if key in syn_map:
+                    lam_s = lam * syn_w
+                    w *= lam_s * _sharpen(syn_map[key], temp) + (1.0 - lam_s)
+            weights.append(w)
             names.append(atoms)
-        _combo_buf = {"weights": weights, "names": names}
+            literals.append([f"{pol}{a}" for a, pol in zip(atoms, pols)])
+        _combo_buf = {"weights": weights, "names": names, "literals": literals}
         _log_event("bias_applied", lever="atom_prior", response_gen=_utility_gen,
                    lam=lam, aggregate_fn=fn, n_combos=len(weights),
-                   nonzero=sum(1 for w in weights if w > 0))
+                   nonzero=sum(1 for w in weights if w > 0),
+                   clause_type=clause_op, depth_bucket=depth_bucket,
+                   exemplar_id=exemplar_id,
+                   contextual=bool(prior_ctx), synergy=bool(syn_map))
         return 1
     except Exception as e:
         sys.stderr.write(f"[begin_combo_draw] error: {e}\n")
@@ -1225,20 +1377,21 @@ def weighted_combo_pick(lower, upper, picked):
         weights = [(buf.get("weights") or [])[i]
                    if i < len(buf.get("weights") or []) else 1.0
                    for i in remaining]
+        def _row(field):
+            vals = buf.get(field) or []
+            return vals[remaining[pos]] if remaining[pos] < len(vals) else None
         pos = _roulette(weights)
         if pos is None:  # zero mass left: deliberate diversity cut exhausted
             pos = random.randint(0, len(remaining) - 1)
             _log_event("bias_degraded", lever="atom_prior",
                        reason="zero_mass_pool", remaining=len(remaining))
             _log_event("combo_pick", lever="atom_prior", degraded=True,
-                       index=remaining[pos],
-                       atoms=(buf.get("names") or [[]])[remaining[pos]]
-                       if remaining[pos] < len(buf.get("names") or []) else None)
+                       index=remaining[pos], atoms=_row("names"),
+                       literals=_row("literals"))
             return remaining[pos]
         _log_event("combo_pick", lever="atom_prior", degraded=False,
-                   index=remaining[pos],
-                   atoms=(buf.get("names") or [[]])[remaining[pos]]
-                   if remaining[pos] < len(buf.get("names") or []) else None)
+                   index=remaining[pos], atoms=_row("names"),
+                   literals=_row("literals"))
         return remaining[pos]
     except Exception as e:
         sys.stderr.write(f"[weighted_combo_pick] error: {e}\n")

@@ -31,7 +31,10 @@ The UtilityResponse contains only:
 - `pass`
 - `sampling_temperature`
 - `exemplar_utilities`
-- `pair_utilities`
+- `atom_utility_prior` (optionally context-conditioned; see
+  `llmoses/skills/UTILITY_RESPONSE.md`)
+- `combination_synergy`
+- `feature_utility_levers`
 - `culling_utilities`
 - `complexity_ratio_delta`
 - `comparator_bias`
@@ -42,4 +45,5 @@ Do not rely on hidden model chain-of-thought; traces should contain only
 transcript material and explicit audit text available to the harness.
 
 Complexity-ratio direction: `increase` rewards complexity, `decrease` penalizes
-complexity, and `maintain` leaves pressure unchanged.
+complexity, and `maintain` leaves pressure unchanged. Always emit the
+`{direction, magnitude}` object — a bare direction string is rejected.

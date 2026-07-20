@@ -1,0 +1,47 @@
+{
+  "pass": true,
+  "sampling_temperature": null,
+  "exemplar_utilities": [
+    {
+      "program_id": "pcc48981529",
+      "utility": 0.405
+    },
+    {
+      "program_id": "pe991a9505c",
+      "utility": 0.405
+    },
+    {
+      "program_id": "pfe0b049495",
+      "utility": 0.405
+    },
+    {
+      "program_id": "pb530ae26f3",
+      "utility": 0.405
+    }
+  ],
+  "pair_utilities": [
+    {
+      "key": "+playwin&+playblock",
+      "utility": 0.64
+    },
+    {
+      "key": "+playblock&+playwin&+playcorner",
+      "utility": 0.32
+    },
+    {
+      "key": "+playcenter&+playblock&+playside",
+      "utility": 0.32
+    },
+    {
+      "key": "+playwin&+playcenter&+playcorner",
+      "utility": 0.32
+    },
+    {
+      "key": "+playwin&+playcorner&+playside",
+      "utility": 0.32
+    }
+  ],
+  "culling_utilities": [],
+  "complexity_ratio_delta": "maintain",
+  "comparator_bias": null
+}

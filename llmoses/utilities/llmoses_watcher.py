@@ -7,11 +7,14 @@ trace JSON under run-local directories, and drains remaining sentinels before
 exit on stop.
 """
 import argparse
+import itertools
 import json
 import os
 import signal
 import sys
 import time
+
+import utility_schema
 
 HEAD_N = 10
 
@@ -32,11 +35,21 @@ _NEUTRAL_DOC = {
     "pass": True,
     "sampling_temperature": None,
     "exemplar_utilities": [],
-    "pair_utilities": [],
+    "atom_utility_prior": [],
+    "combination_synergy": [],
+    "feature_utility_levers": None,
     "culling_utilities": [],
     "complexity_ratio_delta": None,
     "comparator_bias": None,
 }
+
+
+def _alphabet_labels(run_config):
+    alphabet = run_config.get("atom_alphabet") or {}
+    labels = [a.get("label") for a in alphabet.get("atoms") or []
+              if a.get("label") is not None]
+    width = 3 if alphabet.get("problem_type") == "strategy" else 2
+    return labels, width
 
 
 def _load_json(path):
@@ -103,15 +116,53 @@ def _mock_utility(mode, state, run_config, gen):
     elif mode == "ratio_increase":
         doc["complexity_ratio_delta"] = {"direction": "increase", "magnitude": 1.0}
     elif mode == "atom_pair":
-        alphabet = run_config.get("atom_alphabet") or {}
-        labels = [a.get("label") for a in alphabet.get("atoms") or []
-                  if a.get("label") is not None]
-        width = 3 if alphabet.get("problem_type") == "strategy" else 2
+        labels, width = _alphabet_labels(run_config)
         chosen = set(labels[:width])
         doc["atom_utility_prior"] = [
             {"atom": l, "utility": 1.0 if l in chosen else 0.0} for l in labels]
         doc["feature_utility_levers"] = {"aggregate_fn": "product",
                                          "lever_weights": {}}
+    elif mode == "ctx_parent_op":
+        # Global 0 everywhere, 1 under OR clauses: draws under AND must have a
+        # zero pool (all degraded), draws under OR a full one (D-033).
+        labels, _ = _alphabet_labels(run_config)
+        doc["atom_utility_prior"] = (
+            [{"atom": l, "utility": 0.0} for l in labels]
+            + [{"atom": l, "utility": 1.0,
+                "context": {"parent_operator": "OR"}} for l in labels])
+        doc["feature_utility_levers"] = {"aggregate_fn": "product",
+                                         "lever_weights": {"parent_operator": 1.0}}
+    elif mode == "ctx_depth":
+        # Same partition keyed on the depth band of the clause being created.
+        labels, _ = _alphabet_labels(run_config)
+        doc["atom_utility_prior"] = (
+            [{"atom": l, "utility": 0.0} for l in labels]
+            + [{"atom": l, "utility": 1.0,
+                "context": {"depth_bucket": "mid"}} for l in labels])
+        doc["feature_utility_levers"] = {"aggregate_fn": "product",
+                                         "lever_weights": {"tree_depth": 1.0}}
+    elif mode == "ctx_polarity":
+        # Only negated positions score (order-encoded at the boolean draw:
+        # ascending index pairs carry NOT on the first literal). mean, not
+        # product: every pair has at most one negated slot.
+        labels, _ = _alphabet_labels(run_config)
+        doc["atom_utility_prior"] = (
+            [{"atom": l, "utility": 0.0} for l in labels]
+            + [{"atom": l, "utility": 1.0,
+                "context": {"polarity": "-"}} for l in labels])
+        doc["feature_utility_levers"] = {"aggregate_fn": "mean",
+                                         "lever_weights": {"polarity": 1.0}}
+    elif mode == "synergy_pair":
+        # One atom set together = 1, every other combination = 0; no per-atom
+        # prior at all — only the non-separable channel carries signal.
+        labels, width = _alphabet_labels(run_config)
+        chosen = set(labels[:width])
+        doc["combination_synergy"] = [
+            {"atoms": list(c), "utility": 1.0 if set(c) == chosen else 0.0}
+            for c in itertools.combinations(labels, width)]
+        doc["feature_utility_levers"] = {
+            "aggregate_fn": "product",
+            "lever_weights": {"combination_synergy": 1.0}}
     else:
         raise ValueError(f"unknown mock mode {mode!r}")
     return doc
@@ -192,6 +243,18 @@ def _handle_step(run_dir, seq, gen, dirs):
             sys.stderr.write(f"[watcher] mock mode {MOCK_MODE!r} failed for "
                              f"run-{seq}-step-{gen}: {e}; emitting neutral\n")
             utility_doc = dict(_NEUTRAL_DOC)
+    # Constrained-output gate: never write a response that violates the
+    # UtilityResponse contract. A live agent retries here; the mock has no
+    # retry, so an invalid mock degrades to neutral — loudly, because the
+    # policy phase that expected its bias will then fail its assertions.
+    parse_diagnostics = []
+    schema_ok, schema_errors = utility_schema.validate_utility_response(utility_doc)
+    if not schema_ok:
+        sys.stderr.write(f"[watcher] SCHEMA INVALID (mock mode {MOCK_MODE!r}) "
+                         f"for run-{seq}-step-{gen}: {schema_errors[:5]}; "
+                         f"emitting neutral\n")
+        parse_diagnostics = [f"schema: {e}" for e in schema_errors]
+        utility_doc = dict(_NEUTRAL_DOC)
     raw_model_response = json.dumps(utility_doc, sort_keys=True)
     _write_json(util_p, utility_doc)
 
@@ -224,7 +287,7 @@ def _handle_step(run_dir, seq, gen, dirs):
         "audit_reasoning": [
             "stub watcher observed ready sentinel but did not call a provider",
         ],
-        "parse_diagnostics": [],
+        "parse_diagnostics": parse_diagnostics,
         "debug_heads": {
             "state_head": state_head,
             "action_head": action_head,
