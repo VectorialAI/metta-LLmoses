@@ -76,6 +76,28 @@ syn = sorted(k for k in slots if k.startswith("syn:"))
 check("synergy slots enumerate all width-2 sets",
       syn == ["syn:X1&X2", "syn:X1&X3", "syn:X2&X3"], f"got {syn}")
 
+print("=== atom identity resolution: strict, canonical, no passthrough ===")
+import atom_evidence as ae                                    # noqa: E402
+resolve = ae.atom_label_resolver(RUN_CONFIG["atom_alphabet"])
+check("resolver maps alphabet key to bare label",
+      resolve("feature:X2") == "X2")
+check("resolver accepts an exact bare label",
+      resolve("X2") == "X2")
+try:
+    resolve("feature:GHOST")
+    check("resolver raises on unknown identity", False, "no exception")
+except KeyError:
+    check("resolver raises on unknown identity", True)
+bad_state = {"atom_evidence": {"atom_appearances": [
+    {"atom": "bogus:Z9", "polarity": "+", "parent_operator": "OR",
+     "depth_bucket": "mid", "count": 1}]}}
+try:
+    rt.build_slots(bad_state, RUN_CONFIG)
+    check("build_slots raises on out-of-alphabet evidence identity",
+          False, "no exception")
+except KeyError:
+    check("build_slots raises on out-of-alphabet evidence identity", True)
+
 print("=== assembly: valid by construction ===")
 values = {"exemplar:p1": 1.0, "exemplar:p2": 0.0,
           "cull:p3": 1.0, "cull:*": 1.0,

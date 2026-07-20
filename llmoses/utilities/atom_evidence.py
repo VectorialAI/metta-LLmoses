@@ -25,6 +25,36 @@ _ATOM_LOSSLESS = os.environ.get("LLMOSES_ATOM_LOSSLESS", "").strip().lower() in 
     "1", "true", "yes", "on")
 
 
+def atom_label_resolver(alphabet_block):
+    """Canonical atom-identity resolution, owned by the vocabulary module.
+
+    Emitted evidence (atom_appearances, realized_cooccurrences members,
+    atom_cumulative keys) identifies atoms by their namespaced alphabet KEY
+    ('feature:X1', 'move:playcenter'); the UtilityResponse contract and the
+    sampler labels are BARE ('X1', 'playcenter'). Every consumer that crosses
+    that boundary must resolve through this function — never a local ad-hoc
+    map. The returned resolve(atom) accepts an exact key or an exact bare
+    label and returns the bare label; ANY other identity raises KeyError,
+    because an atom outside the run's alphabet is an emitter/consumer
+    contract break, not data to pass through quietly."""
+    mapping = {}
+    for a in (alphabet_block or {}).get("atoms") or []:
+        label = a.get("label")
+        if label is None:
+            continue
+        mapping[label] = label
+        if a.get("key") is not None:
+            mapping[a["key"]] = label
+
+    def resolve(atom):
+        try:
+            return mapping[atom]
+        except (KeyError, TypeError):
+            raise KeyError(f"atom identity {atom!r} is not in the run's "
+                           f"alphabet ({sorted(set(mapping.values()))})")
+    return resolve
+
+
 def build_atom_alphabet(problem_spec, ptype):
     """Resolve the static action-space alphabet from problem_spec.
     Strategy -> moves (prefix 'move'); boolean/default -> input_labels (prefix

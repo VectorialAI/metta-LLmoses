@@ -14,6 +14,7 @@ import signal
 import sys
 import time
 
+import atom_evidence
 import utility_schema
 
 HEAD_N = 10
@@ -184,18 +185,18 @@ def _mock_utility(mode, state, run_config, gen):
     elif mode == "evidence_pair":
         # Same synergy-only channel, but choose the most frequent realized
         # cooccurrence in the current state evidence instead of the prefix.
-        # Evidence members carry alphabet keys ('feature:X1'); map back to
-        # the bare labels the sampler and the response contract use.
+        # Atom identities resolve through the canonical alphabet resolver
+        # (an identity outside the alphabet raises -> loud mock failure).
         labels, width = _alphabet_labels(run_config)
         label_set = set(labels)
-        key_to_label = {a.get("key"): a.get("label")
-                        for a in (run_config.get("atom_alphabet") or {}).get("atoms") or []}
+        resolve = atom_evidence.atom_label_resolver(
+            run_config.get("atom_alphabet"))
         best = None
         for e in (state.get("atom_evidence") or {}).get("realized_cooccurrences") or []:
             members = []
             for m in e.get("members") or []:
                 raw = m.get("atom") if isinstance(m, dict) else m
-                members.append(key_to_label.get(raw, raw))
+                members.append(resolve(raw))
             members = tuple(sorted(str(m) for m in members if m is not None))
             if e.get("width") != width or len(members) != width:
                 continue

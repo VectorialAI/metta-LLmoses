@@ -52,6 +52,8 @@ Closed JSON schema:
 
 {json_schema}
 
-Compact evidence digest:
+Compact evidence digest (note: evidence rows identify atoms by their
+namespaced alphabet key, e.g. `feature:X1` or `move:playcenter`; the slot
+keys use the bare labels — `run_config.atom_alphabet` is the mapping):
 
 {evidence_digest}

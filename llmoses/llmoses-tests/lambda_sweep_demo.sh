@@ -372,19 +372,21 @@ if mode == "evidence_pair":
         labels = [a.get("label") for a in alphabet.get("atoms") or []
                   if a.get("label") is not None]
         return labels, 3 if alphabet.get("problem_type") == "strategy" else 2
-    def members_of(e, key_to_label):
+    sys.path.insert(0, os.path.join("llmoses", "utilities"))
+    import atom_evidence
+    def members_of(e, resolve):
         out = []
         for m in e.get("members") or []:
             raw = m.get("atom") if isinstance(m, dict) else m
-            out.append(key_to_label.get(raw, raw))
+            out.append(resolve(raw))
         return tuple(sorted(str(m) for m in out if m is not None))
     def evidence_winner(state, run_config):
         labels, width = labels_width(run_config)
-        key_to_label = {a.get("key"): a.get("label")
-                        for a in (run_config.get("atom_alphabet") or {}).get("atoms") or []}
+        resolve = atom_evidence.atom_label_resolver(
+            run_config.get("atom_alphabet"))
         label_set, best = set(labels), None
         for e in (state.get("atom_evidence") or {}).get("realized_cooccurrences") or []:
-            members = members_of(e, key_to_label)
+            members = members_of(e, resolve)
             if e.get("width") != width or len(members) != width or not set(members).issubset(label_set):
                 continue
             count = int(e.get("count") or 0)
