@@ -48,9 +48,11 @@ STATE = {
         "survivors": ["p1", "p2", "p3"],
         "new_entrants": [{"program_id": "p3", "penalized_score": -0.25}]}},
     "atom_evidence": {"atom_appearances": [
-        {"atom": "X1", "polarity": "-", "clause_type": "AND",
+        # Evidence rows carry prefixed alphabet KEYS, exactly as emitted —
+        # the template must map key -> bare label (the prefix trap).
+        {"atom": "feature:X1", "polarity": "-", "clause_type": "AND",
          "parent_operator": "AND", "depth_bucket": "mid", "count": 4},
-        {"atom": "X3", "polarity": "+", "clause_type": "OR",
+        {"atom": "feature:X3", "polarity": "+", "clause_type": "OR",
          "parent_operator": "OR", "depth_bucket": "mid", "count": 1},
     ]},
 }

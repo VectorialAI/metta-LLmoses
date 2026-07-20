@@ -102,9 +102,14 @@ def build_slots(state, run_config):
     # Contextual slots: only OBSERVED evidence buckets, marginalized to the
     # single axes the response context vocabulary names. Real by
     # construction — a bucket exists iff the walker saw that atom there.
+    # Evidence rows carry prefixed alphabet KEYS ('feature:X1'); slots and
+    # the response contract use bare labels — map through the alphabet.
+    block, _, _ = _alphabet(run_config)
+    key_to_label = {a.get("key"): a.get("label")
+                    for a in block.get("atoms") or []}
     seen = {}
     for row in (state.get("atom_evidence") or {}).get("atom_appearances") or []:
-        atom = row.get("atom")
+        atom = key_to_label.get(row.get("atom"), row.get("atom"))
         if atom not in labels:
             continue
         for axis in _CTX_AXES:

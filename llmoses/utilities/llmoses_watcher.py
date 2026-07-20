@@ -30,7 +30,7 @@ POLL_S = float(os.environ.get("LLMOSES_WATCH_POLL_S", "0.1"))
 # tests can assert the meta-loop obeyed them. Modes: ingest_probe, force_worst,
 # cull_targets, retain_all, reverse_order, ratio_increase, atom_pair,
 # ctx_parent_op, ctx_depth, ctx_polarity, ctx_zero_weights, synergy_pair,
-# evidence_pair. Any error while building a mock response falls back to
+# evidence_pair, live. Any error while building a mock/live response falls back to
 # neutral — the handshake must never break.
 MOCK_MODE = os.environ.get("LLMOSES_MOCK_UTILITY_MODE", "neutral")
 
@@ -288,12 +288,18 @@ def _handle_step(run_dir, seq, gen, dirs):
     util_p = os.path.join(util_dir, f"step-{gen}.json")
     utility_doc = dict(_NEUTRAL_DOC)
     run_config = None
+    trace_extras = {}
     if MOCK_MODE != "neutral":
         try:
             state = _load_json(state_p)
             run_config = _load_json(os.path.join(dirs["state"], f"run-{seq}",
                                                  "run_config.json"))
-            utility_doc = _mock_utility(MOCK_MODE, state, run_config, gen)
+            if MOCK_MODE == "live":
+                import live_estimator
+                utility_doc, trace_extras = live_estimator.estimate(
+                    state, run_config, gen)
+            else:
+                utility_doc = _mock_utility(MOCK_MODE, state, run_config, gen)
         except Exception as e:  # mock failure must never break the handshake
             sys.stderr.write(f"[watcher] mock mode {MOCK_MODE!r} failed for "
                              f"run-{seq}-step-{gen}: {e}; emitting neutral\n")
@@ -328,7 +334,9 @@ def _handle_step(run_dir, seq, gen, dirs):
                 f"run-{seq}-step-{gen}: {schema_errors[:5]}; nothing "
                 f"salvageable, emitting neutral\n")
             utility_doc = dict(_NEUTRAL_DOC)
-    raw_model_response = json.dumps(utility_doc, sort_keys=True)
+    raw_outputs = trace_extras.get("raw_provider_outputs") or []
+    raw_model_response = (raw_outputs[-1] if raw_outputs
+                          else json.dumps(utility_doc, sort_keys=True))
     _write_json(util_p, utility_doc)
 
     trace_dir = os.path.join(dirs["traces"], f"run-{seq}")
@@ -337,7 +345,7 @@ def _handle_step(run_dir, seq, gen, dirs):
     trace_doc = {
         "schema_version": "agent-trace-v0",
         "record_type": "AgentTrace",
-        "stub": True,
+        "stub": MOCK_MODE != "live",
         "mock_mode": MOCK_MODE,
         "run_seq": seq,
         "generation": gen,
@@ -371,6 +379,7 @@ def _handle_step(run_dir, seq, gen, dirs):
             f"{len(action_head)} action line(s); wrote utilities + traces."
         ),
     }
+    trace_doc.update(trace_extras)
     _write_json(trace_p, trace_doc)
 
     return util_p, trace_p

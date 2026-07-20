@@ -39,6 +39,11 @@ The UtilityResponse contains only:
 - `complexity_ratio_delta`
 - `comparator_bias`
 
+Prefer building the UtilityResponse through the slot template
+(`llmoses/utilities/response_template.py`): `build_slots` enumerates the real
+per-generation estimation targets, you supply values only, and `assemble`
+yields a contract-valid document by construction.
+
 Put prompt/context manifests, raw model responses, read-file lists, explicit
 audit reasoning, provider metadata, and parse/error diagnostics in AgentTrace.
 Do not rely on hidden model chain-of-thought; traces should contain only

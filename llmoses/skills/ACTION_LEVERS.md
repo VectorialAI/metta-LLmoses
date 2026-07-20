@@ -28,8 +28,7 @@ Comparator ordering:
 
 Atom-prior and cooccurrence guidance:
 
-- Prefer explicit `pair_sampling_candidates` when available.
-- If not available, `atom_evidence` can still guide which atoms or cooccurrences look useful.
+- `atom_evidence` is the evidence base: appearances tell you which atoms look useful and where; `realized_cooccurrences` tell you which combinations actually materialized and how their hosts scored.
 - For boolean domains, watch polarity and repeated or contradictory literals.
 - For strategy domains, treat move cooccurrence as sequence or policy structure evidence, not boolean literal logic.
 - Act on it through `atom_utility_prior` (global or `context`-conditioned entries in the atom_evidence bucket vocabulary) and `combination_synergy` for atom sets whose value is joint, not individual; remember contextual entries and synergy require the matching `feature_utility_levers.lever_weights` axis to be non-zero.

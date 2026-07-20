@@ -4,7 +4,7 @@ Write exactly one valid JSON object to `utilities/run-N/step-G.json`. Do not wra
 
 UtilityResponse is the machine-consumable action utility output. It should not contain prompt text, raw model responses, natural-language reasoning, or transcript material. Those belong in `traces/run-N/step-G.json`.
 
-Required top-level fields (no others are read; unknown fields are logged and ignored):
+Required top-level fields (no others are read; unknown fields fail source validation and are reported in the ingest `ignored` map):
 
 ```json
 {
@@ -22,7 +22,13 @@ Required top-level fields (no others are read; unknown fields are logged and ign
 
 `pass` should be `true` when no intervention is justified, evidence is insufficient, or all exposed levers should stay neutral. `pass: true` clears the wrapper's utility buffer — every lever runs natively that generation.
 
-Use empty arrays or `null` for components that are not exposed in the current files. Do not fabricate candidate ids.
+Use empty arrays or `null` for components that are not exposed in the current files. Do not fabricate candidate ids — and prefer the construction path that makes fabrication impossible:
+
+## Producing this document (slot template — the recommended path)
+
+`llmoses/utilities/response_template.py` inverts generation: `build_slots(state, run_config)` enumerates every legal estimation target for the generation — real program ids (plus the `cull:*` newborn default), alphabet atoms, observed evidence buckets, enumerated combination sets, lever axes, and the enum/scalar knobs — and you supply nothing but a value per slot. `json_schema(slots)` exports a closed per-generation JSON Schema (`additionalProperties: false`, closed enums) for provider-side constrained decoding; `assemble(slots, values, run_config)` deterministically builds this document (rank slots sort into `program_id_ordering`; omitted slots emit nothing, which the mixing formula treats as neutral) and asserts it through the validator. A document built this way cannot reference an id that does not exist.
+
+Validation is two-tier (`utility_schema.validate_utility_response(doc, atom_alphabet)`): shape always (closed key set, closed vocabularies, unit intervals, finiteness, duplicate rejection — one entry per program id, per (atom, context) pair, per unordered synergy set); run context when the alphabet is supplied (atom labels must exist, synergy sets must be exactly the problem width). Writers that do not use the template must validate before writing; an invalid document is salvaged component-by-component at the writer gate (valid entries kept, drops reported in trace `parse_diagnostics`), degrading to a neutral decline only when nothing survives.
 
 ## Application semantics (Phase II)
 
@@ -70,6 +76,6 @@ A contextual entry applies only when every key it names matches the live draw co
 }
 ```
 
-Each weight is in [0, 1]. A matching contextual entry blends into the atom's effective utility as `u = (1-w)*u + w*u_ctx`, where `w` is the product of the lever weights of the axes the entry conditions on (`polarity`, `clause_type`, `parent_operator` → those axes; `depth_bucket` → `tree_depth`; `exemplar_id` → `selected_exemplar`). Entries apply in response order. **All-zero or absent `lever_weights` means the global (context-free) prior alone applies — the default.** `novelty` has no wrapper-side application: fold novelty/diversity pressure into the priors you emit (`atom_cumulative` is in the state for exactly this).
+Each weight is in [0, 1]. A matching contextual entry blends into the atom's effective utility as `u = (1-w)*u + w*u_ctx`, where `w` is the product of the lever weights of the axes the entry conditions on (`polarity`, `clause_type`, `parent_operator` → those axes; `depth_bucket` → `tree_depth`; `exemplar_id` → `selected_exemplar`). Entries apply in response order. **All-zero or absent `lever_weights` means the global (context-free) prior alone applies — the default.** Entries whose named axes multiply to zero can never apply; ingest prunes them (reported in the `utility_ingest` row's `inert` map) so the draw site stays on the untouched native path. If you supply contextual entries or synergy, set the matching axes non-zero or the entries are inert by construction. `novelty` has no wrapper-side application: fold novelty/diversity pressure into the priors you emit (`atom_cumulative` is in the state for exactly this).
 
 Put all reasons, audit notes, parse diagnostics, prompt/context manifests, and raw provider responses in the matching AgentTrace file under `traces/`.
