@@ -32,7 +32,7 @@
         ($worstPossibleScore (List.sum $worstPossibleBScore))
         ($bestPosssibleCscore (getBestPossibleCscore $cpxPen $problem))
         ($_ (println! (BestPossibleScore: $bestPosssibleCscore)))
-        ($metaPop (ConsOS (mkExemplar (mkTree (mkNode true) Nil) (mkDemeId "1") (mkCscore $worstPossibleScore 0 $cpxPen 0 $worstPossibleScore) ($ctor $worstPossibleBScore)) NilOS))
+        ($metaPop (cons (mkExemplar (mkTree (mkNode true) ()) (mkDemeId "1") (mkCscore $worstPossibleScore 0 $cpxPen 0 $worstPossibleScore) ($ctor $worstPossibleBScore)) ()))
         ($result (runMoses $maxGen $bestPosssibleCscore 10 $metaPop 0 $nDeme
               (False $fsAlgo $truthTableBScore ($problem))
               hillClimbing

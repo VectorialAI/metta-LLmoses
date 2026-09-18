@@ -332,8 +332,9 @@ for g in range(1, expected_gens + 1):
     for removed in ("selected_program_id", "selection_status", "selection_detail"):
         if removed in a:
             fail(f"realized selection field {removed} must not appear in action step-{g}")
-    if s.get("score_vs_complexity_trend") is None:
-        fail(f"missing score_vs_complexity_trend in state step-{g}")
+    metapop = s.get("metapopulation", {})
+    if metapop.get("best_penalized_score") is None:
+        fail(f"missing metapopulation.best_penalized_score in state step-{g}")
     ae = s.get("atom_evidence")
     if not isinstance(ae, dict):
         fail(f"missing atom_evidence in state step-{g}")

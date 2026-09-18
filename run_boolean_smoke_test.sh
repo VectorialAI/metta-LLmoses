@@ -404,18 +404,18 @@ with run_config_path.open() as fh:
 if rc.get("record_type") != "run_config":
     fail("run_config record_type mismatch")
 ps = rc.get("problem_spec", {})
-if ps.get("problem_type") != "logical":
-    fail("run_config problem_spec not logical")
+if ps.get("problem_type") != "boolean":
+    fail("run_config problem_spec not boolean")
 if not ps.get("input_labels"):
-    fail("missing logical input_labels in run_config")
+    fail("missing boolean input_labels in run_config")
 alphabet = rc.get("atom_alphabet", {})
 if alphabet.get("prefix") != "feature":
     fail("run_config atom_alphabet prefix not feature")
 if not alphabet.get("atoms"):
     fail("missing atom_alphabet atoms in run_config")
 rp = rc.get("run_parameters", {})
-if rp.get("problem_type") != "logical":
-    fail("run_config run_parameters.problem_type not logical")
+if rp.get("problem_type") != "boolean":
+    fail("run_config run_parameters.problem_type not boolean")
 levers = rc.get("active_levers", [])
 for need in ("exemplar_selection", "culling", "atom_evidence", "complexity_ratio", "comparator_hook"):
     if need not in levers:
@@ -428,13 +428,14 @@ for g in range(1, expected_gens + 1):
     if not ap.exists(): fail(f"missing {ap}")
     with sp.open() as fh: s = json.load(fh)
     with ap.open() as fh: a = json.load(fh)
-    if s.get("problem_type") != "logical": fail(f"state problem_type not logical in step-{g}")
-    if a.get("problem_type") != "logical": fail(f"action problem_type not logical in step-{g}")
+    if s.get("problem_type") != "boolean": fail(f"state problem_type not boolean in step-{g}")
+    if a.get("problem_type") != "boolean": fail(f"action problem_type not boolean in step-{g}")
     for static_key in ("problem_spec", "run_parameters", "active_levers", "comparator_hook_available"):
         if static_key in s:
             fail(f"static key {static_key} must not appear in per-step state step-{g}")
-    if s.get("score_vs_complexity_trend") is None:
-        fail(f"missing score_vs_complexity_trend in state step-{g}")
+    metapop = s.get("metapopulation", {})
+    if metapop.get("best_penalized_score") is None:
+        fail(f"missing metapopulation.best_penalized_score in state step-{g}")
     ae = s.get("atom_evidence")
     if not isinstance(ae, dict):
         fail(f"missing atom_evidence in state step-{g}")
@@ -444,16 +445,16 @@ for g in range(1, expected_gens + 1):
     demes = s.get("demes", [])
     if len(demes) < expected_demes:
         fail(f"expected at least {expected_demes} demes in step-{g}, got {len(demes)}")
-    saw_logical = False
+    saw_boolean = False
     for d in demes:
         kb = d.get("knob_type_breakdown", {})
         if kb.get("strategy", 0) != 0:
-            fail(f"strategy knobs present in logical deme step-{g}")
+            fail(f"strategy knobs present in boolean deme step-{g}")
         for k in d.get("knobs", []):
-            if k.get("kind") == "logical":
-                saw_logical = True
-    if not saw_logical:
-        fail(f"no logical knobs found in step-{g}")
+            if k.get("kind") == "boolean":
+                saw_boolean = True
+    if not saw_boolean:
+        fail(f"no boolean knobs found in step-{g}")
     if not a.get("exemplar_candidates"):
         fail(f"no action exemplar_candidates in step-{g}")
 

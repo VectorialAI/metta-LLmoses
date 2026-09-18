@@ -1,17 +1,8 @@
-;; ============================================================================
-;; llmoses/representation/sample-logical-perms.metta
-;;
-;; Drop-in replacement for representation/sample-logical-perms.metta — do NOT
-;; import the upstream file. Sampling evidence is emitted after merge by
-;; state_builder.py, so lazyRandomSelector and the samplers run untouched here.
-;; Helpers genPairs / genTriplet / getArgs / getMoveArgs are inlined here so no
-;; upstream import is needed.
-;; ============================================================================
-
-;; --- inlined helpers from representation/sample-logical-perms ---
-
+;; A function to generate all pairs of numbers from a list, where a != b
+;; (: genPairs (-> Expression Expression))
+;; TODO: Rewrite using iterative logic
 (= (genPairs $list)
-    (let*
+    ( let*
         (
             ($x (superpose $list))
             ($y (superpose $list))
@@ -23,6 +14,7 @@
     )
 )
 
+;; TODO: Rewrite using iterative logic
 (= (genTriplet $list)
     (let*
         (
@@ -37,6 +29,13 @@
     )
 )
 
+;; getArgs -> generate logical expressions from the list of pairs
+;; Parameters:
+;;          $swapedOp -> swaped operator
+;;          $PermPairs -> list of pairs of idx permutations
+;;          $picked -> list of picked idxs
+;; (: getArgs (-> Atom Expression Expression Expression Expression))
+;; TODO: Rewrite using iterative logic
 (= (getArgs $swapedOp $PermPairs $picked $argLabels)
     (let*
         (
@@ -49,32 +48,59 @@
         )
     )
 )
+;; sampleLogicalPerms -> generate logical permutations for boolean expressions
+;; Parameters:
+;;          $op -> the operator passed from the iterator
+;;          $arity -> the number of arguments in the logical expression
+;; Returns:
+;;          Union of $perms (the list of logical expressions generated) with args
 
-(= (getMoveArgs $op $PermPairs $picked $moveLabels)
-    (let*
-        (
-            (($a $b $c) (index-atom $PermPairs (superpose $picked)))
-            (($move1 $move2 $move3) ((index-atom $moveLabels $a) (index-atom $moveLabels $b) (index-atom $moveLabels $c)))
-        )
-        ($op $move1 $move2 $move3)
-    ))
-
-;; --- overlay definitions ---
-
+; (= (sampleLogicalPerms $op $arity) (sampleLogicalPerms $op $arity ()))
+;; (: sampleLogicalPerms (-> Atom Number Expression Expression))
+;; TODO: Rewrite using iterative logic
 (= (sampleLogicalPerms $op $arity $argLabels)
     (let*
-        ( 
+        (
             ($swapedOp (swapAndOr $op))
             ($list (genList (- $arity 1)))
             ($idxPairs (collapse (genPairs $list)))
-            ($nPairs $arity))
+            ($nPairs $arity)) ;; since perm_ratio is 0.0 the max number of n_pairs = arity
+            ;; ($nPairs 0)) ;; since perm_ratio is 0.0 the max number of n_pairs = arity
             (if (<= $nPairs 1)
-                (let $arg (car-atom $argLabels) ($arg (NOT $arg)))
+                (let $arg (car-atom $argLabels) ($arg (NOT $arg)))  ;; assuming at worst case, only one argument is returned -- representation building process makes sure that those with empty feature set do not make it to actual knob building stage
                 (let* (($upperbound (- (* $arity (- $arity 1)) 1))
                         ($picked (lazyRandomSelector 0 $upperbound $nPairs))
                         ($perms (collapse (getArgs $swapedOp $idxPairs $picked $argLabels))))
                    (concatT $argLabels $perms)))))
 
+;; getMoveArgs -> generate move expressions from pairs of move indices
+;; Params:
+;;          $op: move operator (PRIORITIZED-OR)
+;;          $PermPairs: list of pairs of idx permutations
+;;          $picked: list of picked move idxs
+;;          $moveLabels: list of move labels (playcenter, playcorner, etc.)
+;; Returns: move expressions with operator and move combinations
+;; (: getMoveArgs (-> Atom Expression Expression Expression Expression))
+;; TODO: Rewrite using iterative logic
+(= (getMoveArgs $op $PermPairs $picked $moveLabels)
+    (let*
+        (
+            ; ($triplet (index-atom $PermPairs (superpose $picked)))
+            (($a $b $c)(index-atom $PermPairs (superpose $picked)))
+            (($move1 $move2 $move3) ((index-atom $moveLabels $a) (index-atom $moveLabels $b) (index-atom $moveLabels $c)))
+        )
+        ($op $move1 $move2 $move3)
+    ))
+
+;; sampleStrategyPerms -> generate strategy permutations for game strategy evolution
+;; Params:
+;;          $op: the strategy operator (PRIORITIZED-OR)
+;;          $arity: the number of moves in the strategy sequence
+;;          $moveLabels: list of move labels (playcenter, playblock, playcorner, etc.)
+;; Returns:
+;;          Union of original moves with alternative move strategy expressions
+;; (: sampleStrategyPerms (-> Atom Number Expression Expression))
+;; TODO: Rewrite using iterative logic
 (= (sampleStrategyPerms $op $arity $moveLabels)
     (let*
         (

@@ -15,15 +15,9 @@
 (= (classicStrategyDemoComplexityRatio) 3.5)
 (= (classicStrategyDemoTargetCscore) (mkCscore 10.0 5 1.43 0.0 6.57))
 
-(= (strategyDemoOpponent $key)
-   (case $key
-     ((ttt     random-player)
-      (ttt-mm  minimax-player))))
-
 (= (runClassicStrategyDemo $key)
    (let* (
-     ($opponent (strategyDemoOpponent $key))
-     ($_ (println! (StrategyDemo: key= $key opponent= $opponent
+     ($_ (println! (StrategyDemo: key= $key opponents= mixed-random-minimax
                     maxGen= (classicStrategyDemoMaxGen)
                     nDeme= (classicStrategyDemoNDeme)
                     nGames= (classicStrategyDemoNGames))))
@@ -33,7 +27,7 @@
                 5
                 (strategyMetaPop)
                 0 (classicStrategyDemoNDeme)
-                ((classicStrategyDemoNGames) $opponent (classicStrategyDemoComplexityRatio))
+                ((classicStrategyDemoNGames) (classicStrategyDemoComplexityRatio))
                 hillClimbing
                 100 10 2 1.0
                 5 0.004 1000))

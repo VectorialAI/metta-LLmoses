@@ -34,23 +34,18 @@
 !(import! &self reduct/boolean-reduct/promote-common-constraints)
 !(import! &self reduct/boolean-reduct/reduce-to-elegance)
 !(import! &self utilities/tree)
-!(import! &self scoring/strategy-score-cache)
-!(import! &self scoring/cacheSpace)
-!(import! &self scoring/fitness)
-!(import! &self scoring/bscore)
-!(import! &self llmoses/scoring/cscore)
-!(import! &self llmoses/scoring/complexity-based-scorer)
 !(import! &self feature-selection/feature-selection-helpers)
 !(import! &self llmoses/feature-selection/similarity-scorers)
 !(import! &self llmoses/feature-selection/select-top-features)
 !(import! &self feature-selection/simple)
 !(import! &self feature-selection/smd)
-!(import! &self feature-selection/incremental)
+!(import! &self feature-selection/incremental-feature-selection)
 !(import! &self feature-selection/hc)
 !(import! &self feature-selection/random-feature-selection)
 !(import! &self feature-selection/feature-selection-main)
 !(import! &self representation/knob-representation)
 !(import! &self representation/lsk)
+!(import! &self representation/disc-probe)
 !(import! &self representation/logical-probe)
 !(import! &self representation/logical-canonize)
 !(import! &self llmoses/representation/sample-logical-perms)
@@ -61,7 +56,6 @@
 !(import! &self llmoses/representation/representation)
 !(import! &self llmoses/representation/create-representation)
 !(import! &self representation/instance)
-!(import! &self llmoses/wrapper/extractors)
 !(import! &self examples/tic-tac-toe/tic-tac-toe-helpers)
 !(import! &self examples/tic-tac-toe/random-player)
 !(import! &self examples/tic-tac-toe/minimax-player)
@@ -69,11 +63,18 @@
 !(import! &self examples/tic-tac-toe/moves)
 !(import! &self examples/tic-tac-toe/moses-player)
 !(import! &self examples/tic-tac-toe/strategy-scoring)
+!(import! &self scoring/strategy-score-cache)
+!(import! &self scoring/cacheSpace)
+!(import! &self scoring/fitness)
+!(import! &self llmoses/scoring/bscore)
+!(import! &self llmoses/scoring/cscore)
+!(import! &self llmoses/scoring/complexity-based-scorer)
+!(import! &self llmoses/wrapper/extractors)
 !(import! &self optimization/hillclimbing/cross-top-one-helpers)
-!(import! &self optimization/hillclimbing/cross-top-one)
-!(import! &self optimization/hillclimbing/hill-climbing-helpers)
+!(import! &self llmoses/optimization/cross-top-one)
+!(import! &self llmoses/optimization/hill-climbing-helpers)
 !(import! &self deme/create-deme)
-!(import! &self moses/neighborhood-sampling)
+!(import! &self llmoses/moses/neighborhood-sampling)
 !(import! &self metapopulation/exemplar-type)
 !(import! &self metapopulation/exemplar-selection)
 !(import! &self metapopulation/metapopulation)
@@ -84,32 +85,33 @@
 !(import! &self llmoses/utilities/state-emitter)
 !(import! &self llmoses/deme/expand-deme)
 
+!(callPredicate (Predicate (consult "moses/tests/rte-helpers-fast.pl")))
+
 ;; Empty strategy metapop — empty PRIORITIZED-OR with worst CScore.
 ;; Useful for testing evolution from a cold strategy seed.
 (= (emptyStrategyMetaPop)
-   (ConsOS
+   (cons
      (mkExemplar
-       (mkTree (mkNode PRIORITIZED-OR) Nil)
+       (mkTree (mkNode PRIORITIZED-OR) ())
        (mkDemeId "0")
        (mkCscore -1000.0 0 0.0 0.0 -1000.0)
-       (mkBScore (Cons -1000.0 Nil)))
-     NilOS))
+       (mkBScore (cons -1000.0 ())))
+     ()))
 
 ;; Non-empty strategy metapop used as the stable low-cost seed.
 (= (strategyMetaPop)
-   (ConsOS
+   (cons
      (mkExemplar
        (mkTree (mkNode PRIORITIZED-OR)
-         (Cons (mkTree (mkNode playwin) Nil)
-               (Cons (mkTree (mkNode playblock) Nil) Nil)))
+         (cons (mkTree (mkNode playwin) ())
+               (cons (mkTree (mkNode playblock) ()) ())))
        (mkDemeId "0")
        (mkCscore 2.0 2 0.57 0.0 1.43)
-       (mkBScore (Cons 2.0 Nil)))
-     NilOS))
+       (mkBScore (cons 2.0 ())))
+     ()))
 
 ;; Helpers for optional human-readable diagnostics.
-(= (mapG $f NilOS) NilOS)
-(= (mapG $f Nil) Nil)
+(= (mapG $f ()) ())
 (= (mapG $f ($ctor $x $xs)) ($ctor ($f $x) (mapG $f $xs)))
 (= (printExemplar (mkExemplar $tree $demeId $cscore $bscore))
    (println! (Tree: (preOrder $tree) CScore: $cscore Bscore: $bscore)))
@@ -127,7 +129,7 @@
      ($optimizedDemes (expandDeme
                         (strategyMetaPop)
                         0 1
-                        5 random-player 3.5
+                        5 3.5
                         (mkCscore 5.0 5 1.43 0.0 3.57)
                         hillClimbing))
      ($demeCount (size-atom $optimizedDemes)))
@@ -138,7 +140,7 @@
      ($optimizedDemes (expandDeme
                         (strategyMetaPop)
                         0 2
-                        5 random-player 3.5
+                        5 3.5
                         (mkCscore 5.0 5 1.43 0.0 3.57)
                         hillClimbing))
      ($demeCount (size-atom $optimizedDemes)))
@@ -152,7 +154,7 @@
                 3
                 (strategyMetaPop)
                 0 1
-                (5 random-player 3.5)
+                (5 3.5)
                 hillClimbing
                 30 5 2 1.0
                 5 0.004 1000))
@@ -167,7 +169,7 @@
                 1
                 (strategyMetaPop)
                 0 1
-                (5 random-player 3.5)
+                (5 3.5)
                 hillClimbing
                 30 5 2 1.0
                 5 0.004 1000))
@@ -182,7 +184,7 @@
                 1
                 (strategyMetaPop)
                 0 1
-                (7 random-player 4.25)
+                (7 4.25)
                 hillClimbing
                 30 5 2 1.0
                 5 0.004 1000))
@@ -199,7 +201,7 @@
                 3
                 (strategyMetaPop)
                 0 2
-                (5 random-player 3.5)
+                (5 3.5)
                 hillClimbing
                 30 5 2 1.0
                 5 0.004 1000))
@@ -214,7 +216,7 @@
                 3
                 (emptyStrategyMetaPop)
                 0 2
-                (10 random-player 3.5)
+                (10 3.5)
                 hillClimbing
                 30 5 2 1.0
                 5 0.004 1000))
@@ -229,7 +231,7 @@
                 2
                 (strategyMetaPop)
                 0 2
-                (5 random-player 3.5)
+                (5 3.5)
                 hillClimbing
                 30 2 1 1.0
                 2 0.004 1000))
@@ -252,35 +254,35 @@
 ;; ---- metta unit tests: runMoses inside a function-equation body, size out.
 (= (strategyStateSingle)
    (let* (($result (runMoses 1 (mkCscore 5.0 5 1.43 0.0 3.57) 3 (strategyMetaPop)
-                             0 1 (5 random-player 3.5) hillClimbing
+                             0 1 (5 3.5) hillClimbing
                              30 5 2 1.0 5 0.004 1000))
           ($size (eval (OS.length $result))))
      $size))
 
 (= (strategyStateMultigenMultideme)
    (let* (($result (runMoses 3 (mkCscore 5.0 5 1.43 0.0 3.57) 3 (strategyMetaPop)
-                             0 2 (5 random-player 3.5) hillClimbing
+                             0 2 (5 3.5) hillClimbing
                              30 5 2 1.0 5 0.004 1000))
           ($size (eval (OS.length $result))))
      $size))
 
 (= (strategyStateEmptySeed)
    (let* (($result (runMoses 2 (mkCscore 10.0 0 0 0.0 10) 3 (emptyStrategyMetaPop)
-                             0 2 (10 random-player 3.5) hillClimbing
+                             0 2 (10 3.5) hillClimbing
                              30 5 2 1.0 5 0.004 1000))
           ($size (eval (OS.length $result))))
      $size))
 
 (= (strategyStateMergeCullSmoke)
    (let* (($result (runMoses 2 (mkCscore 5.0 5 1.43 0.0 3.57) 2 (strategyMetaPop)
-                             0 2 (5 random-player 3.5) hillClimbing
+                             0 2 (5 3.5) hillClimbing
                              30 5 2 1.0 2 0.004 1000))
           ($size (eval (OS.length $result))))
      $size))
 
 (= (strategyStateMergeCullPressure)
    (let* (($result (runMoses 2 (mkCscore 5.0 5 1.43 0.0 3.57) 2 (strategyMetaPop)
-                             0 2 (5 random-player 3.5) hillClimbing
+                             0 2 (5 3.5) hillClimbing
                              30 2 1 1.0 2 0.004 1000))
           ($size (eval (OS.length $result))))
      $size))
@@ -292,7 +294,7 @@
 ;; in the first expansion and then retain them across later generations.
 (= (strategyStateDeepLineage)
    (let* (($result (runMoses 5 (mkCscore 100.0 0 0 0.0 100) 5 (emptyStrategyMetaPop)
-                             0 2 (20 random-player 3.5) hillClimbing
+                             0 2 (20 3.5) hillClimbing
                              500 5 2 1.0 5 0.004 1000))
           ($size (eval (OS.length $result))))
      $size))

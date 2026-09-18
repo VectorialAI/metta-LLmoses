@@ -27,7 +27,7 @@
 !(import! &self llmoses/feature-selection/select-top-features)
 !(import! &self feature-selection/simple)
 !(import! &self feature-selection/smd)
-!(import! &self feature-selection/incremental)
+!(import! &self feature-selection/incremental-feature-selection)
 !(import! &self feature-selection/hc)
 !(import! &self feature-selection/random-feature-selection)
 !(import! &self feature-selection/feature-selection-main)
@@ -35,11 +35,11 @@
 ;; ── 4-input test table (same fixture as feature-selection/tests/smd-test.metta) ──
 (= (fsp-table)
     (mkITable
-        (Cons (Cons True  (Cons True  (Cons False (Cons True  (Cons True   Nil)))))
-        (Cons (Cons True  (Cons False (Cons False (Cons True  (Cons True   Nil)))))
-        (Cons (Cons False (Cons True  (Cons False (Cons True  (Cons False  Nil)))))
-        (Cons (Cons False (Cons False (Cons False (Cons True  (Cons False  Nil))))) Nil))))
-        (Cons A (Cons B (Cons C (Cons D (Cons Output Nil)))))))
+        (cons (cons True  (cons True  (cons False (cons True  (cons True   ())))))
+        (cons (cons True  (cons False (cons False (cons True  (cons True   ())))))
+        (cons (cons False (cons True  (cons False (cons True  (cons False  ())))))
+        (cons (cons False (cons False (cons False (cons True  (cons False  ()))))) ()))))
+        (cons A (cons B (cons C (cons D (cons Output ())))))))
 
 ;; ── Layer 1: first / second / first-from-pair / second-from-pair ────────────
 !(assertEqual (first  (10 (1 2))) 10)
