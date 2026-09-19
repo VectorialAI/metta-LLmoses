@@ -30,10 +30,10 @@
 (= (usefulScoreRange $compTemp) (/ (* $compTemp 30.0) 100.0))
 
 ; (: resizeMetapop (-> (OS (Exemplar $a)) Number Number Number Number Number (OS (Exemplar $a))))
-(= (resizeMetapop (ConsOS $exemplar $rest) $nToKeep $minPoolSize $compTemp $capCoef $genCount)
-    (let ($size $capSize) ((OS.length (ConsOS $exmplar $rest)) (int (capSize $capCoef $genCount))) ;; bind two variables with two function calls
+(= (resizeMetapop (cons $exemplar $rest) $nToKeep $minPoolSize $compTemp $capCoef $genCount)
+    (let ($size $capSize) ((OS.length (cons $exemplar $rest)) (int (capSize $capCoef $genCount))) ;; bind two variables with two function calls
         (if (<= $size $minPoolSize)
-            (ConsOS $exemplar $rest)
+            (cons $exemplar $rest)
             (let*
               (
                ((mkExemplar $tree $demeId $cScore $bScore) $exemplar) ;; exemplar with the best score
@@ -41,7 +41,7 @@
                ($topScore (getPenScore $cScore))
                ($worstScore (- $topScore (usefulScoreRange $compTemp)))
 
-               ($reducedMetapop (getBetterCandidates (ConsOS $exemplar $rest) $worstScore))
+               ($reducedMetapop (getBetterCandidates (cons $exemplar $rest) $worstScore))
                ($popSize (OS.length $reducedMetapop))
               )
               (if (<= $popSize $capSize)
@@ -57,38 +57,38 @@
 
 ;; getBetterCandidates -- returns all the members whose score are greater than or equal to a predetermined worst score
 ; (: getBetterCandidates (-> (OS (Exemplar $a)) Number (OS (Exemplar $a))))
-(= (getBetterCandidates NilOS $score) NilOS)
-(= (getBetterCandidates (ConsOS $exemplar $rest) $worstScore)
+(= (getBetterCandidates () $score) ())
+(= (getBetterCandidates (cons $exemplar $rest) $worstScore)
     (let (mkExemplar $tree $demeId $cScore $bScore) $exemplar
             (chain (getPenScore $cScore) $penScore
 
                 (if (>= $penScore $worstScore)
-                    (ConsOS $exemplar (getBetterCandidates $rest $worstScore))
-                    NilOS))))
+                    (cons $exemplar (getBetterCandidates $rest $worstScore))
+                    ()))))
 
 ;; cullAtRandom -- maintains the top exemplars and removes lower-ranked members.
 ;; LLMOSES lever 2a: the removable tail is streamed to Python and the index to
 ;; remove comes from state_builder.cull_index() — uniform over the exact native
 ;; range when the culling lever is off, retention-weighted when on.
 ; (: cullAtRandom (-> (OS (Exemplar $a)) Number Number (OS (Exemplar $a))))
-(= (cullAtRandom (ConsOS $exemplar $rest) $offset $nToRemove)
-   (let $popSize (OS.length (ConsOS $exemplar $rest))
+(= (cullAtRandom (cons $exemplar $rest) $offset $nToRemove)
+   (let $popSize (OS.length (cons $exemplar $rest))
     (if (and (> $popSize $offset) (> $nToRemove 0))
         (let*
           (
            ($_b (py-call (state_builder.begin_cull $offset $popSize)))
-           ($_s (sbStreamCullCands (ConsOS $exemplar $rest) 0 (- $offset 1)))
+           ($_s (sbStreamCullCands (cons $exemplar $rest) 0 (- $offset 1)))
            ($index (py-call (state_builder.cull_index)))
-           ($newPop (OS.removeByIdx (ConsOS $exemplar $rest) $index))
+           ($newPop (OS.removeByIdx (cons $exemplar $rest) $index))
           )
           (cullAtRandom $newPop $offset (- $nToRemove 1))
         )
-        (ConsOS $exemplar $rest))))
+        (cons $exemplar $rest))))
 
 ;; Stream one (index, tree) pair per removable member [minIdx, popSize-1] into
 ;; the Python cull buffer (the proven per-member streaming pattern).
-(= (sbStreamCullCands NilOS $i $minIdx) 0)
-(= (sbStreamCullCands (ConsOS $x $rest) $i $minIdx)
+(= (sbStreamCullCands () $i $minIdx) 0)
+(= (sbStreamCullCands (cons $x $rest) $i $minIdx)
    (if (< $i $minIdx)
        (sbStreamCullCands $rest (+ $i 1) $minIdx)
        (let* (
@@ -114,9 +114,9 @@
 ;; from runMosesLoop at the top of each generation when the comparator lever
 ;; is on — every member is already known to the response there, unlike merge
 ;; inserts, whose incoming candidates are born after the response.
-(= (llmResortMetapop $os) (llmResortIns $os NilOS))
-(= (llmResortIns NilOS $acc) $acc)
-(= (llmResortIns (ConsOS $x $rest) $acc)
+(= (llmResortMetapop $os) (llmResortIns $os ()))
+(= (llmResortIns () $acc) $acc)
+(= (llmResortIns (cons $x $rest) $acc)
    (llmResortIns $rest (OS.insert compareExemplar $x $acc)))
 
 ;; Extract BScore from Exemplar

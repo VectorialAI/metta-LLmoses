@@ -26,11 +26,11 @@
 ; (: selectExemplar (-> (OS (Exemplar $a)) (Exemplar $a)))
 (= (selectExemplar $metaPop)
     (case $metaPop
-        ((NilOS (Error $metaPop (NO_EXEMPLAR)))
-        ((ConsOS $x NilOS) $x)
+        ((() (Error $metaPop (NO_EXEMPLAR)))
+        ((cons $x ()) $x)
         ($_ (let* (
                     ($probs (getPnScore $metaPop))
-                    ($hstScr (List.max >= $probs))
+                    ($hstScr (List.max $probs))
                     ;; get list of normalized ScoreT values
                     ($normalizedProbs (normalizeProbs (INV_TEMP) $hstScr $probs))
                     ($n (eval (OS.length $metaPop)))
@@ -44,33 +44,33 @@
 ;; selection buffer. Walks the OS and the normalized-prob List in lockstep;
 ;; the exemplar is destructured directly (this file loads before the
 ;; metapopulation accessors, mirroring getPnScore below).
-(= (sbStreamSelCands NilOS Nil $i) 0)
-(= (sbStreamSelCands (ConsOS $x $rest) (Cons $p $ps) $i)
+(= (sbStreamSelCands () () $i) 0)
+(= (sbStreamSelCands (cons $x $rest) (cons $p $ps) $i)
    (let* (
      ((mkExemplar $tree $demeId $cscore $bscore) $x)
      ($_c (py-call (state_builder.add_selection_candidate $i $p $tree)))
    ) (sbStreamSelCands $rest $ps (+ $i 1))))
 
 ;; get penalized scores of all the exemplars as a list of Numbers
-;;      (ConsOS $x $xs) -- pattern for the list of exemplars constructed by Cons
+;;      (cons $x $xs) -- pattern for the current list/ordered-set representation
 ;;      made use of deconstruction by pattern matching
 
 ; (: getPnScore (-> (OS (Exemplar $a)) (List Number)))
-(= (getPnScore NilOS) Nil)
-(= (getPnScore (ConsOS $x $xs))
+(= (getPnScore ()) ())
+(= (getPnScore (cons $x $xs))
    (let (mkExemplar $tree1 $demeId1 (mkCscore $scrr $cpxy $cpxyPen $uniPen $penScr) $bscr1) $x
-        (Cons $penScr (getPnScore $xs))))
+        (cons $penScr (getPnScore $xs))))
 
 ;;  a function to normalize the score values into normalized scores of Boltzman distribution
 ;; the function is specific to this distribution type
 ; (: normalizeProbs (-> Number Number (List Number) (List Number)))
-(= (normalizeProbs $invTemp $best Nil) Nil)
-(= (normalizeProbs $invTemp $best (Cons $x $xs))
+(= (normalizeProbs $invTemp $best ()) ())
+(= (normalizeProbs $invTemp $best (cons $x $xs))
     (let*
         (($new (if (isinf-math $x) 0 (exp (* (- $x $best) $invTemp))))
         ($c (normalizeProbs $invTemp $best $xs)))
 
-        (Cons $new $c)))
+        (cons $new $c)))
 
 ;; Native rouletteSelect/roulette retained for reference and any external
 ;; callers; the fork's selectExemplar no longer calls them (the draw happens
@@ -86,8 +86,8 @@
 
 ;; roulette function to do the roulette selection and return an index -- spin the wheel
 ; (: roulette (-> (List Number) Number Number Number))
-(= (roulette Nil $sIdx $ajstdsum) (- $sIdx 1))
-(= (roulette (Cons $p $xs) $sIdx $ajstdsum)
+(= (roulette () $sIdx $ajstdsum) (- $sIdx 1))
+(= (roulette (cons $p $xs) $sIdx $ajstdsum)
             (if (<= (- $ajstdsum $p) 0)
             $sIdx
             (roulette $xs (+ 1 $sIdx) (- $ajstdsum $p)))

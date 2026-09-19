@@ -22,27 +22,45 @@
 ;; addLogicalKnobs
 ;; (: addLogicalKnobs (-> (Tree $a) NodeId Bool (MultiMap ($k $v)) Expression Expression))
 (= (addLogicalKnobs $exemplar $nodeId $addIfInExemplar $map $argLabels)
+   (addLogicalKnobs $exemplar $nodeId $addIfInExemplar $map $argLabels True))
+
+(= (addLogicalKnobs $exemplar $nodeId $addIfInExemplar $map $argLabels $disable-discprobe)
+   (addLogicalKnobsAt $exemplar $nodeId $nodeId $addIfInExemplar $map $argLabels $disable-discprobe))
+
+;; Keep the upstream logical-probe root/target split while threading the
+;; target's raw path into the strategy sampler for contextual utility lookup.
+(= (addLogicalKnobsAt $exemplar $probeRootId $nodeId $addIfInExemplar $map $argLabels $disable-discprobe)
    (let*
      (
-
       ((mkNodeId $rawPath) $nodeId)
       ((mkTree (mkNode $op) $children) (getNodeById $exemplar $nodeId))
-      ;; ($_ (println! (Adding knobs to: (preOrder (mkTree (mkNode $op) $children)))))
-      ;; Use complete game moves for strategy operators, argLabels for boolean operators
       ($labels (if (== $op PRIORITIZED-OR) (getAllGameMoves) $argLabels))
       ($lengthOfArgs (length $labels))
-      ($perms (if (== $op PRIORITIZED-OR)
-                  (sampleStrategyPerms $op $lengthOfArgs $labels $rawPath)
-                  (sampleLogicalPerms $op $lengthOfArgs $labels $rawPath)))
+      ($perms (sampleStrategyPerms $op $lengthOfArgs $labels $rawPath))
       ($treePerms (map-atom $perms $perm (buildTree $perm)))
-      (($knobs $updatedTree) (if (== $op PRIORITIZED-OR)
-                                 (strategyProbe $exemplar $nodeId $treePerms $addIfInExemplar ())
-                                 (logicalProbe $exemplar $nodeId $treePerms $addIfInExemplar ())))
-
-      ;; ($_ (println! (Adding (length $knobs) Knobs)))
-
+      (($knobs $updatedTree) (strategyProbe $exemplar $nodeId $treePerms $addIfInExemplar ()))
       ($pairs (pairKnobWithSpec $knobs))
       ($mmp (expToMMap $pairs $map discSpec<))
-      ($temp (cut))
+     )
+     ($updatedTree $mmp)))
+
+(= (addLogicalKnobs (mkTree (mkNode $op) $children) $addIfInExemplar $map $argLabels)
+   (addLogicalKnobsFast (mkTree (mkNode $op) $children) $addIfInExemplar $map $argLabels True (mkTree (mkNode $op) $children) (mkNodeId (0))))
+
+;; Current upstream fast path, with the absolute current-node path passed to
+;; the milestone-2 logical permutation sampler.
+(= (addLogicalKnobsFast (mkTree (mkNode $op) $children) $addIfInExemplar $map $argLabels $disable-discprobe $globalTree $currentNodeId)
+   (let*
+     (
+      ((mkNodeId $rawPath) $currentNodeId)
+      ($lengthOfLabels (size-atom $argLabels))
+      ($perms (sampleLogicalPerms $op $lengthOfLabels $argLabels $rawPath))
+      ($treePerms (map-atom $perms $perm (buildTree $perm)))
+      (($knobs $updatedTree)
+        (logicalProbe (mkTree (mkNode $op) $children) $globalTree
+                      (mkNodeId (0)) $currentNodeId $treePerms
+                      $addIfInExemplar $disable-discprobe))
+      ($pairs (pairKnobWithSpec $knobs))
+      ($mmp (expToMMap $pairs $map discSpec<))
      )
      ($updatedTree $mmp)))
