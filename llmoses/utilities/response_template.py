@@ -178,17 +178,31 @@ def _unit(key, v):
     return _num(key, v, 0.0, hi=1.0)
 
 
-def assemble(slots, values, run_config=None, decline=False):
+def assemble(slots, values, run_config=None, decline=False, status=None,
+             outcome=None):
     """Deterministically build a contract-valid UtilityResponse from slot
     values. Unknown keys, out-of-domain values, and enum violations raise
     (nothing is coerced or dropped — the caller's generation layer should
     have made them impossible). The finished document is asserted against
-    validate_utility_response before it is returned."""
+    validate_utility_response before it is returned.
+
+    status (W-5) defaults to 200 for guidance and 204 for a decline; a
+    decline may carry 422/500/503/504 to say WHY no guidance was produced.
+    outcome (W-14/W-18/W-22/W-28) is the optional closed outcome record."""
     doc = {"pass": bool(decline), "sampling_temperature": None,
            "exemplar_utilities": [], "atom_utility_prior": [],
            "combination_synergy": [], "feature_utility_levers": None,
            "culling_utilities": [], "complexity_ratio_delta": None,
            "comparator_bias": None}
+    if status is None:
+        status = 204 if decline else 200
+    if status not in utility_schema.STATUS_CODES:
+        raise ValueError(f"status: must be one of {utility_schema.STATUS_CODES}")
+    if (status == 200) == bool(decline):
+        raise ValueError(f"status {status} is inconsistent with decline={decline}")
+    doc["status"] = status
+    if outcome is not None:
+        doc["outcome"] = outcome
     ranks, lever_weights, aggregate_fn = [], {}, None
     ratio_dir, ratio_mag = None, None
     for key in sorted(values):

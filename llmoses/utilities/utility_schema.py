@@ -22,6 +22,33 @@ RESPONSE_KEYS = ("pass", "sampling_temperature", "exemplar_utilities",
                  "atom_utility_prior", "combination_synergy",
                  "feature_utility_levers", "culling_utilities",
                  "complexity_ratio_delta", "comparator_bias")
+# W-5 response status taxonomy — ADDITIVE metadata appended alongside `pass`.
+# `pass` keeps carrying the continue/decline decision; `status` says WHY.
+#   200 guidance provided        (responder)  pass=false
+#   204 deliberate abstention    (responder)  pass=true
+#   422 input unusable           (responder)  pass=true   not retryable
+#   500 responder reasoning fail (responder)  pass=true   not retryable
+#   503 provider unreachable     (wrapper)    pass=true
+#   504 provider timed out       (wrapper)    pass=true
+# Only 200 and 204 let MOSES continue (plan §1.3); everything else is a failed
+# run. Both keys are OPTIONAL at validation so every pre-existing writer and
+# fixture stays valid; every writer in this tree stamps them.
+OPTIONAL_KEYS = ("status", "outcome")
+STATUS_CODES = (200, 204, 422, 500, 503, 504)
+CONTINUE_STATUSES = (200, 204)
+# W-14/W-18/W-22/W-28 outcome record (closed key set, all fields optional):
+#   attempts   int >= 1      provider/agent attempts spent on this generation
+#   retried    bool          a retry happened (an anomaly even when it worked)
+#   salvage    {requested, survived}   writer-gate salvage measure (W-18)
+#   coverage   {mode, requested, supplied}  slot coverage (W-23)
+#   error_class str          provider/adapter error class (W-13) when failed
+#   detail     str           short human-readable detail
+#   protocol_version str     responder protocol identifier (W-28)
+#   context    {strategy, chars, compressed, dropped}  context strategy (W-22)
+OUTCOME_KEYS = ("attempts", "retried", "salvage", "coverage", "error_class",
+                "detail", "protocol_version", "context")
+CONTEXT_STRATEGIES = ("full_history", "rolling_summary", "per_generation",
+                      "retrieval")
 AGGREGATE_FNS = ("product", "mean", "geometric_mean", "softmax")
 LEVER_WEIGHT_AXES = ("polarity", "clause_type", "parent_operator",
                      "tree_depth", "selected_exemplar", "combination_synergy",
@@ -194,6 +221,93 @@ def _empty_doc(decline):
             "comparator_bias": None}
 
 
+def default_status(doc):
+    """Status implied by `pass` when a writer did not stamp one."""
+    return 204 if (isinstance(doc, dict) and doc.get("pass") is True) else 200
+
+
+def effective_status(doc):
+    """The response status MOSES decides on: the stamped `status` when it is
+    a known code, else the code implied by `pass`. An unknown code is a
+    contract break and reads as 500 (fail safe — never as a continue)."""
+    if not isinstance(doc, dict):
+        return 500
+    st = doc.get("status")
+    if st is None:
+        return default_status(doc)
+    if isinstance(st, bool) or not isinstance(st, int) or st not in STATUS_CODES:
+        return 500
+    return st
+
+
+def _check_status(errs, doc):
+    st = doc.get("status")
+    if st is None:
+        return
+    if isinstance(st, bool) or not isinstance(st, int) or st not in STATUS_CODES:
+        errs.append(f"status: must be one of {STATUS_CODES}")
+        return
+    p = doc.get("pass")
+    if isinstance(p, bool):
+        if st == 200 and p is not False:
+            errs.append("status: 200 (guidance) requires pass=false")
+        if st != 200 and p is not True:
+            errs.append(f"status: {st} requires pass=true")
+
+
+def _is_count(x):
+    return isinstance(x, int) and not isinstance(x, bool) and x >= 0
+
+
+def _check_outcome(errs, doc):
+    oc = doc.get("outcome")
+    if oc is None:
+        return
+    if not isinstance(oc, dict):
+        errs.append("outcome: must be null or an object")
+        return
+    for k in oc:
+        if k not in OUTCOME_KEYS:
+            errs.append(f"outcome.{k}: unknown key (allowed: {OUTCOME_KEYS})")
+    if "attempts" in oc and not (_is_count(oc["attempts"]) and oc["attempts"] >= 1):
+        errs.append("outcome.attempts: must be an integer >= 1")
+    if "retried" in oc and not isinstance(oc["retried"], bool):
+        errs.append("outcome.retried: must be a boolean")
+    sal = oc.get("salvage")
+    if sal is not None:
+        if (not isinstance(sal, dict) or set(sal) != {"requested", "survived"}
+                or not _is_count(sal.get("requested"))
+                or not _is_count(sal.get("survived"))
+                or sal["survived"] > sal["requested"]):
+            errs.append("outcome.salvage: must be {requested, survived} "
+                        "non-negative integers with survived <= requested")
+    cov = oc.get("coverage")
+    if cov is not None:
+        if (not isinstance(cov, dict)
+                or set(cov) - {"mode", "requested", "supplied"}
+                or not isinstance(cov.get("mode", ""), str)
+                or (cov.get("requested") is not None
+                    and not _is_count(cov["requested"]))
+                or (cov.get("supplied") is not None
+                    and not _is_count(cov["supplied"]))):
+            errs.append("outcome.coverage: must be {mode, requested, supplied}")
+    for k in ("error_class", "detail", "protocol_version"):
+        if oc.get(k) is not None and not isinstance(oc[k], str):
+            errs.append(f"outcome.{k}: must be a string")
+    ctx = oc.get("context")
+    if ctx is not None:
+        if (not isinstance(ctx, dict)
+                or set(ctx) - {"strategy", "chars", "compressed", "dropped"}
+                or ctx.get("strategy") not in CONTEXT_STRATEGIES
+                or (ctx.get("chars") is not None and not _is_count(ctx["chars"]))
+                or (ctx.get("compressed") is not None
+                    and not isinstance(ctx["compressed"], bool))
+                or (ctx.get("dropped") is not None
+                    and not isinstance(ctx["dropped"], list))):
+            errs.append("outcome.context: must be {strategy in "
+                        f"{CONTEXT_STRATEGIES}, chars, compressed, dropped}}")
+
+
 def salvage_utility_response(doc, atom_alphabet=None):
     """Component-level salvage of an invalid UtilityResponse: keep every
     entry/field that validates in isolation (duplicate semantics preserved by
@@ -212,10 +326,23 @@ def salvage_utility_response(doc, atom_alphabet=None):
     decline = doc.get("pass") is True
     out = _empty_doc(decline)
     report = {}
+    # Additive metadata (W-5) rides along when it validates in isolation.
+    for field in OPTIONAL_KEYS:
+        val = doc.get(field)
+        if val is None:
+            continue
+        probe = _empty_doc(decline)
+        probe[field] = val
+        ok, errs = validate_utility_response(probe)
+        if ok:
+            out[field] = val
+        else:
+            report[field] = {"dropped": 1,
+                             "first_error": errs[0] if errs else "invalid"}
     if decline:
         return out, report
     for k in doc:
-        if k not in RESPONSE_KEYS:
+        if k not in RESPONSE_KEYS and k not in OPTIONAL_KEYS:
             report[k] = {"dropped": 1, "first_error": "unknown top-level field"}
     for field in _LIST_FIELDS:
         val = doc.get(field)
@@ -277,13 +404,15 @@ def validate_utility_response(doc, atom_alphabet=None):
         if k not in doc:
             errs.append(f"missing required field: {k}")
     for k in doc:
-        if k not in RESPONSE_KEYS:
+        if k not in RESPONSE_KEYS and k not in OPTIONAL_KEYS:
             errs.append(f"unknown top-level field: {k}")
     if errs:
         return False, errs
 
     if not isinstance(doc["pass"], bool):
         errs.append("pass: must be a boolean")
+    _check_status(errs, doc)
+    _check_outcome(errs, doc)
     temp = doc["sampling_temperature"]
     if temp is not None and not (_is_num(temp) and float(temp) > 0):
         errs.append("sampling_temperature: must be null or a number > 0")

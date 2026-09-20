@@ -162,6 +162,7 @@ $optimDeme
        (let* (
          ($_ (println! (Generation $maxGen)))
          ($genIndex (+ (- $totalGen $maxGen) 1))
+         ($_fence (sbEnterGen $genIndex))
          ($_ulog (sbLogUtilities $genIndex))
          ($ratioOverride (py-call (state_builder.current_complexity_ratio $genIndex)))
          ($ctx2 (if (== $ratioOverride 0) $context (llmRebuildContext $context $ratioOverride)))
@@ -212,6 +213,7 @@ $optimDeme
            (runMosesLoop (- $maxGen 1) $totalGen $maxScore $maxCandOutput $updatedMetaPop
                          $nExpansion $nDeme $ctx2 $optimize $nEval $maxCandsPerDeme
                          $minPoolSize $complexityTemperature $nToKeep $capCoef $genCount)))))
+
 
 
 ;; Some helpers specific to final testing

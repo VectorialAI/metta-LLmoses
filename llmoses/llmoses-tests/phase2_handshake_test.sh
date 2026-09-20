@@ -4,9 +4,16 @@
 #
 # Proves the ready/response round-trip is wired correctly, end to end:
 #
-#   Phase 1 — responder SUPPRESSED (no watcher), short timeout:
-#             every generation blocks for the response, times out, and the run
-#             proceeds natively. We must EXIT ON TIMEOUT, never deadlock.
+#   Phase 1 — responder SUPPRESSED (no watcher), short timeout, estimate
+#             EXPECTED (default window "all"): generation 1 blocks, times out,
+#             and the run ABORTS (rc 3, run_verdict aborted, reason
+#             response_timeout). We must EXIT ON TIMEOUT, never deadlock —
+#             and never continue natively as if the estimate had not been
+#             owed (PLAN-m2-hardening §1.3, REVISION-m2-review-01 R1).
+#
+#   Phase 1b — responder SUPPRESSED, window "none" (no estimate expected):
+#             every generation is native BY DESIGN — no blocking, no timeout,
+#             run completes rc 0, terminal.json records the window.
 #
 #   Phase 2 — responder ENABLED (the watcher writes the mock response), normal
 #             timeout: every generation's ready sentinel is answered, so the run
@@ -42,11 +49,11 @@ cat > "$REPO/$DRIVER_REL" <<'METTA'
 !(println! (phase2-handshake-result (booleanStateParity3Short)))
 METTA
 
-T1=""; T2=""; WPID=""
+T1=""; T1B=""; T2=""; WPID=""
 cleanup() {
   [[ -n "$WPID" ]] && kill "$WPID" 2>/dev/null
   rm -f "$REPO/$DRIVER_REL"
-  rm -rf "$T1" "$T2"
+  rm -rf "$T1" "$T1B" "$T2"
 }
 trap cleanup EXIT
 
@@ -61,7 +68,7 @@ TIMEOUT_SHORT="${LLMOSES_TEST_TIMEOUT_SHORT:-10}"   # Phase 1 deadman timeout (s
 TIMEOUT_NORMAL="${LLMOSES_TEST_TIMEOUT_NORMAL:-30}" # Phase 2 normal timeout (s)
 
 # ---------------------------------------------------------------------------
-echo "=== Phase 1: responder SUPPRESSED, ${TIMEOUT_SHORT}s timeout -> exit on timeout ==="
+echo "=== Phase 1: responder SUPPRESSED, ${TIMEOUT_SHORT}s timeout, estimate expected -> abort on timeout ==="
 T1="$(mktemp -d)"
 t0=$(date +%s)
 LLMOSES_RUN_DIR="$T1" LLMOSES_AWAIT_RESPONSE=1 \
@@ -70,7 +77,10 @@ LLMOSES_RUN_DIR="$T1" LLMOSES_AWAIT_RESPONSE=1 \
 rc=$?; wall=$(( $(date +%s) - t0 ))
 echo "  run rc=$rc wall=${wall}s"
 
-[[ $rc -eq 0 ]] && pass "run completed (no deadlock)" || bad "run rc=$rc (expected 0)"
+# R1 (edited from the pre-hardening contract "rc 0, proceed natively"): an
+# expected estimate that never arrives is a FAILED run, not a native one.
+[[ $rc -eq 3 ]] && pass "run aborted with rc 3 (no deadlock, no silent native continuation)" \
+                || bad "run rc=$rc (expected 3: abort on timeout)"
 timeouts=$(count_grep response_timeout "$T1/moses_native_log.jsonl")
 [[ "$timeouts" -ge 1 ]] && pass "exited via timeout ($timeouts response_timeout row(s))" \
                         || bad "no response_timeout rows logged"
@@ -79,6 +89,27 @@ timeouts=$(count_grep response_timeout "$T1/moses_native_log.jsonl")
 nresp=$(count_files "$T1/response")
 [[ "$nresp" -eq 0 ]] && pass "no response sentinels (responder suppressed)" \
                      || bad "unexpected response sentinels: $nresp"
+verdict="$(python3 -c 'import json,sys; t=json.load(open(sys.argv[1])); print(t.get("run_verdict"), (t.get("abort") or {}).get("reason"))' "$T1/state/run-1/terminal.json" 2>/dev/null)"
+[[ "$verdict" == "aborted response_timeout" ]] && pass "terminal.json run_verdict aborted / response_timeout" \
+                                              || bad "terminal verdict: '$verdict'"
+
+# ---------------------------------------------------------------------------
+echo
+echo "=== Phase 1b: responder SUPPRESSED, window 'none' -> native by design, no blocking ==="
+T1B="$(mktemp -d)"
+t0=$(date +%s)
+LLMOSES_RUN_DIR="$T1B" LLMOSES_AWAIT_RESPONSE=1 LLMOSES_EXPECT_RESPONSE_GENS=none \
+  LLMOSES_RESPONSE_TIMEOUT_S="$TIMEOUT_SHORT" LLMOSES_RESPONSE_POLL_S=0.05 \
+  "$RUN_SH" "$DRIVER_REL" > "$T1B/run.log" 2>&1
+rc=$?; wall=$(( $(date +%s) - t0 ))
+echo "  run rc=$rc wall=${wall}s"
+[[ $rc -eq 0 ]] && pass "run completed rc 0 (nothing expected, nothing owed)" || bad "run rc=$rc (expected 0)"
+to1b=$(count_grep response_timeout "$T1B/moses_native_log.jsonl")
+[[ "$to1b" -eq 0 ]] && pass "no response_timeout rows (never blocked)" || bad "$to1b unexpected response_timeout row(s)"
+gens1b=$(count_files "$T1B/state" -name 'step-*.json')
+window="$(python3 -c 'import json,sys; t=json.load(open(sys.argv[1])); w=t.get("response_window") or {}; print(w.get("spec"), len(w.get("native_generations") or []), t.get("run_verdict"))' "$T1B/state/run-1/terminal.json" 2>/dev/null)"
+[[ "$window" == "none $gens1b ok" ]] && pass "terminal.json records window 'none', $gens1b native-by-design generations, verdict ok" \
+                                     || bad "terminal response_window/verdict: '$window' (gens=$gens1b)"
 
 # ---------------------------------------------------------------------------
 echo

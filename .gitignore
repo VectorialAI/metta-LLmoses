@@ -63,3 +63,11 @@ llmoses/llmoses-tests/*
 
 HANDOFF-milestone2-D033.md
 HANDOFF-milestone2.md
+
+# M2 hardening: the acceptance suites must be committed alongside the code.
+# The blanket llmoses/llmoses-tests ignore above is branch-local containerisation
+# setup; existing tracked tests were unaffected by it, new ones are not.
+!llmoses/llmoses-tests/
+!llmoses/llmoses-tests/*_test.py
+!llmoses/llmoses-tests/*_test.sh
+!llmoses/llmoses-tests/reverse_check.sh

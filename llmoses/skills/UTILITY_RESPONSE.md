@@ -22,6 +22,8 @@ Required top-level fields (no others are read; unknown fields fail source valida
 
 `pass` should be `true` when no intervention is justified, evidence is insufficient, or all exposed levers should stay neutral. `pass: true` clears the wrapper's utility buffer — every lever runs natively that generation.
 
+Two OPTIONAL additive fields ride alongside `pass` (M2 hardening, W-5): `status` says *why* — `200` guidance (`pass: false`), `204` deliberate abstention, `422` input unusable, `500` your own estimation failed, `503`/`504` provider unreachable / timed out (all `pass: true`). MOSES continues only on `200`/`204`; every other status ends the run with `run_verdict: aborted`, so never report a failure as a `204`. `outcome` is a closed record (`attempts`, `retried`, `salvage {requested, survived}`, `coverage {mode, requested, supplied}`, `error_class`, `detail`, `protocol_version`, `context {strategy, chars, compressed, dropped}`) that feeds the run's quality flags. The tool suite (`llmoses/utilities/agent_tools.py respond|abstain`) and the slot template's `assemble(..., status=, outcome=)` stamp both for you.
+
 Use empty arrays or `null` for components that are not exposed in the current files. Do not fabricate candidate ids — and prefer the construction path that makes fabrication impossible:
 
 ## Producing this document (slot template — the recommended path)

@@ -14,6 +14,10 @@
 ;; Phase II return leg: block for the watcher's response to gen $g, then continue.
 ;; Returns 0 (shape-identical to every sb* hook); env-gated + timeout-safe in Python.
 (= (sbAwaitResponse $g) (py-call (state_builder.await_response $g)))
+;; M2 W-2/W-20: top-of-generation hook (before any draw). Asserts the response
+;; fence is exactly one generation behind and honours a pending CONTROL/abort.
+;; Returns 0 (shape-identical to every sb* hook).
+(= (sbEnterGen $g)      (py-call (state_builder.enter_gen $g)))
 ;; Phase II ingestion probe: print the buffered utility estimates (ingested from
 ;; the PREVIOUS generation's response) from inside the loop — proves the agent's
 ;; estimates are reachable in MeTTa program memory before this gen's selection.

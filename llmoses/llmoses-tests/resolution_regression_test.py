@@ -64,6 +64,8 @@ def ingest(doc_or_name, gen=1):
         with open(dst, "w", encoding="utf-8") as fh:
             json.dump(doc_or_name, fh)
     sb._pending_utilities = None
+    sb._ingest_key = None      # each fixture is a fresh ingest of gen 1 (W-2 no-op guard)
+    sb._schema_fail_streak = 0  # fixtures are legacy shapes replayed in isolation, not one run (W-23 cascade)
     sb._ingest_utilities(gen)
     return sb._pending_utilities, last_ingest_row()
 

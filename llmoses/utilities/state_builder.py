@@ -112,12 +112,103 @@ _sel_buf = None            # streamed selection candidates (begin_selection..sel
 _cull_buf = None           # streamed cull candidates (begin_cull..cull_index)
 _combo_buf = None          # streamed sampler combos (begin_combo_draw..weighted pick)
 
+# --- M2 hardening state (PLAN-m2-hardening.md) --------------------------------
+# W-2 generation fence: the buffer is valid for exactly one generation.
+#   _await_gen   = the generation MOSES most recently asked a response for
+#                  (set at the top of await_response, timeout or not);
+#   _current_gen = the generation whose draws are in progress (enter_gen);
+#   _ingest_key  = (run_seq, gen) of the last ingest (re-ingest is a no-op).
+# Invariant while any lever is consulted: _utility_gen == _await_gen, and at
+# the top of generation G: _await_gen == G-1. A violation is FATAL (abort),
+# never a fallback — an offset other than 1 means the meta-loop is broken.
+_await_gen = None
+_current_gen = None
+_ingest_key = None
+_quality = {}              # W-19 experiment-quality counters (nonzero => degraded)
+_confab = {}               # W-23 confabulation statistics (run-scoped)
+_lost_streak = 0           # W-23 consecutive non-decline responses that yielded nothing
+_versions_seen = set()     # W-28 responder protocol versions observed in responses
+_context_stats = {}        # W-22 context-strategy instrumentation (aggregated)
+_logging_degraded = 0      # W-17 audit-log writes that failed (surfaced in terminal)
+_aborted = False           # W-20 set once _abort_run has fired
+_abort_record = None
+_exit_fn = os._exit        # test hook: replaced by a BaseException raiser in tests
+_ABORT_EXIT_CODE = 3       # the driver reads a non-zero exit as "not a run"
+
 # --- Phase II return leg (blocking watcher handshake) -----------------------
 # OFF by default so existing watcher-less smoke tests are byte-for-byte unchanged;
 # Phase II runs opt in with LLMOSES_AWAIT_RESPONSE=1 and a live watcher.
 _AWAIT_ENABLED = os.environ.get("LLMOSES_AWAIT_RESPONSE", "0") == "1"
 _RESP_POLL_S = float(os.environ.get("LLMOSES_RESPONSE_POLL_S", "0.05"))
 _RESP_TIMEOUT_S = float(os.environ.get("LLMOSES_RESPONSE_TIMEOUT_S", "30"))
+# R1: the RUN CONFIGURATION declares which generations expect an estimate —
+# never the responder (a responder that crashes before declaring itself must
+# not be able to turn a failed run into a clean native one). With
+# LLMOSES_AWAIT_RESPONSE=1, LLMOSES_EXPECT_RESPONSE_GENS is a generation
+# predicate: "all" (default), "none", or a comma list of ints / inclusive
+# ranges ("1-3,5", "4-", "-2") for frontloaded / backloaded interlock
+# ablations. Inside the window a missing response ABORTS; outside it MOSES
+# does not block at all — native by design, recorded, never degradation.
+_EXPECT_SPEC = os.environ.get("LLMOSES_EXPECT_RESPONSE_GENS", "all").strip() or "all"
+
+
+def _parse_gen_spec(spec):
+    """Return predicate(gen) -> bool for an expected-generation spec."""
+    spec = (spec or "all").strip().lower()
+    if spec == "all":
+        return lambda g: True
+    if spec == "none":
+        return lambda g: False
+    ranges = []
+    for tok in spec.split(","):
+        tok = tok.strip()
+        if not tok:
+            continue
+        if "-" in tok:
+            lo, hi = tok.split("-", 1)
+            lo = int(lo) if lo.strip() else None
+            hi = int(hi) if hi.strip() else None
+        else:
+            lo = hi = int(tok)
+        ranges.append((lo, hi))
+    if not ranges:
+        raise ValueError(f"empty expected-generation spec {spec!r}")
+
+    def expected(g):
+        try:
+            g = int(g)
+        except (TypeError, ValueError):
+            return True
+        return any((lo is None or g >= lo) and (hi is None or g <= hi)
+                   for lo, hi in ranges)
+    return expected
+
+
+try:
+    _EXPECT = _parse_gen_spec(_EXPECT_SPEC)
+except ValueError as _e:
+    sys.stderr.write(f"[state_builder] bad LLMOSES_EXPECT_RESPONSE_GENS "
+                     f"{_EXPECT_SPEC!r}: {_e}; expecting every generation\n")
+    _EXPECT_SPEC, _EXPECT = "all", (lambda g: True)
+_native_by_design = []     # generations skipped because they were outside the window
+# W-3 heartbeat reader: a declared responder whose CONTROL/heartbeat counter
+# has not advanced for this many seconds of MOSES's OWN monotonic clock is
+# dead (clock-domain free: only "did the counter change" is compared).
+_HB_STALL_S = float(os.environ.get("LLMOSES_HEARTBEAT_STALL_S", "120"))
+_HB_READ_EVERY_S = 0.5
+# W-23 fatal threshold: consecutive non-decline responses that yielded no
+# applicable guidance (schema failure / fabricated ids) abort the run.
+_MAX_LOST_STREAK = int(os.environ.get("LLMOSES_MAX_CONSECUTIVE_LOST", "2"))
+# W-23 fatal threshold (plan §3): consecutive schema-invalid responses abort
+# the run even when something salvaged through — with constrained generation
+# (--output-schema, slot template) a schema failure should be near-impossible,
+# so a run of them means the responder is broken, not unlucky.
+_MAX_SCHEMA_STREAK = int(os.environ.get("LLMOSES_MAX_CONSECUTIVE_SCHEMA_FAILURES", "3"))
+_schema_fail_streak = 0
+# W-10 durability: fsync every atomic JSON write (default off).
+_FSYNC = os.environ.get("LLMOSES_FSYNC", "0") == "1"
+_CONTROL_DIR = os.path.join(_RUN_DIR, "CONTROL")
+_ID_SAMPLE_CAP = 10
 
 # Boltzmann selection constants; mirror exemplar-selection.metta COMPXY_TEMP / INV_TEMP.
 _COMPXY_TEMP = 6.0
@@ -224,12 +315,65 @@ def _best_penalized(members):
     return max(pens) if pens else None
 
 
-def _write_json(path, doc):
+def _write_json(path, doc, durable=False):
+    """Atomic JSON write (tmp + os.replace). durable=True (or LLMOSES_FSYNC=1)
+    also fsyncs the temp file before the rename and the directory after it,
+    so the document survives a process that exits with os._exit right
+    after (R4: the abort path must not lose its own evidence)."""
     os.makedirs(os.path.dirname(path), exist_ok=True)
     tmp = path + ".tmp"
     with open(tmp, "w", encoding="utf-8") as fh:
         json.dump(doc, fh, indent=2)
+        if _FSYNC or durable:
+            fh.flush()
+            os.fsync(fh.fileno())
     os.replace(tmp, path)
+    if _FSYNC or durable:
+        try:
+            dfd = os.open(os.path.dirname(path), os.O_RDONLY)
+            try:
+                os.fsync(dfd)
+            finally:
+                os.close(dfd)
+        except OSError:
+            pass
+
+
+def _flush_native_log(durable=False):
+    """Push every buffered audit row to the OS (and to disk when durable)."""
+    try:
+        _NFH.flush()
+        if durable:
+            os.fsync(_NFH.fileno())
+    except Exception as e:
+        sys.stderr.write(f"[log] flush failed: {e!r}\n")
+
+
+def _read_json_quiet(path):
+    """Parse a small JSON file; None when absent/unreadable (never raises)."""
+    try:
+        with open(path, encoding="utf-8") as fh:
+            doc = json.load(fh)
+        return doc if isinstance(doc, dict) else None
+    except Exception:
+        return None
+
+
+def _control_path(name):
+    return os.path.join(_CONTROL_DIR, name)
+
+
+def _responder_declared():
+    """W-24: the responder ownership record (CONTROL/responder), or None.
+    A released record (owner exited cleanly) counts as not declared."""
+    doc = _read_json_quiet(_control_path("responder"))
+    if doc is None or doc.get("released"):
+        return None
+    return doc
+
+
+def _bump(counter, key, n=1):
+    counter[key] = counter.get(key, 0) + n
 
 
 # ===========================================================================
@@ -265,7 +409,14 @@ def new_run():
     global _atom_alphabet, _atom_alphabet_map, _atom_cumulative, _capture_failures
     global _pending_utilities, _utility_gen, _effective_cratio, _cratio_applied_for
     global _comparator_overrides, _sel_buf, _cull_buf, _combo_buf
+    global _await_gen, _current_gen, _ingest_key, _quality, _confab, _lost_streak
+    global _versions_seen, _context_stats, _aborted, _abort_record
+    global _gen, _logging_degraded, _native_by_design, _schema_fail_streak
     _run_seq = max(_run_seq + 1, _max_existing_run_seq() + 1)
+    _aborted = False
+    _abort_record = None
+    _gen = {}                # a run's terminal/abort record must never show a prior run's members
+    _logging_degraded = 0
     _cur_state_dir = os.path.join(_STATE_DIR, f"run-{_run_seq}")
     _cur_action_dir = os.path.join(_ACTION_DIR, f"run-{_run_seq}")
     os.makedirs(_cur_state_dir, exist_ok=True)
@@ -291,6 +442,16 @@ def new_run():
     _sel_buf = None
     _cull_buf = None
     _combo_buf = None
+    _await_gen = None
+    _current_gen = None
+    _ingest_key = None
+    _quality = {}
+    _confab = {}
+    _lost_streak = 0
+    _versions_seen = set()
+    _context_stats = {}
+    _native_by_design = []
+    _schema_fail_streak = 0
     runspace.ensure_context_docs(_LLMOSES_DIR, _RUN_ID, _RUN_DIR, run_seq=_run_seq)
     return _run_seq
 
@@ -510,6 +671,10 @@ def emit_run_config():
                         for n in sorted(_APPLY_LEVERS & set(_APPLY_LEVER_NAMES))},
             "rng_seed": _RNG_SEED,
         },
+        # W-16: the responder reads the MOSES-side deadline from here to
+        # assert LIVE_TIMEOUT_S * (RETRIES+1) < RESPONSE_TIMEOUT_S before its
+        # first provider call (the two processes do not share an environment).
+        "handshake": _handshake_block(),
     }
     _write_json(os.path.join(_cur_state_dir, "run_config.json"), doc)
     runspace.ensure_context_docs(_LLMOSES_DIR, _RUN_ID, _RUN_DIR, run_seq=_run_seq,
@@ -533,14 +698,78 @@ def set_problem_spec_strategy(moves, n_games, opponent_policy, complexity_ratio)
     return 0
 
 
-def flush_terminal(gen):
-    """Final post-merge metapopulation -> terminal.json."""
-    g = _num(gen)
-    s = _gs(g)
-    members = s["members"]
+def _handshake_block():
+    return {"await_enabled": _AWAIT_ENABLED,
+            "expect_response_gens": _EXPECT_SPEC,
+            "response_timeout_s": _RESP_TIMEOUT_S,
+            "poll_s": _RESP_POLL_S,
+            "heartbeat_stall_s": _HB_STALL_S,
+            "max_consecutive_lost": _MAX_LOST_STREAK,
+            "max_consecutive_schema_failures": _MAX_SCHEMA_STREAK,
+            "fsync": _FSYNC}
+
+
+def _compute_verdict():
+    """W-19 run_verdict. `aborted` = exited non-zero (not a run). `degraded`
+    = completed and mechanically correct but carrying experiment-quality
+    caveats (any nonzero quality flag). `ok` otherwise. Computed identically
+    for every run; there is no demo/experiment split."""
+    if _aborted:
+        return "aborted"
+    if any(v for v in _quality_flags().values()):
+        return "degraded"
+    return "ok"
+
+
+def _quality_flags():
+    """Nonzero experiment-quality counters (W-19). Sources: W-26 unknown ids,
+    W-18 salvage drops, W-14 retries that succeeded, W-23 coverage/schema,
+    W-17 logging, W-1 legacy timeouts, flush-section capture failures, and
+    W-28 protocol drift (more than one responder version in one run)."""
+    flags = dict((k, v) for k, v in _quality.items() if v)
+    for k, v in _capture_failures.items():
+        if v:
+            flags[f"capture_failures.{k}"] = v
+    if _logging_degraded:
+        flags["logging_degraded"] = _logging_degraded
+    # W-28 drift: more than one version stamped on responses, or responses
+    # stamped with a version other than the one the responder declared.
+    declared = (_responder_declared() or {}).get("protocol_version")
+    versions = set(_versions_seen)
+    if declared and versions:
+        versions.add(declared)
+    if len(versions) > 1:
+        flags["protocol_drift"] = len(versions)
+    return flags
+
+
+def _confab_block():
+    """W-23 confabulation statistics as a per-run record."""
+    out = {"unknown_program_ids": {}, "schema_failures": 0,
+           "unknown_atoms": 0, "salvage_drops": 0, "lost_generations": 0,
+           "coverage": {"requested": 0, "supplied": 0, "partial_generations": 0},
+           "responses": 0, "declines": 0}
+    out["unoffered_program_ids"] = {}
+    for k, v in _confab.items():
+        if k in ("unknown_program_ids", "unoffered_program_ids"):
+            field = "unknown" if k == "unknown_program_ids" else "unoffered"
+            for ch, st in v.items():
+                total = st.get("total", 0)
+                out[k][ch] = {
+                    field: st.get(field, 0), "total": total,
+                    "rate": (round(st.get(field, 0) / total, 6)
+                             if total else None),
+                    "sample": list(st.get("sample", []))[:_ID_SAMPLE_CAP]}
+        else:
+            out[k] = v
+    return out
+
+
+def _terminal_doc(members, verdict, abort=None):
     best = _best_penalized(members)
     members_out = [_member_out(m) for m in members]
-    doc = {
+    responder = _responder_declared() or _read_json_quiet(_control_path("responder"))
+    return {
         "schema_version": _VERSION, "run_seq": _run_seq, "record_type": "terminal",
         "timestamp_ms": int(time.time() * 1000),
         "total_hill_climb_evaluations": _total_evals,
@@ -551,42 +780,217 @@ def flush_terminal(gen):
         "run_parameters": _build_run_parameters(),
         # Run total, per-kind (incl. response_timeout): nonzero == partly-blind run.
         "capture_failures": dict(_capture_failures),
+        # --- M2 hardening (W-19 and friends) ---------------------------------
+        "run_verdict": verdict,
+        "quality_flags": _quality_flags(),
+        "confabulation": _confab_block(),
+        "logging_degraded": _logging_degraded,
+        "abort": abort,
+        "handshake": _handshake_block(),
+        "responder": responder,
+        # W-28: the responder-declared protocol identifier (None = undeclared
+        # responder); versions_seen lists every identifier stamped on a
+        # response this run — more than one is undeclared drift.
+        "protocol_version": ((responder or {}).get("protocol_version")
+                             if responder else None),
+        "protocol_versions_seen": sorted(_versions_seen),
+        # W-22: context strategy as recorded by the responder, plus the
+        # per-generation instrumentation aggregate.
+        "context_strategy": ((responder or {}).get("context_strategy")
+                             if responder else None),
+        "context_instrumentation": dict(_context_stats) or None,
+        "generations_awaited": _await_gen,
+        # R1: the expected-response window and the generations that ran
+        # native BY DESIGN (outside it) — reported as such, not as degradation.
+        "response_window": {"spec": _EXPECT_SPEC,
+                            "await_enabled": _AWAIT_ENABLED,
+                            "native_generations": list(_native_by_design)},
     }
+
+
+def flush_terminal(gen):
+    """Final post-merge metapopulation -> terminal.json (with run_verdict)."""
+    g = _num(gen)
+    s = _gs(g)
+    doc = _terminal_doc(s["members"], _compute_verdict())
     _write_json(os.path.join(_cur_state_dir, "terminal.json"), doc)
+    _log_event("run_verdict", verdict=doc["run_verdict"],
+               quality_flags=doc["quality_flags"] or None)
     return 0
 
 
+def _abort_run(reason, **detail):
+    """W-20 / §1.3: end the run NOW and record why. Writes CONTROL/abort (if
+    the responder did not already), a terminal.json with run_verdict
+    'aborted', a run_aborted audit row, then exits the process non-zero so
+    the driver sees a failed run. MOSES never proceeds without an estimate it
+    was supposed to receive. Never returns (the test hook raises instead)."""
+    global _aborted, _abort_record
+    if _aborted:
+        return
+    _aborted = True
+    record = {"reason": reason, "source": detail.pop("source", "moses"),
+              "run_seq": _run_seq, "generation": _await_gen,
+              "current_gen": _current_gen, "ts_ms": int(time.time() * 1000),
+              "detail": detail}
+    _abort_record = record
+    _bump(_capture_failures, f"abort:{reason}")
+    _log_event("run_aborted", reason=reason, detail=detail)
+    try:
+        if not os.path.exists(_control_path("abort")):
+            _write_json(_control_path("abort"), record, durable=True)
+    except Exception as e:
+        sys.stderr.write(f"[abort] could not write CONTROL/abort: {e}\n")
+    try:
+        gens = [k for k in _gen if isinstance(k, (int, float))]
+        members = _gs(max(gens))["members"] if gens else []
+        _write_json(os.path.join(_cur_state_dir, "terminal.json"),
+                    _terminal_doc(members, "aborted", abort=record),
+                    durable=True)
+    except Exception as e:
+        sys.stderr.write(f"[abort] could not write terminal.json: {e}\n")
+    # R4: os._exit skips every Python-level flush, so the audit log (the
+    # run_aborted row and everything before it) is pushed to disk HERE.
+    _flush_native_log(durable=True)
+    sys.stderr.write(f"[abort] run {_run_seq} aborted: {reason} {detail}\n")
+    try:
+        sys.stderr.flush()
+        sys.stdout.flush()
+    except Exception:
+        pass
+    _exit_fn(_ABORT_EXIT_CODE)
+
+
+def _check_abort_channel():
+    """W-20: a CONTROL/abort written by the responder/supervisor ends the run."""
+    doc = _read_json_quiet(_control_path("abort"))
+    if doc is None and os.path.exists(_control_path("abort")):
+        doc = {"reason": "abort_requested", "detail": "unreadable abort document"}
+    if doc is not None:
+        _abort_run("abort_requested", source=str(doc.get("source") or "responder"),
+                   requested_reason=doc.get("reason"),
+                   requested_detail=doc.get("detail"))
+
+
+def enter_gen(g):
+    """Top of generation g (before any draw). W-2: assert the response fence
+    is exactly one generation behind; W-20: honour a pending abort. Called
+    from runMosesLoop via sbEnterGen; returns 0 like every sb* hook."""
+    global _current_gen
+    g = _num(g)
+    _current_gen = g
+    try:
+        _check_abort_channel()
+        if _AWAIT_ENABLED and _await_gen is not None and _await_gen != g - 1:
+            _abort_run("generation_fence", where="enter_gen", generation=g,
+                       await_gen=_await_gen, utility_gen=_utility_gen)
+        if _pending_utilities is not None and _utility_gen != g - 1:
+            _abort_run("generation_fence", where="enter_gen", generation=g,
+                       await_gen=_await_gen, utility_gen=_utility_gen)
+    except Exception as e:
+        sys.stderr.write(f"[enter_gen] error gen {g}: {e}\n")
+    return 0
+
+
+class _HeartbeatWatch:
+    """W-3 reader: tracks CONTROL/heartbeat's monotonic counter against
+    MOSES's own monotonic clock. stalled() is True only when a heartbeat has
+    been seen and its counter has not advanced for _HB_STALL_S seconds."""
+
+    def __init__(self):
+        self.counter = None
+        self.changed_at = None
+        self.next_read = 0.0
+        self.seen = False
+
+    def observe(self, now):
+        if now < self.next_read:
+            return
+        self.next_read = now + _HB_READ_EVERY_S
+        doc = _read_json_quiet(_control_path("heartbeat"))
+        if doc is None:
+            return
+        counter = doc.get("counter")
+        if counter != self.counter:
+            self.counter, self.changed_at, self.seen = counter, now, True
+
+    def stalled(self, now):
+        return self.seen and (now - self.changed_at) >= _HB_STALL_S
+
+
 def await_response(g):
-    """Phase II foothold: block until the watcher signals a response for gen g,
-    then hand control back to MOSES. v0 reads nothing into the reduction — the
-    response is consumed Python-side and discarded; the run proceeds natively
-    regardless of content. Isolates round-trip plumbing from consumption.
+    """Phase II return leg: block until the responder signals a response for
+    gen g, ingest it, then hand control back to MOSES.
 
     Gated by LLMOSES_AWAIT_RESPONSE (default off) so non-Phase-II runs are
-    unaffected. §5.1.7 inverted: the run is now coupled to the responder, BUT a
-    broken/absent responder must degrade to native, never deadlock. Block <=
-    timeout, then proceed. Always returns 0 — shape-identical to every sb* hook.
-    """
+    unaffected. Failure policy (plan §1.3, revision R1): the run
+    configuration says which generations EXPECT an estimate
+    (LLMOSES_EXPECT_RESPONSE_GENS, default all). Inside that window a
+    missing response is a failed run no matter who was supposed to answer —
+    timeout, dead supervisor (W-3 heartbeat stall) and CONTROL/abort (W-20)
+    all exit non-zero with run_verdict 'aborted'. Outside the window MOSES
+    does not block: the generation is native by design and recorded in
+    terminal.json's response_window. Always returns 0 — shape-identical to
+    every sb* hook."""
+    global _await_gen, _pending_utilities
     if not _AWAIT_ENABLED:
         return 0
     g = _num(g)
-    sentinel = os.path.join(_RESPONSE_DIR, f"run-{_run_seq}-step-{g}")
-    deadline = time.monotonic() + _RESP_TIMEOUT_S
     try:
+        if _await_gen is not None and g <= _await_gen:
+            if g == _await_gen:      # hook re-entry: idempotent, logged
+                _log_event("await_reentry", generation=g)
+                return 0
+            _abort_run("generation_fence", where="await_response",
+                       generation=g, await_gen=_await_gen)
+        _await_gen = g
+        if not _EXPECT(g):
+            # Outside the declared window: native by design. Nothing may
+            # carry over into the next generation (the fence still holds:
+            # _await_gen advanced, buffer empty).
+            _pending_utilities = None
+            _native_by_design.append(g)
+            _log_event("await_skipped", generation=g, expected=False,
+                       window=_EXPECT_SPEC)
+            return 0
+        sentinel = os.path.join(_RESPONSE_DIR, f"run-{_run_seq}-step-{g}")
+        start = time.monotonic()
+        deadline = start + _RESP_TIMEOUT_S
+        hb = _HeartbeatWatch()
         while not os.path.exists(sentinel):
-            if time.monotonic() >= deadline:
-                _capture_failures["response_timeout"] = \
-                    _capture_failures.get("response_timeout", 0) + 1
-                _NFH.write(json.dumps({
-                    "run_seq": _run_seq, "generation": g,
-                    "event": "response_timeout", "ts_ms": int(time.time() * 1000),
-                }) + "\n")
-                sys.stderr.write(f"[await_response] timeout run {_run_seq} step {g}; "
-                                 "proceeding natively\n")
+            now = time.monotonic()
+            _check_abort_channel()
+            hb.observe(now)
+            if hb.stalled(now):
+                # A heartbeat file exists only because a responder wrote it;
+                # a static counter means that responder is dead.
+                _bump(_capture_failures, "supervisor_dead")
+                _log_event("supervisor_dead", generation=g,
+                           heartbeat_counter=hb.counter,
+                           stalled_s=round(now - hb.changed_at, 3))
+                _abort_run("supervisor_dead", generation=g,
+                           heartbeat_counter=hb.counter,
+                           stalled_s=round(now - hb.changed_at, 3))
+            if now >= deadline:
+                declared = _responder_declared()
+                _bump(_capture_failures, "response_timeout")
+                _log_event("response_timeout", generation=g,
+                           timeout_s=_RESP_TIMEOUT_S,
+                           responder_declared=declared is not None,
+                           heartbeat_seen=hb.seen)
+                # R1: an expected estimate did not arrive. Whether a
+                # responder ever declared itself is irrelevant — the more
+                # broken the responder, the more important this abort is.
+                _pending_utilities = None
+                _abort_run("response_timeout", generation=g,
+                           timeout_s=_RESP_TIMEOUT_S,
+                           responder=(declared or {}).get("owner"),
+                           responder_declared=declared is not None,
+                           heartbeat_seen=hb.seen)
                 return 0
             time.sleep(_RESP_POLL_S)
         # Response present — ingest the UtilityResponse payload into module
-        # state (Phase II consumption; supersedes the v0 discard).
+        # state (Phase II consumption).
         _ingest_utilities(g)
     except Exception as e:                       # never raise into the Prolog goal
         sys.stderr.write(f"[await_response] error run {_run_seq} step {g}: {e}\n")
@@ -639,6 +1043,9 @@ def flush_gen(gen):
             failed_sections.append(name)
             sys.stderr.write(f"[flush_gen] section '{name}' failed run {_run_seq} "
                              f"gen {g}: {e}\n")
+            # W-17: the WHY lands in the run directory, not only on stderr.
+            _log_event("section_failed", generation=g, section=name,
+                       error=repr(e)[:500])
             if isinstance(placeholder, dict):
                 return {**placeholder, "capture_status": "failed"}
             return placeholder
@@ -689,6 +1096,15 @@ def flush_gen(gen):
             },
         }
     merge_summary = _section("merge_summary", _build_merge_summary, {})
+    # W-26: every program id that existed in generation g — pre-merge members,
+    # resize-cull entrants, and post-merge survivors — is the universe a
+    # responder may legitimately reference for g. Kept on the gen record
+    # (reset only by begin_gen/new_run) so ingest validates without a disk read.
+    s["known_ids"] = cur_ids | post_ids | {c["program_id"] for c in cull_cands}
+    # R2: what the responder was OFFERED as slots — the survivor set
+    # (response_template._survivor_ids: members ∪ entrants restricted to
+    # resize_cull.survivors; the whole pool when no survivors list exists).
+    s["offered_ids"] = set(post_ids) if post_ids else set(s["known_ids"])
 
     seed_depth = _depth.get(selected_id, 0)
     for pid in lineage_diff["new_programs"]:
@@ -811,6 +1227,8 @@ def flush_gen(gen):
     if selection_status == "ok":
         _explored_ids.add(selected_id)
 
+    # W-9: the ready sentinel is edge-triggered, write-once, existence-only.
+    # Nothing reads its content; liveness lives in CONTROL/heartbeat instead.
     ready = os.path.join(_READY_DIR, f"run-{_run_seq}-step-{g}")
     with open(ready, "w", encoding="utf-8") as fh:
         fh.write(f"{int(time.time()*1000)}\n")
@@ -829,13 +1247,20 @@ def flush_gen(gen):
 # Prolog goal and must never raise: errors degrade to native + a log row.
 # ===========================================================================
 def _log_event(event, **fields):
-    """One JSONL audit row in moses_native_log.jsonl; never raises."""
+    """One JSONL audit row in moses_native_log.jsonl; never raises. A failed
+    write must not kill the run, but it must not be silent either (W-17):
+    the run-scoped logging_degraded counter is surfaced in terminal.json."""
+    global _logging_degraded
     try:
         row = {"run_seq": _run_seq, "event": event, "ts_ms": int(time.time() * 1000)}
         row.update(fields)
         _NFH.write(json.dumps(row) + "\n")
-    except Exception:
-        pass
+    except Exception as e:
+        _logging_degraded += 1
+        try:
+            sys.stderr.write(f"[log_event] audit write failed ({event}): {e!r}\n")
+        except Exception:
+            pass
 
 
 def _clamp01(x):
@@ -862,8 +1287,19 @@ def _mix(native_w, u_hat, lam):
 
 def _lever_on(name, data_key=None):
     """Lever applies iff switched on, lambda > 0, and a response is buffered
-    (pass=true clears the buffer, so it reads as native everywhere)."""
-    if _pending_utilities is None or name not in _APPLY_LEVERS:
+    (pass=true clears the buffer, so it reads as native everywhere).
+
+    W-2 fence: a buffered response is consulted only while it is exactly one
+    generation behind — it was ingested for the generation MOSES most
+    recently awaited. Any other offset is a broken meta-loop, so it aborts."""
+    if _pending_utilities is None:
+        return False
+    if _utility_gen != _await_gen:
+        _abort_run("generation_fence", where=f"_lever_on:{name}",
+                   utility_gen=_utility_gen, await_gen=_await_gen,
+                   current_gen=_current_gen)
+        return False
+    if name not in _APPLY_LEVERS:
         return False
     if _LEVER_WEIGHTS.get(name, 0.0) <= 0.0:
         return False
@@ -906,15 +1342,139 @@ _LEVER_WEIGHT_AXES = ("polarity", "clause_type", "parent_operator", "tree_depth"
 _RESPONSE_KEYS = ("pass", "sampling_temperature", "exemplar_utilities",
                   "atom_utility_prior", "combination_synergy",
                   "feature_utility_levers", "culling_utilities",
-                  "complexity_ratio_delta", "comparator_bias")
+                  "complexity_ratio_delta", "comparator_bias",
+                  "status", "outcome")     # W-5 additive metadata
+
+
+def _unknown_ids(doc, known, offered=None):
+    """W-26 (R2 split): per id-bearing channel, two buckets over the ids the
+    responder supplied — A `unknown` (existed nowhere in generation G:
+    hallucination) and B `unoffered` (existed in G — e.g. shown pre-merge —
+    but was not in the offered slot set: protocol adherence). Ids in the
+    offered set are simply correct. Rates over total_ids_supplied, sample
+    capped. '*' is the legitimate newborn-default sentinel on the culling
+    channel. Behaviour is unchanged — such entries stay inert at lookup;
+    this only makes them visible."""
+    channels = {
+        "exemplar_utilities": [e.get("program_id") for e in
+                               (doc.get("exemplar_utilities") or [])
+                               if isinstance(e, dict)],
+        "culling_utilities": [e.get("program_id") for e in
+                              (doc.get("culling_utilities") or [])
+                              if isinstance(e, dict)
+                              and str(e.get("program_id")) != "*"],
+        "comparator_bias": list(((doc.get("comparator_bias") or {})
+                                 .get("program_id_ordering") or [])
+                                if isinstance(doc.get("comparator_bias"), dict)
+                                else []),
+    }
+    out = {}
+    for ch, ids in channels.items():
+        ids = [str(i) for i in ids if i is not None]
+        if not ids:
+            continue
+        unknown = [i for i in ids if i not in known]
+        unoffered = ([i for i in ids if i in known and i not in offered]
+                     if offered is not None else [])
+        out[ch] = {"unknown": len(unknown), "unoffered": len(unoffered),
+                   "total": len(ids),
+                   "rate": round(len(unknown) / len(ids), 6),
+                   "unoffered_rate": round(len(unoffered) / len(ids), 6),
+                   "sample": unknown[:_ID_SAMPLE_CAP],
+                   "unoffered_sample": unoffered[:_ID_SAMPLE_CAP]}
+    return out
+
+
+def _record_confab(g, unknown_ids, schema_ok, outcome, decline):
+    """W-23: fold one response's observations into the run-scoped stats."""
+    _bump(_confab, "responses")
+    if decline:
+        _bump(_confab, "declines")
+    if not schema_ok:
+        _bump(_confab, "schema_failures")
+        _bump(_quality, "schema_failures")
+    per = _confab.setdefault("unknown_program_ids", {})
+    per_b = _confab.setdefault("unoffered_program_ids", {})
+    for ch, st in unknown_ids.items():
+        agg = per.setdefault(ch, {"unknown": 0, "total": 0, "sample": []})
+        agg["unknown"] += st["unknown"]
+        agg["total"] += st["total"]
+        for i in st["sample"]:
+            if len(agg["sample"]) < _ID_SAMPLE_CAP and i not in agg["sample"]:
+                agg["sample"].append(i)
+        if st["unknown"]:
+            _bump(_quality, "unknown_program_ids", st["unknown"])
+        agg_b = per_b.setdefault(ch, {"unoffered": 0, "total": 0, "sample": []})
+        agg_b["unoffered"] += st.get("unoffered", 0)
+        agg_b["total"] += st["total"]
+        for i in st.get("unoffered_sample", []):
+            if len(agg_b["sample"]) < _ID_SAMPLE_CAP and i not in agg_b["sample"]:
+                agg_b["sample"].append(i)
+        if st.get("unoffered"):
+            _bump(_quality, "unoffered_program_ids", st["unoffered"])
+    if isinstance(outcome, dict):
+        attempts = outcome.get("attempts")
+        if outcome.get("retried") or (isinstance(attempts, int) and attempts > 1):
+            _bump(_quality, "retries",
+                  max(1, (attempts or 2) - 1))
+        sal = outcome.get("salvage")
+        if isinstance(sal, dict):
+            dropped = max(0, (sal.get("requested") or 0) - (sal.get("survived") or 0))
+            if dropped:
+                _bump(_quality, "salvage_drops", dropped)
+                _bump(_confab, "salvage_drops", dropped)
+        cov = outcome.get("coverage")
+        if isinstance(cov, dict):
+            c = _confab.setdefault("coverage", {"requested": 0, "supplied": 0,
+                                                "partial_generations": 0})
+            req, sup = cov.get("requested"), cov.get("supplied")
+            if isinstance(req, int):
+                c["requested"] += req
+            if isinstance(sup, int):
+                c["supplied"] += sup
+            if (cov.get("mode") == "full" and isinstance(req, int)
+                    and isinstance(sup, int) and sup < req):
+                c["partial_generations"] += 1
+                _bump(_quality, "partial_coverage")
+        pv = outcome.get("protocol_version")
+        if isinstance(pv, str) and pv:
+            _versions_seen.add(pv)
+        ctx = outcome.get("context")
+        if isinstance(ctx, dict):
+            cs = _context_stats
+            cs.setdefault("strategies", [])
+            if ctx.get("strategy") and ctx["strategy"] not in cs["strategies"]:
+                cs["strategies"].append(ctx["strategy"])
+            chars = ctx.get("chars")
+            if isinstance(chars, int):
+                cs["max_chars"] = max(cs.get("max_chars", 0), chars)
+                cs["total_chars"] = cs.get("total_chars", 0) + chars
+            cs["generations"] = cs.get("generations", 0) + 1
+            if ctx.get("compressed"):
+                cs["compressions"] = cs.get("compressions", 0) + 1
+            if ctx.get("dropped"):
+                cs["dropped_total"] = cs.get("dropped_total", 0) + len(ctx["dropped"])
 
 
 def _ingest_utilities(g):
-    """Parse utilities/run-N/step-G.json (written by the watcher BEFORE the
+    """Parse utilities/run-N/step-G.json (written by the responder BEFORE the
     response sentinel) into normalized per-lever lookups. Anything supplied
     but not usable is reported in the utility_ingest row's `ignored` map —
-    an estimation must never drop silently."""
-    global _pending_utilities, _utility_gen
+    an estimation must never drop silently.
+
+    W-2 fence: re-ingest of the same (run, gen) is a no-op; a generation older
+    than the fence is rejected; an unreadable response clears the buffer and,
+    like every non-200/204 status (W-5, plan §1.3), aborts the run."""
+    global _pending_utilities, _utility_gen, _ingest_key, _lost_streak
+    global _schema_fail_streak
+    key = (_run_seq, g)
+    if _ingest_key == key:
+        _log_event("utility_ingest_skipped", generation=g, reason="duplicate")
+        return
+    if _utility_gen is not None and g < _utility_gen:
+        _log_event("utility_ingest_skipped", generation=g, reason="stale",
+                   utility_gen=_utility_gen)
+        return
     path = os.path.join(_RUN_DIR, "utilities", f"run-{_run_seq}", f"step-{g}.json")
     try:
         with open(path, encoding="utf-8") as fh:
@@ -922,22 +1482,64 @@ def _ingest_utilities(g):
         if not isinstance(doc, dict):
             raise ValueError("UtilityResponse is not a JSON object")
     except Exception as e:
+        # W-1b: never leave the previous generation's guidance live.
+        _pending_utilities, _utility_gen, _ingest_key = None, g, key
+        _bump(_capture_failures, "utility_ingest_error")
         _log_event("utility_ingest_error", generation=g, error=str(e)[:200])
+        _abort_run("responder_failure", generation=g, status=500,
+                   error_class="unreadable_response", detail=str(e)[:200])
         return
     ignored = {}
     for k in doc:
         if k not in _RESPONSE_KEYS:
             v = doc[k]
             ignored[k] = len(v) if isinstance(v, (list, dict)) else "present"
-    # Diagnostic-only schema check: logged, never enforced — ingest still
-    # normalizes what it can and the run proceeds natively where it cannot.
+    # Diagnostic schema check: logged and counted (W-23), never a filter —
+    # ingest still normalizes what it can.
     schema_ok, schema_errors = utility_schema.validate_utility_response(
         doc, _atom_alphabet)
-    if doc.get("pass", True):
-        _pending_utilities, _utility_gen = None, g
-        _log_event("utility_ingest", generation=g, decline=True,
+    status = utility_schema.effective_status(doc)
+    outcome = doc.get("outcome") if isinstance(doc.get("outcome"), dict) else None
+    known = _gs(g).get("known_ids") if g in _gen else None
+    offered = _gs(g).get("offered_ids") if g in _gen else None
+    unknown_ids = (_unknown_ids(doc, known, offered)
+                   if known is not None else {})
+    decline = bool(doc.get("pass", True))
+    _record_confab(g, unknown_ids, schema_ok, outcome, decline)
+    _schema_fail_streak = 0 if schema_ok else _schema_fail_streak + 1
+    if not schema_ok and _MAX_SCHEMA_STREAK > 0 \
+            and _schema_fail_streak >= _MAX_SCHEMA_STREAK:
+        _pending_utilities, _utility_gen, _ingest_key = None, g, key
+        _log_event("schema_failure_cascade", generation=g,
+                   streak=_schema_fail_streak, schema_errors=schema_errors[:3])
+        _abort_run("schema_failure_cascade", generation=g,
+                   streak=_schema_fail_streak, schema_errors=schema_errors[:3])
+        return
+    if status not in utility_schema.CONTINUE_STATUSES or \
+            (status == 200) == decline:
+        # W-5/W-15/§1.3: the responder reported a failure (or a status that
+        # contradicts `pass`, which is a contract break and reads the same).
+        # Guidance that should have existed did not; that contaminates every
+        # later generation, so the run is not the experiment it claims to be.
+        _pending_utilities, _utility_gen, _ingest_key = None, g, key
+        _bump(_capture_failures, f"responder_{status}")
+        _log_event("responder_failure", generation=g, status=status,
+                   pass_flag=decline,
+                   error_class=(outcome or {}).get("error_class"),
+                   detail=str((outcome or {}).get("detail"))[:200],
+                   schema_ok=schema_ok)
+        _abort_run("responder_failure", generation=g, status=status,
+                   error_class=(outcome or {}).get("error_class"),
+                   detail=str((outcome or {}).get("detail"))[:200])
+        return
+    if decline:
+        _pending_utilities, _utility_gen, _ingest_key = None, g, key
+        _lost_streak = 0
+        _log_event("utility_ingest", generation=g, decline=True, status=status,
                    ignored=ignored or None, schema_ok=schema_ok,
-                   schema_errors=schema_errors[:3] or None)
+                   schema_errors=schema_errors[:3] or None,
+                   unknown_ids=unknown_ids or None,
+                   outcome=outcome or None)
         return
 
     exemplar = {}
@@ -989,6 +1591,40 @@ def _ingest_utilities(g):
         if isinstance(e, dict) and isinstance(e.get("atoms"), list) and e["atoms"]:
             synergy.append({"atoms": frozenset(str(a) for a in e["atoms"]),
                             "utility": _clamp01(e.get("utility"))})
+    # W-23 "usable": did this response carry ANY guidance MOSES can apply?
+    # Judged on what was SUPPLIED (before inert-entry pruning — a responder
+    # may deliberately emit inert entries) and, for id channels, on ids that
+    # actually existed in generation g (a channel made only of fabricated
+    # ids contributes nothing). Consulted for the lost-generation cascade.
+    def _known_hits(channel, supplied_n):
+        """Ids that can actually match a draw: offered ones (an unoffered id
+        was culled at merge and is as inert as a fabricated one)."""
+        st = unknown_ids.get(channel)
+        if st is None:
+            return supplied_n
+        return st["total"] - st["unknown"] - st.get("unoffered", 0)
+    # Atom channels: an atom outside the run's alphabet (or a synergy set of
+    # the wrong width / unknown labels) can never match a draw site — it is
+    # the atom analogue of a fabricated program id (W-23 "unknown atoms").
+    labels = set(_atom_alphabet_map) if _atom_alphabet_map else None
+    if labels is not None:
+        known_atoms = ([a for a in atom_prior if a in labels]
+                       + [e for e in atom_prior_ctx if e["atom"] in labels])
+        known_syn = [e for e in synergy if e["atoms"] <= labels]
+        unknown_atoms = ((len(atom_prior) - sum(1 for a in atom_prior if a in labels))
+                         + sum(1 for e in atom_prior_ctx if e["atom"] not in labels)
+                         + (len(synergy) - len(known_syn)))
+    else:
+        known_atoms, known_syn, unknown_atoms = (list(atom_prior) + atom_prior_ctx,
+                                                 list(synergy), 0)
+    if unknown_atoms:
+        _bump(_confab, "unknown_atoms", unknown_atoms)
+        _bump(_quality, "unknown_atoms", unknown_atoms)
+    supplied_usable = bool(
+        _known_hits("exemplar_utilities", len(exemplar)) > 0
+        or _known_hits("culling_utilities", len(retention)) > 0
+        or retention_default is not None
+        or known_atoms or known_syn)
     levers = doc.get("feature_utility_levers") or {}
     aggregate_fn = levers.get("aggregate_fn") if isinstance(levers, dict) else None
     if aggregate_fn not in ("product", "mean", "geometric_mean", "softmax"):
@@ -1051,7 +1687,20 @@ def _ingest_utilities(g):
         "complexity_ratio_delta": delta, "sampling_temperature": temp,
     }
     _utility_gen = g
-    _log_event("utility_ingest", generation=g, decline=False,
+    _ingest_key = key
+    # W-23 fatal threshold: a non-decline response that yields NOTHING
+    # applicable (every id fabricated, schema failure dropped everything) is
+    # a lost generation; consecutive lost generations abort the run.
+    usable = bool(supplied_usable
+                  or _known_hits("comparator_bias", len(comparator_rank)) > 0
+                  or delta is not None)
+    if usable:
+        _lost_streak = 0
+    else:
+        _lost_streak += 1
+        _bump(_confab, "lost_generations")
+        _bump(_quality, "lost_generations")
+    _log_event("utility_ingest", generation=g, decline=False, status=status,
                exemplar=len(exemplar), retention=len(retention),
                atoms=len(atom_prior), atoms_ctx=len(atom_prior_ctx),
                synergy=len(synergy),
@@ -1061,7 +1710,14 @@ def _ingest_utilities(g):
                ratio_delta=(delta or {}).get("direction"), temperature=temp,
                ignored=ignored or None, inert=inert or None,
                schema_ok=schema_ok,
-               schema_errors=schema_errors[:3] or None)
+               schema_errors=schema_errors[:3] or None,
+               unknown_ids=unknown_ids or None,
+               usable=usable, lost_streak=_lost_streak,
+               outcome=outcome or None)
+    if _lost_streak >= _MAX_LOST_STREAK > 0:
+        _abort_run("guidance_lost_cascade", generation=g,
+                   lost_streak=_lost_streak, schema_ok=schema_ok,
+                   unknown_ids=unknown_ids or None)
 
 
 def utility_summary(g):
