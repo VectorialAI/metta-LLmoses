@@ -1,0 +1,774 @@
+--- a/LEVER_DESIGN_SPEC.md
++++ b/LEVER_DESIGN_SPEC.md
+@@ -1,8 +1,8 @@
+ # LLMOSES — Lever Design Spec (post-audit)
+ 
+-**Status:** initial consolidation. Supersedes the lever descriptions in design doc v20.
++**Status:** revised M2 closure contract, 2026-09-21. Implementation prepared on `codex/m2-closure`; testing deliberately deferred by the user. Revised closure plan §0 supersedes historical operators and call counts.
+ **Evidence trail:** `M2_LEVER_AUDIT.md` — every claim here traces to a finding or decision there.
+-**Tree audited:** `VectorialAI/metta-LLmoses` @ `a7b64f1` (branch `milestone-2`).
++**Tree basis:** upstream-compatible staging `ea6ea730`, hardening preservation `77df0fdf`; earlier audit findings were measured at `a7b64f1` and retain that provenance.
+ 
+ ---
+ 
+@@ -12,7 +12,7 @@
+ 
+ **P1 — Space matching.** *What algebraic object is the native decision, and does the applied operator live in the matching space?* An operator in the wrong space has compressed or unbounded authority regardless of its parameter (F-003: a multiplicative reweight of a Boltzmann numerator had 4% of one lattice quantum of authority at full strength).
+ 
+-**P2 — Bound the divergence from the prior, not the utility range.** For every lever, `D = (1−b)·P + b·A` where `P` is the native prior and `A` the agent's normalized preference. `b = 0` is bit-identical MOSES; `b = 1` lets the agent replace the prior. `b` sizes the *action space*, so the agent saturates at the boundary and has no compensating action.
++**P2 — Bounded influence on the prior.** Construct an anchored preference A from bounded relative adjustments, mix `D0=(1-b)P+bA`, then sharpen `D=normalize(D0^(1/T))`. `b=0` bypasses the entire surface, including temperature. At `b=1`, A is still prior-anchored; it is not an unconstrained declared distribution. After sharpening, b alone does not bound TV. Retention has its own declared redesigned baseline.
+ 
+ **P3 — Ownership separation.** *Whether a capability exists is an experiment-level decision. How much it is used is an agent-level decision.* An optional schema field must never silently decide that a capability does not exist.
+ 
+@@ -23,6 +23,8 @@
+ **P7 — Emit raw facts with their bounds; never pre-normalize or semantically bucket.** A derived category imposes semantics on a quantity that already had them. Emit the value *and* the scale it is relative to — node depth **and** the tree's max depth and node count; a count **and** the total it was drawn from — and let the agent normalize. Discretization for *keying* is permissible only if the raw value ships alongside it.
+ 
+ **P6 — Invariants are not preferences.** Sort order, normal form, and operator alternation are data-structure and canonicalization invariants. Biasing them corrupts state rather than expressing a heuristic. (Retired lever 3; no operator lever.)
++
++**P8 — Mutate the prior, never replace it.** Inputs add to, subtract from, or scale MOSES's decision object within experiment-set clamps. Identity is leave-MOSES-alone. Uniform-prior row/pair sites are the acknowledged exception in expressivity, but keep relative grammar. Log P, raw adjustment, anchored A, D0, D, TV(A,P), TV(D,P), coverage and reachability at every site, including b=0.
+ 
+ ---
+ 
+@@ -35,7 +37,7 @@
+ | **1** | candidate | selection | `selectExemplar` |
+ | **2** | candidate | retention | `getBetterCandidates` (relocated) |
+ | **4** | **behavioural row** | the objective | scoring (`rawScore`) |
+-| **5** | atom | construction | `sampleLogicalPerms` |
++| **5** | ordered pair conditioned on causal construction state | construction | `sampleLogicalPerms` |
+ 
+ **Retired:** lever 3 (comparator resort — subsumed on both axes, and corrupts the sort invariant) · lever 2b (dominated escape — subsumed by lever 2) · lever 4's global complexity-ratio scalar (a hyperparameter, better found by sweep than by reasoning).
+ 
+@@ -43,19 +45,14 @@
+ 
+ ## 3. Lever 1 — exemplar selection
+ 
+-| | |
+-|---|---|
+-| **Site** | `llmoses/metapopulation/exemplar-selection.metta` → `select_index` |
+-| **Native prior `P`** | Boltzmann: `exp((penScore_i − best) × INV_TEMP)`, normalized |
+-| **Agent input** | per-member utilities `u_i ∈ [0,1]`, keyed by `pid` |
+-| **Operator** | `D₀ = (1−b)·P + b·A`, `A = normalize(u)`; then **`D = normalize(D₀^(1/T_exemplar))`** — temperature applied *after* mixing (§7.2) |
+-| **Params** | `b_exemplar` (experiment) · `T_exemplar` (base experiment; commandable per §6) |
+-| **Off-equivalence** | `b = 0` ⇒ `D = P`, same single RNG draw, byte-identical |
+-| **Realized log** | TV(`D`,`P`) primary, JS secondary · coverage · chosen `pid` |
+-
+-**Replaces** the multiplicative reweight of the Boltzmann numerator (F-003/F-004: interior `λ` was inert and the dial was a cliff at λ≈0.99). The linear mixture is **gap-invariant** — it places mass directly and does not have to fight an exponential.
+-
+-**Unrated members take the prior.** Coverage-weighted per §5's construction applies here in its simple form: members with no utility entry contribute `P_i` unchanged.
++Native P is the normalized native Boltzmann numerator. Selection temperature is an explicitly required experiment parameter, with `INV_TEMP=100/selection_temperature`.
++
++The agent supplies `{program_id, offset}` in lattice units. Ingest clamps finite offsets to ±delta_max (default 1 truth-table row); missing entries are zero.
++`A=softmax((penScore+offset)/(selection_temperature/100))`, equivalently
++`normalize(P * exp(INV_TEMP*offset))` in exact arithmetic. Mix with P, then sharpen.
++Zero offsets preserve prior odds; they do not redistribute a rated subset's mass by absolute utilities. This supersedes the earlier sparse-preference clarification.
++
++At b=0 use original native roulette weights and consume its one RNG draw; singleton selection consumes none. Log ordered program IDs with P, offsets, A, D0, D, both TVs, coverage and chosen ID.
+ 
+ ---
+ 
+@@ -65,15 +62,15 @@
+ |---|---|
+ | **Site** | `resizeMetapop` — computes `q` and `K` and performs the draw. The `getBetterCandidates` band logic is **replaced**, not hooked (§4.0) |
+ | **Native prior `P`** | `q_i = softmax(penScore_i / τ)` over the merged pool `C` — **hard band removed** (§4.0) |
+-| **Agent input** | per-member retention utilities `u_i ∈ [0,1]` |
+-| **Operator** | `D₀ = (1−b)·q + b·A`, then sharpen (§7.2), then Madow draw of exactly `K` (§4.1) |
++| **Agent input** | per-member score offsets, zero when omitted, clamped ±delta_max |
++| **Operator** | `A=softmax((penScore+offset)/tau)`, then `D0=(1-b)q+bA`, sharpen, then Madow exact-K draw |
+ | **Params** | `b_retention` · `T_retention` · `τ` (lattice units) · `ρ` growth allowance · `C_max` · sum-constraint method |
+ | **Off-equivalence** | `b = 0` ⇒ `D = q`, the LLMOSES retention baseline. **Not upstream-identical** — see §4.0.2 note 5 |
+ | **Realized log** | `d(D, q)` · realized `K` vs the budget · `π` clamp/redistribution amounts · coverage |
+ 
+ **Why relocated.** `cullAtRandom` is unreachable — `capSize ≈ 42,145` under demo parameters (F-017). The real population control is the deterministic `top − 1.8` prefix truncation, which **makes a diverse archive structurally impossible** (F-020): the band is anchored on the moving incumbent, so an under-explored early branch is deleted the moment a deep branch pulls 1.8 ahead. Lever 2 at this site is the partial remedy.
+ 
+-**The point-mass prior is what makes the ceiling unnecessary.** Above-band members get `(1−b) + b·û` — so `û = 0` at `b = 1` means certain drop. Below-band get `b·û`. Both directions bounded by one parameter.
++**The prior is categorical, not a point mass or independent Bernoullis.** Inclusion probabilities are constrained to [0,1] and sum to K; the without-replacement draw couples inclusion events.
+ 
+ ### 4.0 Retention — SETTLED design
+ 
+@@ -89,9 +86,11 @@
+ ```
+ q_i = softmax( penScore_i / τ )                     # retention prior — WHO
+ K   = min( N₀ + Δ_g ,  C_max ,  |C| )               # budget — HOW MANY
+-      with  K ≥ N₀        (always satisfiable: |C| ≥ N₀)
++      ceiling = min(N0 + floor(rho * entrants), C_max, |C|)
++      requested_floor = max(ceil(floor_coef * N0), minPoolSize)
++      K = min(ceiling, max(min(requested_floor, ceiling), target))
+ ```
+-Then **weighted sample without replacement of exactly `K` members from `C` using `q`** (Madow/systematic πps pass, §4.1).
++The feasible ceiling wins an infeasible floor; log floor_shortfall. Targets are growth (ceiling), band count, floor(prior ESS), or a configured fixed count. The initial generation uses the supplied initial archive size for N0. Optional native cap annealing receives the actual generation index. Then **weighted sample without replacement of exactly `K` members from `C` using the mixed/sharpened distribution** (Madow/systematic πps pass, §4.1).
+ 
+ **The lower bound protects population *cardinality*, not incumbent *membership*.** Any member of `C` — old or new — can be dropped; only the count is floored. A generation may legitimately retain only old members, only new ones, or any mix. Nothing guarantees a new candidate survives; that property is emergent, and if it is ever wanted it must be imposed explicitly as a separate minimum-inclusion rule.
+ 
+@@ -239,8 +238,8 @@
+ |---|---|
+ | **Site** | scoring — replaces `sumBScore` |
+ | **Native prior `P`** | uniform row weights `wᵢ = 1` |
+-| **Agent input** | per-row weights, normalized to mean 1 |
+-| **Operator** | `rawScore = Σ wᵢ·bᵢ` with `w = (1−b)·1 + b·w_agent` |
++| **Agent input** | multipliers on unit weights, identity 1, clamp [0,W], then normalize to mean 1 |
++| **Operator** | `rawScore = Σ wᵢ·bᵢ`; normalize multipliers to A, mix with uniform P, sharpen, then w=n*D |
+ | **Params** | `b_rowweight` · `T_rowweight` |
+ | **Off-equivalence** | `b = 0` ⇒ uniform weights ⇒ `sumBScore` byte-for-byte |
+ | **Realized log** | TV over the normalized weight vector · realized score-range shift · coverage |
+@@ -267,7 +266,7 @@
+ 
+ **Requirements**
+ 
+-- **Normalization to mean 1 preserves `Σwᵢ = n`**, so the score range — and therefore the lattice quantum and the truncation band — are invariant to the agent's weights. This replaces the cap `W` and the separate normalization step.
++- **Normalization to mean 1 preserves `Σwᵢ = n`**, so the score range — and therefore the lattice quantum and the truncation band — are invariant to the agent's weights. The input factor clamp [0,W] remains; normalization does not replace it.
+ - **Rescore the metapopulation on every weight change.** `mkCscore` stores `rawScore` and `complexity`, and exemplars store their bscore, so `penScore' = Σw'ᵢbᵢ − complexity × coef` is pure arithmetic over stored fields with **zero program evaluations**. Without this, the metapopulation holds cscores computed under two different objective functions and compares them directly (F-026).
+ - **Emit the unweighted score alongside the weighted one, for every member.** `unweighted = sum(bscore)`. Non-negotiable: search objective ≠ evaluation objective, and all experimental outcomes are measured on the unweighted score. Must ship *with* the lever, not after.
+ - Non-integer weights break the integer lattice **upward**, adding sub-integer resolution that `selectExemplar` currently lacks. A side benefit to lever 1, not a hazard.
+@@ -276,215 +275,93 @@
+ 
+ ---
+ 
+-## 6. Lever 5 — atom prior on combination sampling
+-
+-| | |
+-|---|---|
+-| **Site** | `llmoses/representation/sample-logical-perms.metta` → `begin_combo_draw` / `weighted_combo_pick` |
+-| **Native prior `P`** | **uniform** over the `arity × (arity−1)` enumerated combinations |
+-| **Agent input** | per-atom utilities, plus contextual entries and synergy entries when those channels are on |
+-| **Params** | `b_atom` · `T_atom` · `aggregate_fn` (experiment) · contextual/synergy channel on/off (experiment) |
+-| **Off-equivalence** | `b = 0` ⇒ uniform ⇒ `lazyRandomSelector` unchanged |
+-| **Realized log** | TV(`D`,`P`) · coverage · degradation events |
+-
+-**This is the positive control for the audit.** The base is flat, so the operator was already space-matched here — which is what demonstrated the multiplicative operator was not broken in general, only mismatched at lever 1.
+-
+-**Highest-bandwidth lever.** Fires at every sampler node of every representation build, `arity` picks per node, recursing through tree levels — against lever 1's single draw per generation. Also the only lever acting **before candidates exist**.
+-
+-### 6.1 Coverage-weighted combination mixing
+-
+-The agent rates **atoms**; MOSES draws **combinations**. For each enumerated combination `c`:
+-
+-```
+-cov_c = (rated atoms in c) / (atoms in c)
+-A_c   = aggregate_fn( û of the RATED atoms in c )     # unrated atoms EXCLUDED, not imputed
+-D_c   = (1 − b·cov_c)·P_c  +  b·cov_c·A_c
+-```
+-
+-- `cov_c = 0` ⇒ `D_c = P_c` exactly. Silence yields the prior.
+-- `cov_c = 1` ⇒ standard mixture.
+-- **No aggregate function needs a neutral element**, because unrated atoms never enter the aggregate. `A_c` is evaluated only when `cov_c > 0`.
+-
+-This dissolves F-029 rather than patching it. The earlier proposed fix — imputing a per-aggregate neutral element — was wrong in the same direction as the original bug: it made an unrated atom *inherit its partners' rating*, reading silence as endorsement.
+-
+-**Pin the order of operations:** sharpening (`T_atom`) is applied per atom **before** aggregation. Not equivalent to sharpening after, for non-linear aggregates. Decide deliberately; document it.
+-
+-### 6.2 Required fixes at this site
+-
+-- **Remove the module-level `_combo_buf`.** `begin_combo_draw` returns an **opaque token** (integer or string, not a Python object — the MeTTa↔Python bridge should not carry object identity); MeTTa threads the token to each `weighted_combo_pick`; Python keys `_combo_bufs[token]`. **Release the entry when the draw completes**, or sweep at generation boundary — otherwise one buffer leaks per sampler node per generation across `nDeme` representations and every tree level. This removes the interleaving hazard structurally, with no dependence on characterizing PeTTa's evaluation order.
+-- **Ingest validation for `lever_weights`** (§8).
+-
+-### 6.3 What is *not* levered here, and why
+-
+-| dimension | status |
+-|---|---|
+-| which **atoms** form the clause | sampled — this is the lever |
+-| which **operator** heads the clause | **invariant** — `swapAndOr`, deterministic alternating canonicalization required by the normal form the reduct rules depend on |
+-| clause **width** (pairs boolean / triplets strategy) | invariant per path |
+-
+-There is no operator draw to bias. Operator weighting is correctly contingent on continuous knob building, which is not ported — a future-work dependency, not an open gap.
+-
+----
++## 6. Lever 5 — autoregressive conditional pair sampling
++
++At each reached site N, `A_N=normalize(P_N * base * product(matching rule factors))`.
++Then mix and sharpen. P_N is uniform over ordered feature pairs; draw without replacement.
++At b=0 call the unchanged native lazyRandomSelector, with identical RNG consumption.
++
++
++A policy has `base` factors and conditional `rules`. Every matching rule
++multiplies its factors with the base. Omitted factors are 1; finite factors are
++clamped to [0,W]. Zero total mass falls back to P and is logged. Ordered pairs
++must name distinct alphabet atoms; a pair need not appear at a concrete site.
++Feature selection can make a valid pair unreachable in a particular build.
++
++A rule is `{when: {...}, adjust: [{pair: ["X1","X2"], weight: 2}]}`.
++Conditions are conjunctions:
++
++- `op`: AND or OR at the draw.
++- `depth`: nonnegative integer min and/or max of this node's current depth.
++- `site_kind`: exemplar_node, appended_child, literal_wrap, sampled_subtree.
++- `local_literals`: required `{atom, polarity}` entries, polarity + or -, among current children.
++- `ancestor_drew`: one ordered pair already drawn at a strict ancestor.
++- `already_drawn`: one ordered pair committed anywhere earlier in this build.
++
++No final depth, descendants, knob state, or paths may be predicates.
++`context_radius=0` permits base only; 1 permits local conditions; 2 adds
++ancestor_drew; 3 adds already_drawn. `rule_budget` bounds the rule count.
++These capacity controls are independent of b. Empty policy is identity.
++
++Call 3 occurs after selection and before representation construction. The
++harness owns history and site sequencing. Sampled clauses can create later
++sites; only already committed information can match a rule. Logging identifies
++sites by sequence, never by native paths. Hill climbing determines which
++proposed pair knobs become active; a draw is not an active candidate feature.
++
++### 6.1 Harness lifecycle
++
++begin_combo_draw constructs the causal state and returns a token; weighted_combo_pick consumes its distribution; end_combo_draw commits the selected pairs to history and releases the token. History resets per representation build. Logging uses site_seq/build_seq. Native probe paths remain unchanged; the explicit build-logical overlay threads separate causal positions and site kinds, including the appended child. A native draw-order fixture is prepared; no trace test has been run yet.
++
++Per-candidate active-pair tags resolve native effective settings (including disc-probe holes) and suppress descendants under absent knobs. These are representation activity, not empirical utility estimates. Operator alternation and clause width remain invariants.
+ 
+ ## 6.5 Within-generation application order
+ 
+-**One agent response per generation.** All four levers read from the single response ingested at generation top — this is not four sequential agent calls, and making it so would multiply latency by four.
+-
+-**Correct order:**
+-
+-```
+-[generation top]  ingest response
+-  1. LEVER 4  — row weights → rescore metapopulation   ← MUST BE FIRST
+-  2. LEVER 1  — exemplar selection (prior depends on penScores)
+-  3. LEVER 5  — atom prior → representation build, knob decoration
+-     [ expansion + hill climbing ]
+-  4. LEVER 2  — retention draw over C
+-[generation end]  emit state + sidecar
+-```
+-
+-**Lever 4 must be first, not third.** Row weights change `rawScore`, therefore `penalizedScore`, therefore:
+-
+-- **lever 1's prior** — the Boltzmann is over penalized scores
+-- **lever 2's prior** — `q = softmax(penScore/τ)`
+-- **the deme's own hill climbing** — instances are scored during expansion
+-
+-Placing lever 4 after expansion would mean the deme searched under the *old* weights and the results were merely re-ranked under the new ones. Applying it first means the agent's row weights **guide the search itself**, which is the useful version and is what "adjusting the weight of score samples" implies.
+-
+-This also matches the original loop, where the complexity-ratio override was applied at generation top before anything else.
++1. Call 1: row multipliers → install → rescore the archive from cached bscores.
++2. Call 2: score offsets → select exactly once.
++3. Call 3: selected exemplar, alphabet and static pair universe → causal policy, before building any representation.
++4. Construct, sample, hill climb, trim each deme, deduplicate and apply native dominance with F-022 fixed; form the full merged pool.
++5. Call 4: retention offsets → K-constrained Madow draw → commit survivors once.
++
++Each call has its own run/generation/call fence and failure outcome. Zero-b calls skip the agent. Calls outside the declared response window or with awaiting disabled are native by design and logged. Next generation's Call 1 carries the survivor outcome.
+ 
+ ---
+ 
+ ## 7. Temperature
+ 
+-Three distinct quantities carry the name. They are independent and must stay so.
+-
+-| quantity | scope | owner |
+-|---|---|---|
+-| `COMPXY_TEMP` | native Boltzmann scale for exemplar selection | hardcoded; **not agent-facing**; baseline calibration only |
+-| `$complexityTemperature` | **not a temperature** — a truncation half-width (`T × 0.30`), never exponentiated | run parameter; two independent consumption sites |
+-| `T_<lever>` | exponent on the **agent's own utilities**, `û = u^(1/T)` | agent-facing, see below |
+-
+-**Current state is a defect:** one global `sampling_temperature` applied at all four lever sites. **Target: one independent temperature per lever** — `T_exemplar`, `T_retention`, `T_rowweight`, `T_atom`. No shared scalar survives the refactor.
+-
+-### 7.2 Order of operations — temperature applies AFTER mixing
+-
+-**Settled. Temperature is applied to the mixed distribution, not to the agent's utilities beforehand.**
+-
+-```
+-D₀ = (1−b)·P + b·A          A = normalize(u)      # mix
+-D  = normalize(D₀^(1/T))                          # then sharpen
+-```
+-
+-The reverse order (sharpen `u`, then mix) is what the current code does. It is wrong, and the reason is stronger than semantics:
+-
+-> **Under sharpen-then-mix, `T` is provably redundant.** `A = normalize(u^(1/T))` and the agent controls `u` freely in `[0,1]ⁿ`, so every reachable `A` is reachable by emitting `u^(1/T)` directly. The field adds no expressive power at all.
+->
+-> **Under mix-then-sharpen, `T` is not redundant.** Achieving `normalize(D₀^(1/T))` by choice of `A` alone would require `A = [D₀^(1/T) − (1−b)P] / b`, which generally has negative entries and is not a valid distribution.
+-
+-Precise characterization:
+-
+-| `b` | is `T` redundant? |
+-|---|---|
+-| `0` | gated off — see below |
+-| `0 < b < 1` | **no** — genuinely independent control |
+-| `1` | yes (`D₀ = A`, so sharpening is reachable by choosing `A`) |
+-
+-This also settles the §10.5/E-006 unease about whether `T` earns its place. It did not, under the old order. It does under the new one.
+-
+-**`T` recovers the exploration control that P1-D was rejected for.** Under the old order `T` could only flatten the *agent's* contribution; it could never touch the native Boltzmann. Under the new order it acts on the blended policy, so the agent can make MOSES less greedy — the capability §4b gave up when temperature was rejected as a standalone lever.
+-
+-#### The `b = 0` gate is principled, not a workaround
+-Mix-then-sharpen breaks `b = 0` equivalence on its own: `normalize(P^(1/T)) ≠ P` for `T ≠ 1`. **Gate `T` off when `b = 0`.**
+-
+-This is correct rather than expedient: `b = 0` means the lever is off, and `T` is part of the agent's control surface. The whole surface goes off together. Implement as an explicit guard, not by relying on the agent to send `T = 1`.
+-
+-#### Honest cost — `b` alone no longer bounds divergence from `P`
+-Sharpening after mixing can move `D` further from `P` than `b` alone would permit. At `T → 0`, `D` collapses to a delta on `argmax(D₀)`, and `TV(delta, P) = 1 − P(argmax)` can be large regardless of how small `b` is.
+-
+-**This is inherent, not a fixable detail.** Any temperature with real power must touch the native contribution, and anything touching the native contribution expands authority beyond `b`. The choice is: `T` redundant (old order) or `T` real and `b` not the sole bound (new order). We are taking the second.
+-
+-Consequences, both already planned:
+-- **Bound `T`** tightly at ingest (§7.1 condition 2) — it is now an authority dimension, not just a shape control.
+-- **Analyse on realized divergence, not on `(b, T)`** (§7.1 condition 4) — already the stated analysis policy, and now load-bearing rather than merely prudent.
+-
+----
+-
+-### 7.0 Bounds — settled, nothing outstanding
+-
+-| parameter | agent-facing? | clamp needed? |
+-|---|---|---|
+-| `τ` (retention prior sharpness) | **no** — config only | **No clamp.** A bad value is a config error, not an authority risk. The lattice-units guidance in §4.0 is for *choosing* it, not for bounding it. |
+-| `COMPXY_TEMP` (selection prior sharpness) | no — config only | no clamp, same reason |
+-| `T_exemplar`, `T_retention`, `T_rowweight`, `T_atom` | **yes**, when `T_commandable` is on | **Yes — config-set bounds, applied at ingest.** These bound agent authority (§7.2's accepted cost) |
+-
+-`τ` and `COMPXY_TEMP` are structurally parallel: each sets how sharp the **native prior** is at its site. `T_<lever>` acts on the **mixed result**, after `b`. Four distinct temperatures, none redundant.
+-
+-**All temperature parameters are settled.** No outstanding bound computations.
+-
+----
+-
+-### 7.1 Ownership is itself an experimental variable
+-
+-Per lever: `T_base` (experiment) · `T_commandable` (experiment, boolean) · `T_bounds` (experiment) · `T_requested` (agent, read only when commandable) · `T_realized` (logged).
+-
+-**Conditions:**
+-
+-1. **The fixed arm must be swept**, not set at one value. Otherwise a commanded-arm win is attributable to *more* influence rather than *adaptive* influence.
+-2. **Clamp `T`.** `û = u^(1/T)` spans delta (`T→0`) to uniform (`T→∞`) with no guard. Bounded range, e.g. `[0.25, 4]`.
+-3. **Diagnose adaptivity directly.** Does `T_agent` vary across generations, and does the variation track score plateau, convergence stalling, or coverage? If it is effectively constant, the commanded arm collapses to the fixed arm — which is itself a result, established more cheaply than an outcome comparison.
+-4. **Analyse on realized divergence, not on `(b, T)`.** At uniform-prior levers (4 and 5) the two families share an endpoint, so main-effect attribution is statistically weak. They are *distinct* families — linear interpolation vs power transform — so nothing is mis-specified, but conditioning on realized `D` is the correct analysis.
++Every lever has experiment-owned T_base, T_commandable and T_bounds (default [0.25,4]). Only a commandable T is accepted in the corresponding response. Clamp finite values at ingest; reject unknown/nonfinite values. Selection temperature and retention tau are separate native-prior controls.
++
++### 7.2 Order of operations
++
++First build prior-anchored A, then mix `D0=(1-b)P+bA`, then sharpen `D=normalize(D0^(1/T))`. Apply no temperature when b=0. Identity adjustments with T=1 preserve P; a nonunit T is an additional adjustment. Measure both TV(A,P) and TV(D,P): b alone does not bound the final divergence after sharpening.
+ 
+ ---
+ 
+ ## 8. Config ownership
+ 
+-**The M3 gate: every control has exactly one declared owner.** A control the agent can read that also varies by arm is not an experiment; a control the agent sets that changes the mechanics of its own authority is not an ablation.
+-
+-| owner | controls |
+-|---|---|
+-| **Experiment** (run config, never agent-facing) | `b` per lever · lever on/off · `T_base`, `T_commandable`, `T_bounds` per lever · **`aggregate_fn`** · contextual & synergy channel on/off · size-control mode & sum-constraint method · divergence metric · sidecar richness · `complexityRatio` · `COMPXY_TEMP` · `nToKeep` / `capCoef` · `LLMOSES_RNG_SEED` · truncation policy (§9.2) |
+-| **Agent** | utility values (per member, per atom, per row) · contextual entries when the channel is on · synergy entries when the channel is on · `T_requested` where commandable |
+-| **Retired** | `λ` · `ε` · `W` · `direction` / `magnitude` |
+-
+-**`aggregate_fn` moves to experiment config.** It is the composition policy mapping atom utilities to combination weights — it determines what `b` *means*. An agent choosing its own aggregation semantics is choosing the units of its own authority, and arms whose mechanics vary per response are not comparable.
+-
+-### 8.1 Ingest validation — the silent-failure class
+-
+-Three findings shared one pattern: an optional schema field silently deciding whether a capability exists. Fix as a class.
+-
+-| case | required behaviour |
+-|---|---|
+-| contextual data present, `lever_weights` absent | **reject at ingest with an explicit error** — do not prune to `inert` |
+-| contextual channel **on** in config | `lever_weights` **required**; all-zero permitted and meaningful |
+-| contextual channel **off** in config | contextual/synergy content **rejected**, not accepted-and-ignored |
+-| any optional field gating a capability | validated at ingest; **logged when its absence disables something** |
+-
+-All-zero weights continue to reproduce global-prior-only behaviour byte-for-byte — retained as deliberate backwards compatibility.
++| Owner | Controls |
++|---|---|
++| Experiment | per-lever b; T_base/T_commandable/T_bounds; delta_max at levers 1/2; utility_max W>1; context_radius and rule_budget; K target/floor/ceiling, rho, tau, constraint, optional cap schedule; selection_temperature; complexity_coef; seed; response window/timeouts/retries/backoff; context budget/truncation |
++| Agent | current-call score offsets, row multipliers, base/rule pair factors, and T only when commandable |
++| Retired | comparator, dominated escape, agent complexity ratio, masks/global_prior mode, per-atom aggregates, synergy and contextual-axis lever_weights |
++
++Operator run_config/context guides contain the full effective configuration. The live prompt excludes arm controls; agent tools expose legal slots, not b. Estimators must not read operator-only configuration blocks as context.
++
++### 8.1 Ingest validation
++
++Validate call identity, envelope and outcome metadata on every status, including declines. Reject unknown/inactive fields, stale fences and non-commandable T. Salvage valid row/member entries independently; reject an invalid structured policy as a whole. Clamp finite numerical values; reject nonfinite/bool values. Program/row identities must be offered for the current call. Pair labels need only belong to the alphabet; capacity vocabulary and rule count are enforced at ingest. Empty guidance is neutral.
+ 
+ ---
+ 
+ ## 9. Observability
+ 
+-### 9.1 Realized-value logging (P4)
+-
+-| site | configured | realized (must log) |
+-|---|---|---|
+-| levers 1, 4, 5 | `b`, `T` | `d(D, P)` |
+-| lever 2 | `b`, size mode, constraint method | realized survivor count vs `K`; rescale/clamp amounts |
+-| all levers | — | **coverage** — fraction of the distribution the agent actually opined on |
+-| lever 5 | `aggregate_fn`, `T_atom` | degradation events; "missing = prior" substitutions |
+-| lever 4 | row weights | realized score-range shift |
+-| run | — | **context load per generation, in tokens** |
+-
+-**Divergence metric — configurable, but not all options are safe.**
+-
+-| metric | verdict |
+-|---|---|
+-| **Total variation** `½Σ|D−P|` | **primary.** Bounded, symmetric, cheapest, reads as "fraction of probability mass relocated" |
+-| **Jensen–Shannon** | **secondary.** Bounded and finite under disjoint support; standard for reporting |
+-| KL either direction | **off the default path.** `KL(D‖P)` is infinite when `P` underflows to 0.0 at large score gaps; `KL(P‖D)` is infinite whenever the agent zeroes a supported candidate, which `b = 1` permits |
+-
+-**Lever 2 needs its own formula.** It is a vector of independent Bernoullis, not a categorical — TV/JS do not apply to the joint. Use `(1/N)Σ|p_keep^agent − p_keep^native|`.
++### 9.1 Realized-value logging (P4/P8)
++
++Every site logs ordered support, P, raw adjustment, A, D0, D, TV(A,P), TV(D,P), JS, coverage, and fired/skipped reason, regardless of b. Missing sites get explicit empty-support records. Pair sites add causal state, factors, fired rule IDs, picks and fallback events. Retention adds K target/floor/ceiling/shortfall, inclusion probabilities, realized survivor count and mean absolute difference from native-shadow inclusion probabilities. The overflow valve is logged as subsumed by K.
++
++Context logs retain strategy, measured characters, truncation and dropped call identities. Token counts are included only when measured; provider token extraction remains an M3 measurement task, not a fabricated estimate. Site distributions are observational logs, not sidecar analysis.
++
++---
+ 
+ ### 9.2 The sidecar
+ 
+@@ -510,7 +387,7 @@
+ 
+ | | status |
+ |---|---|
+-| **per-decision native shadow** | exists (`bias_applied` records). A *conditional* counterfactual — "what would native have chosen **from this population**." After generation 1 that population is one native MOSES would never have produced. |
++| **per-decision native shadow** | analytic prior and inclusion-probability shadows exist (`lever_site` records), without extra RNG draws. A *conditional* counterfactual — "what would native have chosen **from this population**." After generation 1 that population is one native MOSES would never have produced. |
+ | **unweighted evaluation score** | **new requirement with lever 4.** `sum(bscore)` per member. |
+ | **full counterfactual trajectory** | not obtainable in-run. **A raw-MOSES control arm is the mechanism.** Paired seeding via `LLMOSES_RNG_SEED` remains available as variance reduction on top. |
+ 
+@@ -559,112 +436,78 @@
+ 
+ ---
+ 
+-## 9.4 Emission contract — three call payloads
+-
+-Two documents are written per generation today (`state_doc`, `action_doc`) plus `atom_lossless-{g}.json`. The split is observations-vs-actionable; under the three-call architecture the **action surface differs per call**, so `action_doc` is partitioned three ways. No new schema — a re-partition.
+-
+-### Call 1 — generation top (levers 4, 1)
+-- Full `state_doc`: identifiers, `metapopulation.{size, best_penalized_score, members}`, `demes`, `merge_summary`, `lineage_diff`, `atom_evidence`, `capture_status`
+-- Actionable: `exemplar_candidates` (`program_id`, `tree_str`, `penalized_score`, `complexity`, `raw_score`, `lineage_depth` **+ `max_lineage_depth`**), row-weight surface (per-row bscore positions)
+-- Realized outcome of the previous generation's lever 2: `merge_summary.resize_cull.{incumbents, new_entrants, survivors, culled}`
+-
+-### Call 2 — post-representation-build (lever 5)
+-- **New payload, assembled from existing data:** post-decoration skeleton · **ordered** pair pool per node · node operators · each node's exact depth **+ tree max-depth + node count** · the selected exemplar's tree
+-- Realized outcome of lever 1: `moses_native_events.post_selection` — which exemplar was chosen, and how it ranked against the agent's Call 1 preference
+-
+-### Call 3 — post-merge, pre-cull (lever 2)
+-- The full pool `C` with real scores — **`culling_candidates` moves here from Call 1**, and is now the complete pool rather than a pre-filtered subset
+-- Realized outcome of lever 5: which ordered pairs were drawn per node, and what hill climbing produced
+-- `atom_lossless` routed here (raw co-occurrence data, currently written to its own file and never surfaced)
+-
+-### Removals from the emitted state
+-
+-| field | reason |
+-|---|---|
+-| all contextual-axis material, `lever_weights` | deleted with the axis mechanism |
+-| `complexity_ratio` section (incl. `options`) | lever 4's scalar retired; `options` was a list containing only `current_value` |
+-| `total_hill_climb_evaluations` | **duplicate of `total_evaluations`**. Verified: it appears only at the two emission sites (`state_builder.py:546, 759`) and **nothing downstream consumes it**. Safe to drop. |
+-| `knob_count`, `knob_type_breakdown`, `neighborhood_size` | all three are computable from the raw `knobs` list, which **is** emitted (`"knobs": deme["knobs"]`). Derived roll-ups, P7 |
+-
+-### Additions
+-
+-| field | reason |
+-|---|---|
+-| `max_lineage_depth` | `lineage_depth` is currently emitted with no bound, so the agent cannot tell whether depth 3 is deep or shallow for this run (P7) |
+-| per-node `depth`, `tree_max_depth`, `node_count` | replaces the depth bucket; raw value plus its bounds |
+-| per-section `gated: null` | a gated section currently emits an **empty shape**, which is indistinguishable from "no members exist." Emit an explicit null/flag in place of the list: non-empty, deterministically parsable, and legible as deliberately withheld rather than absent |
+-
+-### Resolved — raw knobs *are* emitted, and the tree alone is not sufficient
+-
+-`_build_demes` emits `"knobs": deme["knobs"]` and `"exemplar_expr": deme["deme_tree"]`. So no extraction work is needed.
+-
+-But the decorated tree alone does **not** substitute for the knob list: the tree shows each knob's *structure and current content*, while `multiplicity` — how many settings that knob can take — is a property of the knob **type**, not readable from the expression. `neighborhood_size = Σ(multiplicity − 1)` depends on it.
+-
+-**Under the current lever set no lever consumes the knob list:** Call 2's masks act on the pair pool *before* knobs exist; Call 3 sees candidate trees with scores. So `knobs` stays as **observational context**, not an action surface.
+-
+----
++## 9.4 Emission contract — four payloads
++
++| Call | Input and previous outcome |
++|---|---|
++| 1 | Generation-top members, bscore rows; previous survivors/culls |
++| 2 | Rescored candidates and installed row weights (lever 4 outcome) |
++| 3 | Selected exemplar, alphabet, static ordered pairs, enabled condition vocabulary, previous-generation draw history (lever 1 outcome is selection) |
++| 4 | Complete pre-retention candidate pool, drawn pairs, raw per-deme knobs/counts, atom evidence/lossless context and candidate active-pair tags |
++
++No concrete site/node list is promised before construction. Member unweighted_score, explored and lineage depth/max are primitive context. Optional gated sections say `gated: null`; failed captures are distinguished by capture_status. End-generation step-G.json is observational; requests are step-G-call-C.json.
+ 
+ ## 9.5 Ingest contract — four response schemas
+ 
+-Settled by decisions already taken; recorded here for reference. One schema per call, each independently validated and independently degradable.
+-
+-**Universal rules, all four:**
+-- Utilities and weights live in `[0, W]` with `W > 1`, **neutral at exactly `1.0`**. Clamped at ingest, never post-normalization.
+-- **Sparse.** Any unspecified entry takes `1.0`, i.e. the prior. Omission is neutral, never absence-of-capability.
+-- `T_<lever>` accepted **only** when that lever's `T_commandable` is set; clamped to its configured bounds at ingest.
+-- Every optional field that gates a capability is **validated at ingest and logged when its absence disables something** (§8.1).
+-
+-| call | lever | accepts |
++
++Artifacts use `utilities/run-N/step-G-call-C.json`. Required envelope:
++
++```json
++{"run_seq":1,"generation":1,"call":2,"pass":false,"status":200,
++ "outcome":{},"exemplar_utilities":[{"program_id":"p-offered-id","offset":0.5}]}
++```
++
++Only one call's guidance field is legal:
++
++| Call | Field | Entry |
+ |---|---|---|
+-| **1** | 4 | per-row weights over the bscore, normalized to mean 1 (preserving `Σwᵢ = n`) · `T_rowweight` |
+-| **2** | 1 | per-member utilities keyed by `program_id` · `T_exemplar` |
+-| **3** | 5 | **masks mode:** `{node: <post-decoration path>, pair: [ordered], weight}` · **global_prior mode:** per-atom utilities keyed by `(atom, polarity)`, composed by fixed `product` · `T_atom` |
+-| **4** | 2 | per-member retention utilities keyed by `program_id`, over the full pool `C` · `T_retention` |
+-
+-**Mode exclusivity at Call 3:** `masks` and `global_prior` are mutually exclusive config modes. Content for the inactive mode is **rejected at ingest**, not accepted-and-ignored.
+-
+-**Mask keys are ORDERED pairs.** `getArgs` derives polarity from index order, so `["X1","X3"] ≠ ["X3","X1"]`. Pin the node-path type explicitly (list of integers, not a stringified path) — the old contextual matcher compared with `str(cur) != v`, and that class of silent type mismatch must not be reintroduced.
+-
+-**Removed from the contract:** `lever_weights` · `direction` / `magnitude` · contextual entries and every axis key · `aggregate_fn` · the `"*"` wildcard and `retention_default` · the single global `sampling_temperature`.
+-
+-**Degradation is per call and independent.** A failed, timed-out or unparseable response sets `b = 0` for **that lever only** and emits its own degradation record. One failure never cascades: a failed Call 1 still proceeds to Call 2, which simply shows the unweighted population. Files to rewrite: `utility_schema.py`, `response_template.py`, `llmoses_watcher.py`, `resolution_regression_test.py`.
+-
+-### 9.5.1 Failure policy — by failure class, not one rule
+-
+-**Degrade-and-continue is the wrong default for infrastructure failures.** A run that silently drops to `b = 0` at generation 12 produces a *contaminated arm* — one generation ran unintentionally native — and the evaluations already spent are the expensive part. Pausing preserves both.
+-
+-But a single pause rule is also wrong, because the three failure classes need different responses:
+-
+-| class | examples | response |
+-|---|---|---|
+-| **Transient** | timeout, 5xx, rate-limit backoff | **Retry with backoff.** No human can help and usually nothing is wrong. |
+-| **Persistent / configuration** | 401 auth, exhausted quota, expired key, schema rejected after a model change | **PAUSE and await manual restart.** A retry cannot fix an expired key; a human checking connectivity, keys and token budget can. This is the case the pause exists for. |
+-| **Semantic** | valid transport, valid JSON, but content that fails validation or is nonsense | **Degrade that lever, record it, continue.** Retrying will likely reproduce it, and a human cannot make the model answer better. |
+-
+-**Why semantic degradation does not contaminate the analysis:** a degraded lever has realized divergence exactly `0`, which is **visible in the divergence log** (§9.1). The generation is identifiable and can be conditioned on or excluded. This is the difference between a *recorded* degradation and a silent one — the whole point of §4's silent-failure class.
+-
+-### 9.5.2 Prerequisite — pause/resume requires checkpointing
+-
+-Pausing is only useful if the run can resume where it stopped, and that is not free:
+-
+-| state | requirement |
+-|---|---|
+-| **RNG position** | `LLMOSES_RNG_SEED` gives the *seed*, not the position. Resuming from the seed **replays** rather than resumes, which defeats the purpose and breaks paired-arm comparability. The generator's position must be serialized. |
+-| **Evolution state** | metapopulation, generation counter, evaluation totals, effective config |
+-| **Agent context** | the conversation history the latent-comprehension hypothesis depends on. Either persist and re-send it, or replay it at full token cost. Persisting is correct; it must be designed, not assumed. |
+-
+-> **Degrade-and-continue requires nothing new; pause/resume requires all three.** Treat checkpointing as a scoped implementation item rather than a property the harness already has — and confirm whether it does before relying on the pause path.
+-
+-Timeout values, backoff parameters and retry counts are ordinary config.
++| 1 | row_weights | row (integer), weight |
++| 2 | exemplar_utilities | program_id, offset |
++| 3 | policy | base and rules, as below |
++| 4 | retention_utilities | program_id, offset |
++
++```json
++{"base":[{"pair":["X1","X3"],"weight":1.4}],
++ "rules":[{"when":{"op":"OR","depth":{"min":1},"site_kind":"sampled_subtree"},
++           "adjust":[{"pair":["X2","X1"],"weight":0.5}]}]}
++```
++
++An optional temperature is legal only if commandable for this call:
++T_rowweight, T_exemplar, T_atom, T_retention. Ingest clamps it to configured bounds.
++All numbers must be finite; booleans are not numeric values. Row IDs and member
++IDs must be offered in this call. Pair labels need only belong to the alphabet.
++Duplicate entries are rejected. Valid row/member entries survive invalid peers;
++an invalid policy rejects the policy as a whole. Unknown fields, wrong call
++content, and fence mismatches reject the entire response.
++
++A neutral reply carries pass=true and no guidance. Status 204 means intentional
++abstention; 422 means unusable input; 500 means semantic response failure.
++Statuses 503/504 mean infrastructure failure and cause checkpointed pause.
++Status 200 requires pass=false. Envelope metadata is validated on every status,
++including declines. A semantic failure degrades only this call, not later calls.
++
++`outcome` can contain attempts (positive integer), retried (boolean), salvage
++(requested/survived nonnegative integers), coverage (mode full/sparse,
++requested/supplied integers), error_class/detail/protocol_version (strings),
++and context (strategy, chars, optional measured tokens, compressed, dropped).
++Absent token counts mean unavailable; do not fabricate token measurements.
++
++Prefer the slot interface: `row:0` and `member:ID` have numeric values;
++`policy` has a structured object. Commandable temperatures have named numeric
++slots. `assemble` supplies the fence and envelope. Rationale belongs in traces.
++Comparator, complexity-ratio, mask-mode, global-prior, synergy, and contextual-axis
++fields are retired and rejected, including on a decline.
++
++### 9.5.1 Failure policy
++
++Transient network/rate-limit/server/timeout failures retry with declared budget and backoff. Persistent infrastructure/config/auth/quota failures pause with 503/504; no silent native continuation. Semantic 422/500 or malformed responses degrade only that call and log quality flags. There is no global schema-failure streak abort.
++
++### 9.5.2 Checkpoint prerequisite
++
++Persist actual RNG position, evolution/metapopulation/generation/evaluation totals/effective config and native continuation, plus the agent's prior states/replies/rationale/summaries. In-memory resume requires the exact paused fence. Cold resume pins the protocol digest and restores all three categories before continuing. Replay, crash recovery and native cache behavior remain unverified until the user authorizes testing.
+ 
+ ---
+ 
+ ## 10. What the agent must be told
+ 
+-Skill docs and tool protocols require these, mechanistically rather than by convention:
+-
+-- The utility estimates **are** the sampling distribution at `b = 1`. This is not a hint fed to a scorer.
+-- Unrated members and atoms **fall back to the prior**. "No push" is a legitimate but **explicit** choice (uniform utilities), not something achieved by omission.
+-- `lever_weights` is **mandatory whenever contextual or synergy content is supplied** — not optional decoration. A null effect is expressed with explicit zeros.
+-- What `T_<lever>` does to the distribution, and that each lever has its own.
+-- The sidecar reports **outcomes, not scores**. It is diagnostic information; divergence is not a target to maximize.
++Use zero score offsets and unit multipliers for identity; mix precedes sharpening. Explain selection-temperature units, explored/lineage fields, ordered-pair polarity, conditional grammar/capacity, causal history and proposal-versus-activity distinction. No aggregate, synergy, mask mode or comparator actions survive. Call-local schemas and status semantics govern responses. Keep arm controls out of estimator context. Follow the canonical protocol-2 skills and preserve explicit rationale/context for checkpoint replay.
+--- a/M3_DEV_PLAN.md
++++ b/M3_DEV_PLAN.md
+@@ -1,4 +1,15 @@
+ # LLMOSES — M3 Development Plan
++
++> 2026-09-21 M2 closure amendment: revised plan §0 is authoritative. Implementation is prepared on codex/m2-closure; every verification exit below is still pending because the user requested a pause before testing. Historical inventory line counts are provenance, not current counts.
++
++## P-0 — Rehome M2 on the rebased staging base
++
++- Base ea6ea730 already carries the upstream-compatible forks. Stash hardening is preserved in 77df0fdf; stash retained. R1–R4 existed in that layer and need per-call adaptation, not reimplementation.
++- H-001 is resolved by the rebase basis; native-source identity is verify-only. No upstream files are part of this implementation.
++- Correct overlay bypasses in add-logical-knobs, demo-problems and cscore; add import-edge regression coverage. Add the explicit build-logical fork for causal metadata, preserving native probe paths.
++- U-001: retain the union-free Jaccard workaround and prepare parity>2 regression; do not claim native unify fixed. A native fix would require a full fork/renamed helper, not overlapping shim clauses.
++- F-022 accumulator preservation and ordered-set E contract have regression fixtures. Runtime confirmation, baseline hardening and confidence quick/full are deferred.
++
+ 
+ **Status:** initial draft, produced alongside `LEVER_DESIGN_SPEC.md`.
+ **Spec:** `LEVER_DESIGN_SPEC.md` — what to build.
+@@ -236,49 +247,33 @@
+ 
+ ---
+ 
+-## P3 — Rebuild the levers
+-
+-Depends on P1 (removals) and P2 (F-029, F-031 land inside lever 5).
+-
+-| lever | work |
+-|---|---|
+-| **1** | Replace `_mix` with the linear mixture at `select_index`. **Operator order: mix first, sharpen second** — `D₀ = (1−b)P + bA` with `A = normalize(u)`, then `D = normalize(D₀^(1/T))` (spec §7.2). Verify `b = 0` is byte-identical including RNG consumption. |
+-| **2** | Relocate from `cullAtRandom` to `getBetterCandidates`. Point-mass prior, per-member `p_keep`. Implement `exact` + `power` defaults, `expected` and `clamp` as alternates. **Randomize list order before the systematic pass.** |
+-| **4** | Build P4-B row weighting. Normalize to mean 1. **Rescore the metapopulation on every weight change** (stored-field arithmetic, zero program evaluations). **Emit the unweighted score per member — ships with the lever, not after.** |
+-| **5** | Coverage-weighted mixing (spec §6.1), **then** sharpen the mixed distribution (spec §7.2). `aggregate_fn` read from experiment config. |
+-
+-**Exit:** all four levers pass `b = 0` equivalence tests against the P1 baseline, byte-for-byte where the site has native randomness.
+-
+----
+-
+-## P4 — Bounding and config ownership
+-
+-| task | detail |
+-|---|---|
+-| Single `b` per lever | Replaces `λ`, `ε`, `W`. Continuous, experiment-level, never agent-facing |
+-| Split `T` per lever | `T_exemplar`, `T_retention`, `T_rowweight`, `T_atom`. No shared scalar survives |
+-| **`T` applies AFTER mixing** | `D = normalize(D₀^(1/T))`. Under the old sharpen-then-mix order `T` was **provably redundant** — every reachable `A` was reachable by emitting the transformed vector. Mix-then-sharpen makes it a real control for `0 < b < 1` and recovers the exploration capability P1-D was rejected for. |
+-| **`b = 0` gate on `T`** | Required: `normalize(P^(1/T)) ≠ P`. Principled rather than expedient — `b = 0` means the lever is off and `T` is part of the agent's surface, so the whole surface goes off together. **Explicit guard**, never relying on the agent to send `T = 1`. |
+-| **Accepted cost** | `b` alone no longer bounds divergence from `P`. Inherent: any `T` with real power touches the native contribution. Mitigations — bound `T` tightly at ingest, and analyse on realized divergence — are now load-bearing rather than prudent. |
+-| `T` ownership toggle | `T_base`, `T_commandable`, `T_bounds` per lever; clamp at ingest |
+-| Move `aggregate_fn` to experiment config | Determines what `b` means; cannot vary per response |
+-| Declare the ownership table | **This is the M3 gate.** Every control has exactly one owner, in code and in the doc |
+-
+-**Exit:** the §8 ownership table is implemented and enforced — no control readable by the agent varies by arm; no control the agent sets changes the mechanics of its own authority.
+-
+----
+-
+-## P4.5 — Emission contract re-partition *(spec §9.4)*
+-
+-| task |
+-|---|
+-| Partition `action_doc` across Calls 1/2/3; move `culling_candidates` to Call 3 and widen it to the full pool `C` |
+-| Assemble Call 2's payload (post-decoration skeleton, ordered pair pools, node operators, depth + bounds) |
+-| Route `atom_lossless` to Call 3 instead of a standalone file |
+-| Wire each call's realized-outcome section from existing fields (`resize_cull`, `post_selection`, per-node draws) — **routing, not construction** |
+-| Remove: contextual-axis material, `lever_weights`, `complexity_ratio` section, `total_hill_climb_evaluations` (verified unused downstream), `knob_count` / `knob_type_breakdown` / `neighborhood_size` |
+-| Add: `max_lineage_depth`; per-node `depth` + `tree_max_depth` + `node_count`; per-section `gated: null` in place of empty shapes |
+-| Extend `context_docs.py` template parameters beyond `active_levers` to cover mode (`masks` vs `global_prior`), `b` per lever, `T` commandability, `K` mode, bounds |
++## P3 — Rebuild the four levers
++
++Levers 1/2 accept bounded score offsets: A=softmax((penScore+offset)/T_native), where T_native is selection_temperature/100 or tau. Omitted offsets are zero. All sites mix then sharpen; b=0 bypasses temperature.
++
++Lever 2 runs once after the full merge-filter pass with softmax prior, deterministic K target/floor/feasible ceiling and exact-K randomized Madow sampling. Native dominance remains with F-022 fixed; native per-deme trimming remains. An infeasible floor yields to the ceiling and logs its shortfall.
++
++Lever 4 multiplies unit row weights, normalizes to mean one and rescales stored archive scores before Call 2 without evaluations; emit unweighted_score. Lever 5 is the autoregressive base+conditional-rules pair policy from revised spec §6, with harness-owned causal history, token lifecycle and active-pair provenance. No node masks or absolute per-atom aggregate survives.
++
++Exit (testing phase): native off RNG equivalence at exemplar/pair sites, identity/neutral arms, exact K/inclusion marginals, causal draw trace, row objective consistency and full regression battery. Retention is a declared changed baseline.
++
++---
++
++## P4 — Bounding and ownership
++
++Enforce per-lever b/T ownership, bounded score offsets ±delta_max, multiplier clamp [0,W], mean-one row weights, explicit selection_temperature, direct complexity_coef clamp, retention budget and constraint configuration. context_radius and rule_budget control policy capacity independently of b. The closed causal vocabulary is radius-gated. Supersede all earlier aggregate_fn, mode and lever_weights controls.
++
++Exit (testing phase): per-call envelope/metadata validation, current identity fences, field gating, salvage/clamps, and absence of retired executable controls. Operator metadata remains available for audit while estimator prompts exclude arm controls.
++
++---
++
++## P4.5 — Four-call payloads and contracts
++
++Call 1 rows → rescore → Call 2 exemplar offsets → selection → Call 3 causal pair policy → construction/hill climbing/merge filtering → Call 4 retention offsets → commit. Requests/replies use step-G-call-C and fence run_seq/generation/call. Each call degrades independently.
++
++Call 3 offers the selected exemplar, alphabet, static pair universe, enabled conditions and prior-generation draws, not a post-decoration skeleton. Route atom_lossless to Call 4; log max_lineage_depth and gated sections. context_docs records b, delta_max, T ownership/bounds, K mode, context_radius and rule_budget for operators.
++
++Persist RNG position, native continuation/evolution state and agent context before awaiting. Infrastructure failures pause; semantic failures use only that call's prior. Retain ownership, heartbeat, durable abort and protocol-pin protections from R1–R4.
+ 
+ ---
+ 
+@@ -290,7 +285,7 @@
+ |---|---|
+ | Realized-divergence logging | TV primary, JS secondary, metric configurable. **Per-lever formulae differ** — lever 2 uses mean per-member absolute difference, not TV on the joint |
+ | Coverage logging | Every lever. Separates "had little influence" from "chose little influence" |
+-| Context-load logging | Tokens per generation (depends on E-007) |
++| Context-load logging | Measured characters and truncation per call implemented; provider token extraction remains E-007 / M3 measurement |
+ | Realized inclusion probabilities | Lever 2, under every size-control configuration |
+ | **Lever-site reachability** | **Every lever site emits a fired / skipped-with-reason record.** See the F-017 note below — this is the general fix for the class, not a one-off. |
+ | Truncation policy | Declared as an experimental parameter for any over-limit run |
+--- a/M3_WORKLIST.md
++++ b/M3_WORKLIST.md
+@@ -1,5 +1,6 @@
+ # LLMOSES — M3 Worklist (prioritized)
+ 
++> M2 closure revision 2 (2026-09-21) supersedes historical masks, aggregates, absolute utilities and earlier call counts below. Current implementation uses four calls, score offsets, and a causal conditional pair policy; see revised LEVER_DESIGN_SPEC. Historical proposed D-DUPSLOT fixes remain verify-first, not authorization to alter ordered-set identity.
+ **Inputs:** `M2_LEVER_AUDIT.md` (F-flags, E-checks, U-items) · the D-DISC discrepancy tracker · `M3_DEV_PLAN.md`
+ **Purpose:** single ordered to-do list. Working through it finalizes the dev plan.
+ 
+@@ -44,7 +45,7 @@
+ | id | task | verdict |
+ |---|---|---|
+ | **W1-1** | **Log `P` and `D` at every lever site.** Capture the native prior before the mixture is applied and the applied distribution after, and record both plus their difference. At lever 1 the prior is `$normalizedProbs`, already materialized before `rouletteSelect`; the other three levers each have their own prior object. | **Implementation, small.** This is a logging table, not a research capability. The earlier framing overstated it. |
+-| **W1-2** | **Confirm the operator order in the spec.** Temperature applies to the **agent's utilities before mixing** — `A = normalize(u^(1/T))`, then `D = (1−b)P + bA` — not to the mixed distribution afterwards. The two are not equivalent. | **One-line spec confirmation.** Nothing else is mechanically missing; the lever is fully specified. |
++| **W1-2** | **Mix first, sharpen second.** Build prior-anchored A from score offsets (levers 1/2) or multipliers (4/5), then D0=(1-b)P+bA and D=normalize(D0^(1/T)). At b=0 bypass temperature. | **Corrected by reversal #9 and M2 closure revision 2.** Implementation prepared; tests deferred. |
+ | **W1-3** | **Smoke test: confirm lever 2's site is actually reached.** `resizeMetapop` returns unchanged when `popSize ≤ minPoolSize` (20). If typical metapopulations sit at or below that, lever 2 never fires — the same failure class as F-017, and it would be silent. | **Implementation verification, narrow.** The old E-001 measurement study is *obsolete*: it existed to test F-017 and F-003, and both are moot now that lever 2 was relocated and lever 1's operator replaced. |
+ | **W1-4** | **D-DUPSLOT — confirmed in source, not fixed at `a7b64f1`.** See below. | **Real defect. Fix in LLMOSES.** |
+ 
+--- a/AUDIT_REGISTER.md
++++ b/AUDIT_REGISTER.md
+@@ -268,3 +268,26 @@
+ | **W8** | Confirm the report-only flags genuinely need no action rather than inheriting that status by default. |
+ 
+ Then: **rebase → targeted re-audit → implement.** Post-rebase re-audit scope is pre-classified in `M3_DEV_PLAN.md` §P0.5 — all design decisions survive unchanged; file/line citations, lever 5's injection site, the upstream defects and the quantitative findings need re-verification.
++
++## M2 closure re-audit — 2026-09-21
++
++Basis: staging/upstream-m1-m2-compat ea6ea730, hardening preservation 77df0fdf, implementation on codex/m2-closure. The original stash is retained. Revision 2 §0 governs the score-offset/conditional-policy redesign. The user's instruction to stop before testing overrides the plan's baseline/final verification sequence.
++
++| Finding / group | Implementation disposition | Re-verification |
++|---|---|---|
++| H-001 / fork currency | Rebase basis already current; native source edits excluded | Deferred source/runtime comparison |
++| R1–R4 | Already in preserved hardening layer; adapted to per-call fences, ownership and durable pause/abort | Prepared fixtures, unrun |
++| F-003 / F-004 | Bounded score offsets through native temperature; identity zero; no absolute A | Unrun |
++| F-020 / minPoolSize / F-017 / F-018 | Complete pool, deterministic feasible K, exact-K Madow; overflow subsumed and logged | Unrun |
++| F-022 | Preserve incomparable accumulator entries when dominance pivot changes | Fixture written before fix; unrun |
++| F-040 / D-DUPSLOT | Comparator lever removed, native E contract restored; no speculative ordered-set fix | E/identity fixture unrun |
++| F-026 | Mean-one row multipliers; rescore stored bscore; emit unweighted score | Unrun |
++| F-029 / F-031 | Conditional ordered-pair policy replaces aggregate/mask contract; token lifecycle | Causal/math/native trace fixtures unrun |
++| U-001 | Native unify remains; union-free Jaccard workaround retained | Width>2 regression unrun |
++| Overlay bypasses | Entries use add-logical-knobs, demo-problems, cscore and new build-logical overlay | Import regression unrun |
++| Documentation contradictions | Four-call order, mix-before-sharpen, P8, score offsets and causal policy supersede earlier text | Document edits prepared |
++| Remaining upstream defects | Native source unchanged; retain upstream report dispositions | No new empirical claims |
++
++New causal finding: a parent and its appended swapped child share a native probe path, and earlier draws create later sites. Therefore a precomputed path mask is not a valid contract. The explicit overlay threads a separate causal path and site_kind; site identity is sequential. The prepared native draw trace must confirm recursion/draw order before experimental use.
++
++No hardening, confidence, failure-injection, live-provider, Docker or native-runtime verification has been run for this implementation. Old green results apply only to their original commit, not this branch. M3 readiness remains gated on testing, native off equivalence, cold checkpoint replay, context-token measurement and baseline calibration.
+--- a/REBASE_REVIEW_INVENTORY.md
++++ b/REBASE_REVIEW_INVENTORY.md
+@@ -183,3 +183,26 @@
+ **Run a contradiction check as the final step.** Twice during this audit a standing decision was silently contradicted by a later one (F-006 vs F-015; F-006 converted to report-only as a side effect of closing E-005). Both were caught by deliberately re-reading, never by working forward. The rebase changes file-level facts underneath several decisions, so re-run `AUDIT_REGISTER.md` §2 and §7b against the updated tree before declaring the plan final.
+ 
+ **Handoff set:** `AUDIT_REGISTER.md` (findings and reversals) · `LEVER_DESIGN_SPEC.md` (what to build) · `M3_DEV_PLAN.md` (sequencing and dispositions) · `M3_WORKLIST.md` (ordered tasks) · this document.
++
++## M2 closure re-audit — 2026-09-21
++
++Basis: staging/upstream-m1-m2-compat ea6ea730, hardening preservation 77df0fdf, implementation on codex/m2-closure. The original stash is retained. Revision 2 §0 governs the score-offset/conditional-policy redesign. The user's instruction to stop before testing overrides the plan's baseline/final verification sequence.
++
++| Finding / group | Implementation disposition | Re-verification |
++|---|---|---|
++| H-001 / fork currency | Rebase basis already current; native source edits excluded | Deferred source/runtime comparison |
++| R1–R4 | Already in preserved hardening layer; adapted to per-call fences, ownership and durable pause/abort | Prepared fixtures, unrun |
++| F-003 / F-004 | Bounded score offsets through native temperature; identity zero; no absolute A | Unrun |
++| F-020 / minPoolSize / F-017 / F-018 | Complete pool, deterministic feasible K, exact-K Madow; overflow subsumed and logged | Unrun |
++| F-022 | Preserve incomparable accumulator entries when dominance pivot changes | Fixture written before fix; unrun |
++| F-040 / D-DUPSLOT | Comparator lever removed, native E contract restored; no speculative ordered-set fix | E/identity fixture unrun |
++| F-026 | Mean-one row multipliers; rescore stored bscore; emit unweighted score | Unrun |
++| F-029 / F-031 | Conditional ordered-pair policy replaces aggregate/mask contract; token lifecycle | Causal/math/native trace fixtures unrun |
++| U-001 | Native unify remains; union-free Jaccard workaround retained | Width>2 regression unrun |
++| Overlay bypasses | Entries use add-logical-knobs, demo-problems, cscore and new build-logical overlay | Import regression unrun |
++| Documentation contradictions | Four-call order, mix-before-sharpen, P8, score offsets and causal policy supersede earlier text | Document edits prepared |
++| Remaining upstream defects | Native source unchanged; retain upstream report dispositions | No new empirical claims |
++
++New causal finding: a parent and its appended swapped child share a native probe path, and earlier draws create later sites. Therefore a precomputed path mask is not a valid contract. The explicit overlay threads a separate causal path and site_kind; site identity is sequential. The prepared native draw trace must confirm recursion/draw order before experimental use.
++
++No hardening, confidence, failure-injection, live-provider, Docker or native-runtime verification has been run for this implementation. Old green results apply only to their original commit, not this branch. M3 readiness remains gated on testing, native off equivalence, cold checkpoint replay, context-token measurement and baseline calibration.

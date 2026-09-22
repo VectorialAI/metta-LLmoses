@@ -61,7 +61,13 @@ OUTPUT_ROOT="$REPO/llmoses/outputs"
 RUN_DIR="$OUTPUT_ROOT/runs/$RUN_ID"
 LOGDIR="${LOGDIR_OVERRIDE:-$OUTPUT_ROOT/logs}"
 DRIVER_DIR="$REPO/llmoses/llmoses-tests"
+VERIFY_PY="$REPO/llmoses/llmoses-tests/live_agent_verify.py"
 mkdir -p "$LOGDIR" "$RUN_DIR" "$DRIVER_DIR"
+
+# Protocol 2 refuses to start without an explicit experiment config
+# (selection_temperature is required). Default to the closure config, in which
+# every lever is off, so these native smoke runs need no extra setup.
+export LLMOSES_CONFIG="${LLMOSES_CONFIG:-$REPO/llmoses/configs/m2-closure.json}"
 
 # metta cases: name tier import_mode
 # import_mode: state | pressure | file:<rel> | expand-ci | expand-example
@@ -70,6 +76,7 @@ METTA_CASES=(
   "run-multigen:smoke:state"
   "merge-cull-pressure:pressure:state"
   "expand-ci:smoke:expand-ci"
+  "m2-merge-regression:smoke:file:llmoses/llmoses-tests/m2_merge_regression.metta"
   "similarity-scorers:smoke:file:llmoses/llmoses-tests/similarity-scorers-test.metta"
   "fs-smd:pressure:file:llmoses/llmoses-tests/feature-selection-smoke-test.metta"
   "fs-port:pressure:file:feature-selection/tests/smd-test.metta"
@@ -169,12 +176,16 @@ run_traced() {
   [[ "${1:-}" == "--" ]] && shift
   local log="$LOGDIR/${stem}-${RUN_ID}.log"
   local rc=0
+  # Each traced run gets its own run directory so protocol-2 artifacts
+  # (state/run-1, moses_native_log.jsonl, terminal.json) are never shared.
+  local case_run_dir="${CASE_RUN_DIR:-$RUN_DIR/$stem}"
+  mkdir -p "$case_run_dir"
   if [[ "$TRACE" == "full" ]]; then
-    (cd "$REPO" && LLMOSES_RUN_ID="$RUN_ID" "$@") 2>&1 | tee "$log" || rc=${PIPESTATUS[0]}
+    (cd "$REPO" && LLMOSES_RUN_ID="$RUN_ID" LLMOSES_RUN_DIR="$case_run_dir" "$@") 2>&1 | tee "$log" || rc=${PIPESTATUS[0]}
   else
     local tmp
     tmp="$(mktemp)"
-    (cd "$REPO" && LLMOSES_RUN_ID="$RUN_ID" "$@") >"$tmp" 2>&1 || rc=$?
+    (cd "$REPO" && LLMOSES_RUN_ID="$RUN_ID" LLMOSES_RUN_DIR="$case_run_dir" "$@") >"$tmp" 2>&1 || rc=$?
     case "$TRACE" in
       partial)
         head -n "$HEAD_N" "$tmp" || true
@@ -367,124 +378,10 @@ EOF
   return "$rc"
 }
 
-reset_native_emission() {
-  mkdir -p "$RUN_DIR/state" "$RUN_DIR/action" "$RUN_DIR/ready"
-  find "$RUN_DIR/state"  -maxdepth 1 -type d -name 'run-*' -exec rm -rf {} + 2>/dev/null || true
-  find "$RUN_DIR/action" -maxdepth 1 -type d -name 'run-*' -exec rm -rf {} + 2>/dev/null || true
-  find "$RUN_DIR/ready"  -maxdepth 1 -type f -name 'run-*-step-*' -delete 2>/dev/null || true
-}
-
-validate_case_json() {
+verify_state_artifacts() {
   local case_name="$1" expected_gens="$2" expected_demes="$3"
-  python3 - "$RUN_DIR" "$case_name" "$expected_gens" "$expected_demes" <<'PY'
-import json, sys
-from pathlib import Path
-
-run_dir = Path(sys.argv[1])
-case = sys.argv[2]
-expected_gens = int(sys.argv[3])
-expected_demes = int(sys.argv[4])
-state_dir = run_dir / "state" / case
-action_dir = run_dir / "action" / case
-ready_dir = run_dir / "ready" / case
-
-def fail(msg):
-    print(f"FAIL_SCHEMA: {msg}", file=sys.stderr)
-    sys.exit(1)
-
-if not state_dir.is_dir(): fail(f"missing archived state dir {state_dir}")
-if not action_dir.is_dir(): fail(f"missing archived action dir {action_dir}")
-if not ready_dir.is_dir(): fail(f"missing archived ready dir {ready_dir}")
-
-run_config_path = state_dir / "run_config.json"
-if not run_config_path.exists():
-    fail(f"missing run_config.json in {state_dir}")
-with run_config_path.open() as fh:
-    rc = json.load(fh)
-if rc.get("record_type") != "run_config":
-    fail("run_config record_type mismatch")
-ps = rc.get("problem_spec", {})
-if ps.get("problem_type") != "boolean":
-    fail("run_config problem_spec not boolean")
-if not ps.get("input_labels"):
-    fail("missing boolean input_labels in run_config")
-alphabet = rc.get("atom_alphabet", {})
-if alphabet.get("prefix") != "feature":
-    fail("run_config atom_alphabet prefix not feature")
-if not alphabet.get("atoms"):
-    fail("missing atom_alphabet atoms in run_config")
-rp = rc.get("run_parameters", {})
-if rp.get("problem_type") != "boolean":
-    fail("run_config run_parameters.problem_type not boolean")
-levers = rc.get("active_levers", [])
-for need in ("exemplar_selection", "culling", "atom_evidence", "complexity_ratio", "comparator_hook"):
-    if need not in levers:
-        fail(f"missing active_lever {need} in run_config")
-
-for g in range(1, expected_gens + 1):
-    sp = state_dir / f"step-{g}.json"
-    ap = action_dir / f"step-{g}.json"
-    if not sp.exists(): fail(f"missing {sp}")
-    if not ap.exists(): fail(f"missing {ap}")
-    with sp.open() as fh: s = json.load(fh)
-    with ap.open() as fh: a = json.load(fh)
-    if s.get("problem_type") != "boolean": fail(f"state problem_type not boolean in step-{g}")
-    if a.get("problem_type") != "boolean": fail(f"action problem_type not boolean in step-{g}")
-    for static_key in ("problem_spec", "run_parameters", "active_levers", "comparator_hook_available"):
-        if static_key in s:
-            fail(f"static key {static_key} must not appear in per-step state step-{g}")
-    metapop = s.get("metapopulation", {})
-    if metapop.get("best_penalized_score") is None:
-        fail(f"missing metapopulation.best_penalized_score in state step-{g}")
-    ae = s.get("atom_evidence")
-    if not isinstance(ae, dict):
-        fail(f"missing atom_evidence in state step-{g}")
-    for key in ("atom_appearances", "realized_cooccurrences", "atom_cumulative", "degenerate_summary"):
-        if key not in ae:
-            fail(f"missing atom_evidence.{key} in state step-{g}")
-    demes = s.get("demes", [])
-    if len(demes) < expected_demes:
-        fail(f"expected at least {expected_demes} demes in step-{g}, got {len(demes)}")
-    saw_boolean = False
-    for d in demes:
-        kb = d.get("knob_type_breakdown", {})
-        if kb.get("strategy", 0) != 0:
-            fail(f"strategy knobs present in boolean deme step-{g}")
-        for k in d.get("knobs", []):
-            if k.get("kind") == "boolean":
-                saw_boolean = True
-    if not saw_boolean:
-        fail(f"no boolean knobs found in step-{g}")
-    if not a.get("exemplar_candidates"):
-        fail(f"no action exemplar_candidates in step-{g}")
-
-terminal = state_dir / "terminal.json"
-if not terminal.exists(): fail(f"missing terminal {terminal}")
-ready_files = list(ready_dir.glob("run-*-step-*"))
-if len(ready_files) < expected_gens:
-    fail(f"expected at least {expected_gens} ready sentinels, got {len(ready_files)}")
-print(f"PASS_SCHEMA: {case} ({expected_gens} steps, {len(ready_files)} ready sentinels)")
-PY
-}
-
-archive_state_case() {
-  local case_name="$1" expected_gens="$2" expected_demes="$3"
-  local state_run action_run
-  state_run="$(find "$RUN_DIR/state" -maxdepth 1 -type d -name 'run-*' | sort | tail -n1)"
-  action_run="$(find "$RUN_DIR/action" -maxdepth 1 -type d -name 'run-*' | sort | tail -n1)"
-  local state_case="$RUN_DIR/state/$case_name"
-  local action_case="$RUN_DIR/action/$case_name"
-  local ready_case="$RUN_DIR/ready/$case_name"
-
-  [[ -d "$state_run" && -d "$action_run" ]] || { echo "FAIL_ARCHIVE: native dirs absent" >&2; return 1; }
-  rm -rf "$state_case" "$action_case" "$ready_case"
-  mkdir -p "$state_case" "$action_case" "$ready_case"
-  cp -a "$state_run"/. "$state_case"/
-  cp -a "$action_run"/. "$action_case"/
-  find "$RUN_DIR/ready" -maxdepth 1 -type f -name 'run-*-step-*' -exec cp -a {} "$ready_case"/ \; 2>/dev/null || true
-  validate_case_json "$case_name" "$expected_gens" "$expected_demes" || return $?
-  rm -rf "$state_run" "$action_run"
-  find "$RUN_DIR/ready" -maxdepth 1 -type f -name 'run-*-step-*' -delete 2>/dev/null || true
+  local case_run_dir="$RUN_DIR/boolean-state-${case_name}"
+  python3 "$VERIFY_PY" --smoke "$case_run_dir" --expect-gens "$expected_gens" --expect-demes "$expected_demes"
 }
 
 run_state_case() {
@@ -510,12 +407,11 @@ run_state_case() {
 !(println! ($wrapper $case_name ($fn)))
 !(println! "================ boolean-state run: $case_name end ==================")
 EOF
-  reset_native_emission
   echo "Running boolean state $case_name [$(state_tier "$case_name")] (LLMOSES_RUN_ID=$RUN_ID)"
   run_traced "boolean-state-${case_name}" -- "$RUN_SH" "$driver_rel" || rc=$?
   cleanup_driver "$driver"
   [[ "$rc" -eq 0 ]] || return "$rc"
-  archive_state_case "$case_name" "$expected_gens" "$expected_demes"
+  verify_state_artifacts "$case_name" "$expected_gens" "$expected_demes"
 }
 
 run_metta_all() {

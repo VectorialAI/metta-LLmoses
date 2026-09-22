@@ -1,0 +1,16 @@
+{
+  "selection_temperature": 100.0,
+  "utility_max": 4.0,
+  "context_radius": 3,
+  "rule_budget": 16,
+  "levers": {
+    "rowweight": {"b": 0.0},
+    "exemplar": {"b": 0.0, "delta_max": 1.0},
+    "atom": {"b": 0.0},
+    "retention": {"b": 0.0, "delta_max": 1.0}
+  },
+  "retention": {
+    "mode": "growth", "tau": 1.0, "rho": 1.0,
+    "floor_coef": 1.0, "c_max": 1000, "constraint": "power"
+  }
+}

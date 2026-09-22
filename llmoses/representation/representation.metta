@@ -120,7 +120,9 @@
                            (let* (
                                     ;; ($_ (println! (Building representation for arg labels: $argLabels)))
                                     ;; ($_ (println! (" done buildknobs (:) ")))            ;; BUILD representations on
-                                    (($updatedTree $dscMp) (buildKnobs $xmplr () $argLabels $disable-discprobe))            ;; BUILD representations on
+                                    ($_beginBuild (py-call (state_builder.begin_build $xmplr)))
+                                    (($updatedTree $dscMp) (buildKnobs $xmplr () $argLabels $disable-discprobe))
+                                    ($_endBuild (py-call (state_builder.finish_build $updatedTree)))            ;; BUILD representations on
                                     ($_ (resetState &knobCount))
                                     ;; ($_ (println! (Building representation for arg labels: $argLabels)))
                                     ;; ($_ (println! (updated tereeeeee dddddddddddd disc mappppp ($updatedTree $dscMp))))

@@ -18,7 +18,7 @@ error fidelity):
     A non-zero exit is classified from its stderr exactly like codex, which
     is how failure injection reaches the estimator without a network.
   * codex exec — the default; the rendered prompt goes in on stdin, the
-    per-generation closed JSON schema goes in via --output-schema (W-5
+    per-call closed JSON schema goes in via --output-schema (W-5
     constrained generation), and the final message comes back through
     --output-last-message.
 
@@ -43,24 +43,27 @@ ERROR_CLASSES = {
     "quota": (402, False),
     "rate_limit": (429, True),
     "moderation": (451, False),
-    "network": (503, False),      # codex already reconnects 5x internally
+    "network": (503, True),
+    "server": (503, True),
+    "configuration": (503, False),
     "timeout": (504, True),
-    "malformed": (500, True),     # output was not a JSON object / not flat
-    "schema": (500, True),        # slot/domain violation (error fed back)
+    "malformed": (500, False),    # semantic failure: degrade this call
+    "schema": (500, False),
     "input": (422, False),        # state unusable — never a provider call
     "provider_error": (500, False),  # unknown: fail safe
 }
 
-# W-14 retry budget: retry is diagnostic, not therapeutic. At most ONE retry,
-# and only where the operation should have succeeded first time.
+# Default retry budgets. Live estimation allows a configured retry count only
+# for transient failures; persistent infrastructure failures pause the run.
 RETRY_BUDGET = {
-    "network": 0, "auth": 0, "quota": 0, "rate_limit": 1, "timeout": 1,
-    "moderation": 0, "malformed": 1, "schema": 1, "input": 0,
-    "provider_error": 0,
+    "network": 1, "server": 1, "auth": 0, "quota": 0, "rate_limit": 1, "timeout": 1,
+    "moderation": 0, "malformed": 0, "schema": 0, "input": 0,
+    "provider_error": 0, "configuration": 0,
 }
 
 # Ordered: first match wins. Whole-stderr search, case-insensitive.
 _SIGNATURES = (
+    ("configuration", re.compile(r"invalid (output )?schema|unsupported.*schema|schema.*not supported", re.I)),
     ("auth", re.compile(
         r"401 Unauthorized|invalid_api_key|invalid api key|unauthori[sz]ed|"
         r"authentication (failed|error|required)|not logged in|login required",
@@ -72,6 +75,7 @@ _SIGNATURES = (
         re.I)),
     ("rate_limit", re.compile(
         r"\b429\b|rate[ _-]?limit|too many requests|slow down", re.I)),
+    ("server", re.compile(r"\b50[0234]\b|internal server error|service unavailable|bad gateway", re.I)),
     ("moderation", re.compile(
         r"content_policy|content policy|moderation|flagged by|"
         r"usage policies|safety system|refus(ed|al) to (comply|answer)",

@@ -11,19 +11,14 @@
 (= (sbNewRun)           (py-call (state_builder.new_run)))
 (= (sbBeginGen $g)      (py-call (state_builder.begin_gen $g)))
 (= (sbGetTotalEvals)    (py-call (state_builder.get_total_evals)))
-;; Phase II return leg: block for the watcher's response to gen $g, then continue.
-;; Returns 0 (shape-identical to every sb* hook); env-gated + timeout-safe in Python.
-(= (sbAwaitResponse $g) (py-call (state_builder.await_response $g)))
-;; M2 W-2/W-20: top-of-generation hook (before any draw). Asserts the response
-;; fence is exactly one generation behind and honours a pending CONTROL/abort.
-;; Returns 0 (shape-identical to every sb* hook).
-(= (sbEnterGen $g)      (py-call (state_builder.enter_gen $g)))
-;; Phase II ingestion probe: print the buffered utility estimates (ingested from
-;; the PREVIOUS generation's response) from inside the loop — proves the agent's
-;; estimates are reachable in MeTTa program memory before this gen's selection.
-(= (sbLogUtilities $g)
-   (let* (($n (py-call (state_builder.utility_summary $g))))
-     (println! (UtilityBuffer gen $g exemplar-utilities $n))))
+(= (sbEnterGen $g) (py-call (state_builder.enter_gen $g)))
+(= (sbCheckpoint $continuation) (py-call (state_builder.checkpoint_native $continuation)))
+;; sbResume is defined after llmContinue in deme/expand-deme.metta. At this
+;; import point PeTTa would compile the unknown dispatcher as a literal atom.
+(= (sbSnapshotMembers $mp)
+   (let* (($g (py-call (state_builder.current_generation)))
+          ($_clear (py-call (state_builder.clear_members $g)))
+          ($_members (sbEmitAllMembers $g $mp))) 0))
 
 ;; --- input feature spec: emit once per run from the ITable ----------------
 ;; Boolean problems have $itable in context; strategy problems pass 0 (no-op).

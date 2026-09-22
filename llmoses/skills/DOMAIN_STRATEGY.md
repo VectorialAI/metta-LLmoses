@@ -1,3 +1,5 @@
+> Protocol 2: strategy is observational only. Nonzero guidance is rejected.
+
 # Strategy Domain
 
 Strategy runs search game or policy program trees. The problem spec usually includes available moves, number of games, opponent policy, and complexity ratio.

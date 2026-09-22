@@ -67,7 +67,7 @@ def _render_template(name, **values):
 
 def ensure_output_context(llmoses_dir, run_id, run_dir, run_seq=None,
                           problem_type=None, problem_spec=None,
-                          active_levers=None):
+                          active_levers=None, experiment=None):
     """Write output-root and run-local guide docs for the current run."""
     outputs_dir = os.path.join(llmoses_dir, "outputs")
     os.makedirs(outputs_dir, exist_ok=True)
@@ -93,17 +93,17 @@ def ensure_output_context(llmoses_dir, run_id, run_dir, run_seq=None,
         },
     })
     ensure_run_context(run_dir, run_id, run_seq, problem_type,
-                       problem_spec, active_levers or [])
+                       problem_spec, active_levers or [], experiment)
 
 
 def ensure_run_context(run_dir, run_id, run_seq=None, problem_type=None,
-                       problem_spec=None, active_levers=None):
+                       problem_spec=None, active_levers=None, experiment=None):
     active_levers = active_levers or []
     for name in ("state", "action", "ready", "utilities", "traces"):
         os.makedirs(os.path.join(run_dir, name), exist_ok=True)
     _write_text(os.path.join(run_dir, "run-instructions.md"),
                 _run_instructions(run_id, run_seq, problem_type,
-                                  problem_spec, active_levers))
+                                  problem_spec, active_levers, experiment))
     _write_text(os.path.join(run_dir, "state", "state-artifacts.md"),
                 _state_artifacts(problem_type, problem_spec))
     _write_text(os.path.join(run_dir, "action", "action-artifacts.md"),
@@ -120,7 +120,7 @@ def _moses_explanation():
     return _template_text(_MOSES_EXPLANATION)
 
 
-def _run_instructions(run_id, run_seq, problem_type, problem_spec, active_levers):
+def _run_instructions(run_id, run_seq, problem_type, problem_spec, active_levers, experiment=None):
     lever_text = ", ".join(active_levers) if active_levers else "not emitted yet"
     return _render_template(
         _RUN_INSTRUCTIONS,
@@ -128,6 +128,7 @@ def _run_instructions(run_id, run_seq, problem_type, problem_spec, active_levers
         run_seq_text=run_seq if run_seq is not None else "not emitted yet",
         problem_summary=_problem_summary(problem_type, problem_spec),
         lever_text=lever_text,
+        experiment_json=json.dumps(experiment or {}, indent=2, sort_keys=True),
     )
 
 

@@ -1,40 +1,19 @@
-;; ============================================================================
-;; llmoses/representation/sample-logical-perms.metta
-;;
-;; Drop-in replacement for representation/sample-logical-perms.metta — do NOT
-;; import the upstream file. Sampling evidence is emitted after merge by
-;; state_builder.py. Helpers genPairs / genTriplet / getArgs / getMoveArgs are
-;; inlined here so no upstream import is needed.
-;;
-;; Phase II lever 5 (atom prior): the draw over enumerated combinations goes
-;; through llmWeightedSelector. Python gates it — begin_combo_draw returns 0
-;; whenever the atom_prior lever is off, and the native lazyRandomSelector
-;; then runs UNTOUCHED (no behavioral deviation). When on, each pick is a
-;; without-replacement weighted draw whose combo weights come from the
-;; response's per-atom prior via the width-generic aggregate (D-027); a
-;; zero-mass pool degrades to uniform with a bias_degraded audit row.
-;;
-;; D-033 contextual application: the selector also carries the exemplar
-;; node's operator and its node id (= tree path) into begin_combo_draw, so
-;; contextual atom priors (clause_type / parent_operator / depth_bucket /
-;; polarity / exemplar_id) and combination_synergy can condition the weights.
-;; The 3-arg sampler entrypoints remain as shims passing an empty path for
-;; any caller not forked to thread the node id: depth context is absent
-;; there, but operator-derived and polarity context stay live.
-;; ============================================================================
+;; LLMOSES conditional pair sampler. Helpers and native off draws are unchanged.
+;; Every draw owns an opaque buffer token; end releases it and commits history.
+(= (llmWeightedSelector $lower $upper $n $combos $labels $op $path $kind $children)
+   (let* (
+     ($token (py-call (state_builder.begin_combo_draw $combos $labels $op $path $kind $children)))
+     ($on (py-call (state_builder.combo_guided $token)))
+     ($picked (if (== $on 1)
+                  (llmWeightedPickLoop $token $lower $upper $n ())
+                  (lazyRandomSelector $lower $upper $n)))
+     ($_end (py-call (state_builder.end_combo_draw $token $picked))))
+     $picked))
 
-;; --- Phase II lever 5: weighted without-replacement selector ---------------
-(= (llmWeightedSelector $lower $upper $n $combos $labels $op $nodePath)
-   (let* (($on (py-call (state_builder.begin_combo_draw $combos $labels $op $nodePath))))
-     (if (== $on 1)
-         (llmWeightedPickLoop $lower $upper $n ())
-         (lazyRandomSelector $lower $upper $n))))
-
-(= (llmWeightedPickLoop $lower $upper $n $picked)
-   (if (<= $n 0)
-       $picked
-       (chain (py-call (state_builder.weighted_combo_pick $lower $upper $picked)) $rand
-           (llmWeightedPickLoop $lower $upper (- $n 1) (union-atom $picked ($rand))))))
+(= (llmWeightedPickLoop $token $lower $upper $n $picked)
+   (if (<= $n 0) $picked
+       (chain (py-call (state_builder.weighted_combo_pick $token $lower $upper $picked)) $rand
+           (llmWeightedPickLoop $token $lower $upper (- $n 1) (union-atom $picked ($rand))))))
 
 ;; --- inlined helpers from representation/sample-logical-perms ---
 
@@ -106,7 +85,7 @@
 
 ;; --- overlay definitions ---
 
-(= (sampleLogicalPerms $op $arity $argLabels $nodePath)
+(= (sampleLogicalPerms $op $arity $argLabels $nodePath $siteKind $localChildren)
     (let*
         (
             ($swapedOp (swapAndOr $op))
@@ -117,15 +96,14 @@
             (if (<= $nPairs 1)
                 (let $arg (car-atom $argLabels) ($arg (NOT $arg)))  ;; assuming at worst case, only one argument is returned -- representation building process makes sure that those with empty feature set do not make it to actual knob building stage
                 (let* (($upperbound (- (* $arity (- $arity 1)) 1))
-                        ($picked (llmWeightedSelector 0 $upperbound $nPairs $idxPairs $argLabels $op $nodePath))
+                        ($picked (llmWeightedSelector 0 $upperbound $nPairs $idxPairs $argLabels $op $nodePath $siteKind $localChildren))
                         ($perms (collapse (getArgs $swapedOp $idxPairs $picked $argLabels))))
                    (concatT $argLabels $perms)))))
 
-;; Empty-path shim: callers that do not thread a node id draw without depth
-;; context (depth-conditioned entries never match); operator, polarity, and
-;; exemplar context remain live.
+(= (sampleLogicalPerms $op $arity $argLabels $nodePath)
+   (sampleLogicalPerms $op $arity $argLabels $nodePath exemplar_node ()))
 (= (sampleLogicalPerms $op $arity $argLabels)
-   (sampleLogicalPerms $op $arity $argLabels ()))
+   (sampleLogicalPerms $op $arity $argLabels () exemplar_node ()))
 
 (= (sampleStrategyPerms $op $arity $moveLabels $nodePath)
     (let*
@@ -139,7 +117,7 @@
             (let*
                 (
                     ($upperbound (- (length $idxPairs) 1))
-                    ($picked (llmWeightedSelector 0 $upperbound $nPairs $idxPairs $moveLabels $op $nodePath))
+                    ($picked (llmWeightedSelector 0 $upperbound $nPairs $idxPairs $moveLabels $op $nodePath exemplar_node ()))
                     ($perms (collapse (getMoveArgs $op $idxPairs $picked $moveLabels)))
                 )
                    $perms

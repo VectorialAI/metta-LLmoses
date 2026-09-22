@@ -1,10 +1,12 @@
 
 ;; LLMOSES entry-point for the expand-deme test suite.
-;; Mirror of deme/tests/expand-demes-test.metta with two differences:
-;;   1. All imports use root-relative paths (CWD = repo root when run via run.sh).
-;;   2. llmoses/utilities/state-emitter and llmoses/deme/expand-deme replace the
+;; Overlay of deme/tests/expand-demes-test.metta:
+;;   1. Imports are root-relative (CWD = repo root when run via run.sh).
+;;   2. llmoses/wrapper/state-builder and llmoses/deme/expand-deme replace the
 ;;      upstream versions (runMosesLoop-aware).
-;; All fixture definitions and assertEqual tests are identical to the upstream file.
+;; Dead upstream fixtures that no live assertEqual referenced (metaPop, ortable,
+;; orttable, bigtable*) were removed; xortable is kept because expand-example
+;; extracts the commented XOR block.
 ;; ── generic utilities ────────────────────────────────────────────────────
 !(import! &self utilities/general-helpers)
 !(import! &self llmoses/utilities/general-helpers)
@@ -53,8 +55,8 @@
 !(import! &self representation/logical-probe)
 !(import! &self representation/logical-canonize)
 !(import! &self llmoses/representation/sample-logical-perms)
-!(import! &self representation/add-logical-knobs)
-!(import! &self representation/build-logical)
+!(import! &self llmoses/representation/add-logical-knobs)
+!(import! &self llmoses/representation/build-logical)
 !(import! &self representation/build-knobs)
 !(import! &self representation/knob-mapper)
 !(import! &self llmoses/representation/representation)
@@ -62,6 +64,7 @@
 !(import! &self representation/instance)
 
 ;; ── example-specific scoring/game code ───────────────────────────────────
+!(import! &self scoring/strategy-score-cache)
 !(import! &self examples/tic-tac-toe/tic-tac-toe-helpers)
 !(import! &self examples/tic-tac-toe/random-player)
 !(import! &self examples/tic-tac-toe/minimax-player)
@@ -72,12 +75,12 @@
 
 ;; Scorers reference representation and strategy definitions during PeTTa
 ;; specialization, so keep the upstream import order.
-!(import! &self scoring/strategy-score-cache)
 !(import! &self scoring/cacheSpace)
 !(import! &self scoring/fitness)
 !(import! &self llmoses/scoring/bscore)
 !(import! &self llmoses/scoring/cscore)
 !(import! &self llmoses/scoring/complexity-based-scorer)
+!(import! &self llmoses/wrapper/extractors)
 
 ;; ── optimizers ───────────────────────────────────────────────────────────
 !(import! &self optimization/hillclimbing/cross-top-one-helpers)
@@ -97,13 +100,11 @@
 !(import! &self llmoses/deme/merge-demes)
 
 ;; ── llmoses wrapper / run layer ──────────────────────────────────────────
-!(import! &self llmoses/utilities/state-emitter)
-!(import! &self llmoses/deme/expand-deme)
-!(import! &self llmoses/wrapper/extractors)
 !(import! &self llmoses/wrapper/state-builder)
+!(import! &self llmoses/deme/expand-deme)
 
 ;; ── demo data last ───────────────────────────────────────────────────────
-!(import! &self moses/demo-problems)
+!(import! &self llmoses/moses/demo-problems)
 
 !(callPredicate (Predicate (consult "moses/tests/rte-helpers-fast.pl")))
 
@@ -122,20 +123,6 @@
                          (cons (cons True (cons True (cons True ()))) ()))))
                          (cons A (cons B (cons O ())))))
 
-(= (ortable) (eval (createTruthTableBScore 2 (mkITable
-                         (cons (cons False (cons False (cons False ())))
-                         (cons (cons True (cons False (cons True ())))
-                         (cons (cons False (cons True (cons True ())))
-                         (cons (cons True (cons True (cons True ()))) ()))))
-                         (cons A (cons B (cons O ())))))))
-
-(= (orttable) (mkITable
-                         (cons (cons False (cons False (cons False ())))
-                         (cons (cons True (cons False (cons True ())))
-                         (cons (cons False (cons True (cons True ())))
-                         (cons (cons True (cons True (cons True ()))) ()))))
-                         (cons A (cons B (cons O ())))))
-
 (= (xortable) (mkITable
                          (cons (cons False (cons False (cons False ())))
                          (cons (cons True (cons False (cons True ())))
@@ -146,52 +133,6 @@
 ;; (= (metaPop2) (cons (mkExemplar (mkTree (mkNode AND) ()) (mkDemeId "1") (eval (worstCscore)) (mkBScore (cons -1 (cons -1 ())))) ()))
 ;; (= (metaPop2) (cons (mkExemplar (mkTree (mkNode AND) ()) (mkDemeId "1") (eval (worstCscore)) (mkBScore (cons -1 (cons -1 (cons -1 (cons -1 ())))))) ()))
 (= (metaPop2) (cons (mkExemplar (mkTree (mkNode AND) ()) (mkDemeId "1") (mkCscore -4 2 1.0 0.0 -4.0) (mkBScore  (cons -1 (cons -1 (cons -1 (cons -1 ())))))) ()))
-
-(= (metaPop) (cons (mkExemplar (mkTree (mkNode OR) (cons (mkTree (mkNode NOT) (cons (mkTree (mkNode A) ()) ())) (cons (mkTree (mkNode OR) (cons (mkTree (mkNode AND) (cons (mkTree (mkNode B) ()) ())) (cons (mkTree (mkNode AND) (cons (mkTree (mkNode C) ()) ())) (cons (mkTree (mkNode AND) (cons (mkTree (mkNode D) ()) ())) ())))) ()))) (mkDemeId "1") (mkCscore -0.2 1 0.1 0.1 -0.4) (mkBScore (cons 0 (cons 0 (cons 0 (cons 0 ()))))))
-                 (cons (mkExemplar (mkTree (mkNode OR) (cons (mkTree (mkNode OR) (cons (mkTree (mkNode AND) (cons (mkTree (mkNode B) ()) ())) (cons (mkTree (mkNode AND) (cons (mkTree (mkNode C) ()) ())) (cons (mkTree (mkNode AND) (cons (mkTree (mkNode D) ()) ())) ())))) ())) (mkDemeId "1") (mkCscore -0.1 2 0.2 0.3 -0.6) (mkBScore (cons 0 (cons 0 (cons 0 (cons 0 ()))))))
-                 ())))
-
-(= (bigtable) (mkITable
-                        (cons (cons True  (cons False (cons True  (cons False (cons True  (cons True  ()))))))
-                        (cons (cons False (cons True  (cons True  (cons False (cons False (cons False ()))))))
-                        (cons (cons True  (cons True  (cons False (cons True  (cons True  (cons True  ()))))))
-                        (cons (cons False (cons False (cons True  (cons True  (cons False (cons False ()))))))
-                        (cons (cons True  (cons False (cons False (cons True  (cons True  (cons True  ()))))))
-                        (cons (cons False (cons True  (cons False (cons False (cons False (cons False ()))))))
-                        (cons (cons True  (cons True  (cons True  (cons False (cons True  (cons True  ()))))))
-                        (cons (cons False (cons False (cons False (cons True  (cons False (cons False ()))))))
-                        (cons (cons True  (cons True  (cons False (cons False (cons True  (cons True  ()))))))
-                        (cons (cons False (cons True  (cons True  (cons True  (cons False (cons False ()))))))
-                        (cons (cons True  (cons False (cons True  (cons True  (cons True  (cons True  ()))))))
-                        (cons (cons False (cons False (cons False (cons False (cons False (cons False ()))))))
-                        (cons (cons True  (cons True  (cons True  (cons True  (cons True  (cons True  ()))))))
-                        (cons (cons False (cons False (cons True  (cons False (cons False (cons False ()))))))
-                        (cons (cons True  (cons False (cons False (cons False (cons True  (cons True  ()))))))
-                        (cons (cons False (cons True  (cons False (cons True  (cons False (cons False ())))))) ()))))))))))))))))
-
-                        (cons A (cons B (cons C (cons D (cons E (cons T ()))))))))
-;; truthTableBScore for  bigtable
-(= (bigtablet) (eval (createTruthTableBScore 2 (bigtable))))
-
-(= (bigtable2) (mkITable
-                        (cons (cons True  (cons False (cons True  (cons False (cons True  (cons True  ()))))))
-                        (cons (cons False (cons True  (cons False (cons True  (cons False (cons False ()))))))
-                        (cons (cons True  (cons True  (cons True  (cons False (cons False (cons True  ()))))))
-                        (cons (cons False (cons False (cons True  (cons True  (cons True  (cons True  ()))))))
-                        (cons (cons True  (cons False (cons False (cons True  (cons True  (cons False ()))))))
-                        (cons (cons False (cons True  (cons True  (cons True  (cons False (cons True  ()))))))
-                        (cons (cons True  (cons True  (cons False (cons False (cons True  (cons True  ()))))))
-                        (cons (cons False (cons False (cons False (cons True  (cons False (cons False ()))))))
-                        (cons (cons True  (cons True  (cons True  (cons True  (cons True  (cons True  ()))))))
-                        (cons (cons False (cons True  (cons False (cons False (cons True  (cons False ()))))))
-                        (cons (cons True  (cons False (cons True  (cons True  (cons False (cons True  ()))))))
-                        (cons (cons False (cons False (cons True  (cons False (cons True  (cons False ()))))))
-                        (cons (cons True  (cons True  (cons False (cons True  (cons False (cons True  ()))))))
-                        (cons (cons False (cons True  (cons True  (cons False (cons True  (cons True  ()))))))
-                        (cons (cons True  (cons False (cons False (cons False (cons False (cons False ()))))))
-                        (cons (cons False (cons False (cons False (cons True  (cons True  (cons True  ())))))) ()))))))))))))))))
-
-                        (cons A (cons B (cons C (cons D (cons E (cons T ()))))))))
 
 ;; (: isScored (-> (ScoredInstance Cscore) Bool))
 (= (isScored (mkSInst (mkPair $instance $score))) (~= $score (eval (worstCscore))))
@@ -325,17 +266,6 @@
 ;;    $newR
 ;;  )
 ;;
-;; Empty strategy metapop -  empty PRIORITIZED-OR with worst CScore
-;; this empty strategy can be used as a starting point to evolve better strategy
-(= (emptyStrategyMetaPop)
-   (cons
-     (mkExemplar
-       (mkTree (mkNode PRIORITIZED-OR) ())  ;;  empty - no children
-       (mkDemeId "0")
-       (eval (worstCscore))  ;; Worst CScore
-       (mkBScore (cons -10000.0 ())))
-     ()))
-
 ;; metapop for testing
 (= (strategyMetaPop)
    (cons

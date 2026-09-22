@@ -65,6 +65,7 @@ RUNS_ROOT="$OUTPUT_ROOT/runs"
 RUN_DIR="$RUNS_ROOT/$RUN_ID"
 LOGDIR="${LOGDIR_OVERRIDE:-$OUTPUT_ROOT/logs}"
 DRIVER_DIR="$REPO/llmoses/llmoses-tests"
+VERIFY_PY="$REPO/llmoses/llmoses-tests/live_agent_verify.py"
 mkdir -p "$LOGDIR" "$RUN_DIR" "$DRIVER_DIR"
 
 METTA_CASES=(
@@ -161,18 +162,27 @@ cleanup_driver() {
   [[ "$KEEP_DRIVER" -eq 0 ]] && rm -f "$driver"
 }
 
+# Protocol 2 refuses to start without an explicit experiment config
+# (selection_temperature is required). Default to the closure config, in which
+# every lever is off, so native smoke runs need no extra setup.
+export LLMOSES_CONFIG="${LLMOSES_CONFIG:-$REPO/llmoses/configs/m2-closure.json}"
+
 run_traced() {
   local stem="$1"
   shift
   [[ "${1:-}" == "--" ]] && shift
   local log="$LOGDIR/${stem}-${RUN_ID}.log"
   local rc=0
+  # Protocol-2 state and native logs belong to one case. Off runs deliberately
+  # emit no agent action JSON or ready sentinels; retain artifacts in place.
+  local case_run_dir="$RUN_DIR/$stem"
+  mkdir "$case_run_dir" || return 2
   if [[ "$TRACE" == "full" ]]; then
-    (cd "$REPO" && LLMOSES_RUN_ID="$RUN_ID" "$@") 2>&1 | tee "$log" || rc=${PIPESTATUS[0]}
+    (cd "$REPO" && LLMOSES_RUN_ID="$RUN_ID" LLMOSES_RUN_DIR="$case_run_dir" "$@") 2>&1 | tee "$log" || rc=${PIPESTATUS[0]}
   else
     local tmp
     tmp="$(mktemp)"
-    (cd "$REPO" && LLMOSES_RUN_ID="$RUN_ID" "$@") >"$tmp" 2>&1 || rc=$?
+    (cd "$REPO" && LLMOSES_RUN_ID="$RUN_ID" LLMOSES_RUN_DIR="$case_run_dir" "$@") >"$tmp" 2>&1 || rc=$?
     case "$TRACE" in
       partial)
         head -n "$HEAD_N" "$tmp" || true
@@ -208,7 +218,7 @@ list_cases() {
   done
   echo "  metta all"
   echo
-  echo "State/action JSON cases:"
+  echo "Protocol-2 state cases (native, no agent actions):"
   for c in "${STATE_CASES[@]}"; do
     echo "  state $c [$(strategy_state_tier "$c")]"
   done
@@ -246,183 +256,11 @@ EOF
   return "$rc"
 }
 
-reset_native_emission() {
-  mkdir -p "$RUN_DIR/state" "$RUN_DIR/action" "$RUN_DIR/ready"
-  find "$RUN_DIR/state"  -maxdepth 1 -type d -name 'run-*' -exec rm -rf {} + 2>/dev/null || true
-  find "$RUN_DIR/action" -maxdepth 1 -type d -name 'run-*' -exec rm -rf {} + 2>/dev/null || true
-  find "$RUN_DIR/ready"  -maxdepth 1 -type f -name 'run-*-step-*' -delete 2>/dev/null || true
-}
-
-validate_case_json() {
+verify_state_artifacts() {
   local case_name="$1" expected_gens="$2" expected_demes="$3"
-  python3 - "$RUN_DIR" "$case_name" "$expected_gens" "$expected_demes" <<'PY'
-import json, sys
-from pathlib import Path
-run_dir = Path(sys.argv[1])
-case = sys.argv[2]
-expected_gens = int(sys.argv[3])
-expected_demes = int(sys.argv[4])
-state_dir = run_dir / "state" / case
-action_dir = run_dir / "action" / case
-ready_dir = run_dir / "ready" / case
-
-def fail(msg):
-    print(f"FAIL_SCHEMA: {msg}", file=sys.stderr)
-    sys.exit(1)
-
-if not state_dir.is_dir(): fail(f"missing archived state dir {state_dir}")
-if not action_dir.is_dir(): fail(f"missing archived action dir {action_dir}")
-if not ready_dir.is_dir(): fail(f"missing archived ready dir {ready_dir}")
-
-steps = []
-actions = []
-run_config_path = state_dir / "run_config.json"
-if not run_config_path.exists():
-    fail(f"missing run_config.json in {state_dir}")
-with run_config_path.open() as fh:
-    rc = json.load(fh)
-if rc.get("record_type") != "run_config":
-    fail("run_config record_type mismatch")
-ps = rc.get("problem_spec", {})
-if ps.get("problem_type") != "strategy":
-    fail("run_config problem_spec not strategy")
-if not ps.get("moves"):
-    fail("missing strategy moves in run_config")
-if ps.get("n_games") is None:
-    fail("missing n_games in run_config problem_spec")
-if ps.get("opponent_policy") in (None, "", "None"):
-    fail("missing opponent_policy in run_config")
-if ps.get("complexity_ratio") is None:
-    fail("missing problem_spec complexity_ratio in run_config")
-alphabet = rc.get("atom_alphabet", {})
-if alphabet.get("prefix") != "move":
-    fail("run_config atom_alphabet prefix not move")
-if not alphabet.get("atoms"):
-    fail("missing atom_alphabet atoms in run_config")
-rp = rc.get("run_parameters", {})
-if rp.get("problem_type") != "strategy":
-    fail("run_config run_parameters.problem_type not strategy")
-if rp.get("complexity_ratio") is None:
-    fail("missing run_parameters complexity_ratio in run_config")
-levers = rc.get("active_levers", [])
-for need in ("exemplar_selection", "culling", "atom_evidence", "complexity_ratio", "comparator_hook"):
-    if need not in levers:
-        fail(f"missing active_lever {need} in run_config")
-if rc.get("comparator_hook_available") is not True:
-    fail("run_config comparator_hook_available not true")
-
-for g in range(1, expected_gens + 1):
-    sp = state_dir / f"step-{g}.json"
-    ap = action_dir / f"step-{g}.json"
-    if not sp.exists(): fail(f"missing {sp}")
-    if not ap.exists(): fail(f"missing {ap}")
-    with sp.open() as fh: s = json.load(fh)
-    with ap.open() as fh: a = json.load(fh)
-    steps.append(s)
-    actions.append(a)
-    if s.get("generation") != g: fail(f"state generation mismatch in step-{g}")
-    if a.get("generation") != g: fail(f"action generation mismatch in step-{g}")
-    if s.get("problem_type") != "strategy": fail(f"state problem_type not strategy in step-{g}")
-    if a.get("problem_type") != "strategy": fail(f"action problem_type not strategy in step-{g}")
-    for static_key in ("problem_spec", "run_parameters", "active_levers", "comparator_hook_available"):
-        if static_key in s:
-            fail(f"static key {static_key} must not appear in per-step state step-{g}")
-    if "active_levers" in a:
-        fail(f"active_levers must not appear in per-step action step-{g}")
-    for removed in ("selected_program_id", "selection_status", "selection_detail"):
-        if removed in a:
-            fail(f"realized selection field {removed} must not appear in action step-{g}")
-    metapop = s.get("metapopulation", {})
-    if metapop.get("best_penalized_score") is None:
-        fail(f"missing metapopulation.best_penalized_score in state step-{g}")
-    ae = s.get("atom_evidence")
-    if not isinstance(ae, dict):
-        fail(f"missing atom_evidence in state step-{g}")
-    for key in ("atom_appearances", "realized_cooccurrences", "atom_cumulative", "degenerate_summary"):
-        if key not in ae:
-            fail(f"missing atom_evidence.{key} in state step-{g}")
-    demes = s.get("demes", [])
-    if len(demes) < expected_demes: fail(f"expected at least {expected_demes} demes in step-{g}, got {len(demes)}")
-    saw_strategy_knob = False
-    for d in demes:
-        if "operator_inclusion_set" in d:
-            fail(f"operator_inclusion_set must not appear in deme step-{g}")
-        kb = d.get("knob_type_breakdown", {})
-        if kb.get("boolean", 0) != 0: fail(f"boolean knobs present in strategy deme step-{g}: {kb}")
-        for k in d.get("knobs", []):
-            if k.get("kind") == "strategy":
-                saw_strategy_knob = True
-                if k.get("multiplicity") != 2: fail(f"strategy knob multiplicity not 2 in step-{g}: {k}")
-    if not saw_strategy_knob: fail(f"no SSK/strategy knobs found in step-{g}")
-    ms = s.get("merge_summary")
-    if not isinstance(ms, dict): fail(f"missing merge_summary in step-{g}")
-    rz = ms.get("resize_cull")
-    if not isinstance(rz, dict): fail(f"missing merge_summary.resize_cull in step-{g}")
-    for key in ("incumbents", "survivors", "culled", "new_entrants"):
-        if key not in rz: fail(f"missing resize_cull.{key} in step-{g}")
-    post = s.get("moses_native_events", {}).get("post_selection")
-    if post is None: fail(f"missing post_selection in step-{g}")
-    if post.get("selection_status") not in ("ok", "no_selection"):
-        fail(f"bad selection_status in step-{g}: {post.get('selection_status')}")
-    cands = a.get("exemplar_candidates", [])
-    if not cands: fail(f"no action exemplar_candidates in step-{g}")
-    if "culling_candidates" not in a:
-        fail(f"missing culling_candidates in action step-{g}")
-    cr = a.get("complexity_ratio", {})
-    if not cr.get("options"):
-        fail(f"missing complexity_ratio.options in action step-{g}")
-
-terminal = state_dir / "terminal.json"
-if not terminal.exists(): fail(f"missing terminal {terminal}")
-with terminal.open() as fh: t = json.load(fh)
-if t.get("record_type") != "terminal": fail("terminal record_type mismatch")
-if t.get("problem_spec", {}).get("problem_type") != "strategy": fail("terminal problem_spec not strategy")
-if t.get("run_parameters", {}).get("problem_type") != "strategy": fail("terminal run_parameters not strategy")
-ready_files = list(ready_dir.glob("run-*-step-*"))
-if len(ready_files) < expected_gens: fail(f"expected at least {expected_gens} ready sentinels, got {len(ready_files)}")
-print(f"PASS_SCHEMA: {case} ({expected_gens} steps, {len(ready_files)} ready sentinels)")
-PY
-}
-
-archive_state_case() {
-  local case_name="$1" expected_gens="$2" expected_demes="$3"
-  local state_run action_run
-  state_run="$(find "$RUN_DIR/state" -maxdepth 1 -type d -name 'run-*' | sort | tail -n1)"
-  action_run="$(find "$RUN_DIR/action" -maxdepth 1 -type d -name 'run-*' | sort | tail -n1)"
-  local state_case="$RUN_DIR/state/$case_name"
-  local action_case="$RUN_DIR/action/$case_name"
-  local ready_case="$RUN_DIR/ready/$case_name"
-
-  if [[ ! -d "$state_run" || ! -d "$action_run" ]]; then
-    echo "FAIL_ARCHIVE: native dirs absent; state=$state_run action=$action_run" >&2
-    echo "Run dir probe:" >&2
-    find "$RUN_DIR" -maxdepth 3 -print 2>/dev/null | sort >&2 || true
-    return 1
-  fi
-  if ! compgen -G "$state_run/*.json" >/dev/null; then
-    echo "FAIL_ARCHIVE: native state dir contains no JSON: $state_run" >&2
-    find "$RUN_DIR" -maxdepth 3 -print 2>/dev/null | sort >&2 || true
-    return 1
-  fi
-  if ! compgen -G "$action_run/*.json" >/dev/null; then
-    echo "FAIL_ARCHIVE: native action dir contains no JSON: $action_run" >&2
-    find "$RUN_DIR" -maxdepth 3 -print 2>/dev/null | sort >&2 || true
-    return 1
-  fi
-
-  rm -rf "$state_case" "$action_case" "$ready_case"
-  mkdir -p "$state_case" "$action_case" "$ready_case"
-  cp -a "$state_run"/. "$state_case"/
-  cp -a "$action_run"/. "$action_case"/
-  find "$RUN_DIR/ready" -maxdepth 1 -type f -name 'run-*-step-*' -exec cp -a {} "$ready_case"/ \; 2>/dev/null || true
-
-  validate_case_json "$case_name" "$expected_gens" "$expected_demes" || return $?
-
-  rm -rf "$state_run" "$action_run"
-  find "$RUN_DIR/ready" -maxdepth 1 -type f -name 'run-*-step-*' -delete 2>/dev/null || true
-  echo "Archived state:  $state_case"
-  echo "Archived action: $action_case"
-  echo "Archived ready:  $ready_case"
+  local case_run_dir="$RUN_DIR/strategy-state-${case_name}"
+  python3 "$VERIFY_PY" --smoke "$case_run_dir" --problem-type strategy \
+    --expect-gens "$expected_gens" --expect-demes "$expected_demes"
 }
 
 run_state_case() {
@@ -434,24 +272,23 @@ run_state_case() {
   driver_rel="$(make_driver_name state "$case_name")"
   driver="$REPO/$driver_rel"
   cat > "$driver" <<EOF
-;; AUTO-GENERATED strategy state/action driver.
+;; AUTO-GENERATED strategy protocol-2 state driver.
 !(import! &self $TEST_REL)
 !(println! "================ strategy-state run: $case_name begin ================")
 !(println! (strategy-state-result-size $case_name ($fn)))
 !(println! "================ strategy-state run: $case_name end ==================")
 EOF
 
-  reset_native_emission
   echo "Running state strategy case: $case_name"
   echo "Using LLMOSES_RUN_ID=$RUN_ID"
-  echo "Native run dir: $RUN_DIR"
+  echo "Native run dir: $RUN_DIR/strategy-state-${case_name}"
   run_traced "strategy-state-${case_name}" -- "$RUN_SH" "$driver_rel" || rc=$?
   cleanup_driver "$driver"
   if [[ "$rc" -ne 0 ]]; then
     echo "FAIL_DRIVER: PeTTa exited with $rc for state case $case_name" >&2
     return "$rc"
   fi
-  archive_state_case "$case_name" "$expected_gens" "$expected_demes"
+  verify_state_artifacts "$case_name" "$expected_gens" "$expected_demes"
 }
 
 run_metta_all() {

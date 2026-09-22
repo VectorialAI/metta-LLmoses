@@ -23,8 +23,8 @@ def extract_and_print(result, path, idx) -> bool:
     """
     Extracts the output from the test execution result and prints the status.
     """
-    # Always use stdout for petta output
-    output = result.stdout if result.stdout else result.stderr
+    # Keep bridge failures on stderr alongside PeTTa's compilation diagnostics.
+    output = result.stdout + ("\n" + result.stderr if result.stderr else "")
     extracted = output.strip()  # Remove any leading/trailing whitespace
 
     with open(path, "r") as test_file:
@@ -69,6 +69,13 @@ def run_test_file(test_file):
         # Create a clean environment with bash as default shell
         env = os.environ.copy()
         env["SHELL"] = "/bin/bash"
+        # Match the smoke runners' explicit M2 baseline without changing native
+        # tests or overriding an operator-supplied config/temperature.
+        repo = pathlib.Path(__file__).resolve().parents[1]
+        if (pathlib.Path(test_file).resolve().is_relative_to(repo / "llmoses")
+                and "LLMOSES_CONFIG" not in env
+                and "LLMOSES_SELECTION_TEMPERATURE" not in env):
+            env["LLMOSES_CONFIG"] = str(repo / "llmoses/configs/m2-closure.json")
 
         # Full path to the run.sh script
         run_sh_path = shutil.which("run.sh")

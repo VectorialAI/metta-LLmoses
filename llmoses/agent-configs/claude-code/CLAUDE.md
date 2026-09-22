@@ -22,12 +22,12 @@ Do not rely on hooks for liveness. The responder must retain write access to the
 run directory. Repeatedly `wait`; on each ready event, read the emitted state,
 action, and run config, then request `history` with the strategy named by
 `LLMOSES_CONTEXT_STRATEGY`. Use `slots`, reason from real artifacts, preserve a
-concise rationale, and call `respond` with flat slot values and `--history FILE`
+concise rationale, and call `respond` with call-specific slot values (structured policy at Call 3) and `--history FILE`
 (the saved `history` output you reasoned over, so context instrumentation is
 measured rather than asserted). The tool enforces
 the utilities → trace → response sentinel → consumed-ready ordering.
 
-Never leave a generation unanswered, and never fabricate ids: when the tool
+Never leave a call unanswered, and never fabricate ids: when the tool
 reports an unknown slot, fix the values and retry. Use status 204 only for a
 deliberate abstention. If `capture_status.ok` is false, issue `abstain` with
 status 422. If the run cannot be salvaged, use `abort` with a reason.

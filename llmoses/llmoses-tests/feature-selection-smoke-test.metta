@@ -20,7 +20,7 @@
 !(import! &self utilities/lazy-random-selector)
 !(import! &self utilities/lru-cache)
 
-!(import! &self scoring/cscore)                             ;; mkCscore needed by rankFtSet
+!(import! &self llmoses/scoring/cscore)                             ;; mkCscore needed by rankFtSet
 
 !(import! &self feature-selection/feature-selection-helpers)
 !(import! &self llmoses/feature-selection/similarity-scorers)       ;; LLMOSES fork: union-free jaccardIndex

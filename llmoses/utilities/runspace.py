@@ -54,7 +54,7 @@ def bootstrap(llmoses_dir, version):
 
 
 def ensure_context_docs(llmoses_dir, run_id, run_dir, run_seq=None,
-                        problem_type=None, problem_spec=None, active_levers=None):
+                        problem_type=None, problem_spec=None, active_levers=None, experiment=None):
     """run-local guide generation; records failures to a per-run sidecar"""
     if context_docs is None:
         return
@@ -62,7 +62,7 @@ def ensure_context_docs(llmoses_dir, run_id, run_dir, run_seq=None,
         context_docs.ensure_output_context(
             llmoses_dir, run_id, run_dir,
             run_seq=run_seq, problem_type=problem_type,
-            problem_spec=problem_spec, active_levers=active_levers,
+            problem_spec=problem_spec, active_levers=active_levers, experiment=experiment,
         )
     except Exception:
         _record_ctx_failure(run_dir)

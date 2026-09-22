@@ -3,10 +3,21 @@
 Two entry points:
   build_atom_alphabet(problem_spec, ptype) -> (alphabet_block, alpha_map)
   build_atom_evidence(members, g, ptype, gen_best, alpha_map, cumulative,
-                      version, run_seq) -> (evidence_block, lossless_block_or_None)
-"""
-import os
+                      version, run_seq) -> (evidence_block, lossless_block, rollup)
 
+Contract (spec P7, reversal #21):
+  * `evidence_block` is agent-facing and carries counts with their totals only:
+    aggregated appearances / cooccurrences keyed by (atom, polarity, clause_type),
+    the run-scoped cumulative accumulator, and the degenerate-clause tallies.
+    It never carries a depth band or a score summary.
+  * `lossless_block` is agent-facing and ALWAYS populated: one event per raw
+    clause member / clause with exact `depth`, `clause_type`, `node_ref`, plus
+    per-program `tree_max_depth` and `node_count` so depth can be normalized
+    by the agent against the tree it came from.
+  * `rollup` is operator-facing (native log only): depth-band histograms and
+    per-bucket penalized-score summaries. These are the D-DISC-011 / W2
+    roll-ups that were retired from the state document.
+"""
 from boundary import _flat
 
 #   problem_type-keyed config
@@ -18,11 +29,6 @@ _PROBLEM_CONFIG = {
     "strategy": {"ops": {"PRIORITIZED-OR"},   "ordered": True,  "contradiction": False},
 }
 _DEFAULT_CONFIG = {"ops": {"AND", "OR"}, "ordered": False, "contradiction": True}
-
-# Turn on to write the raw per-event appearance/cooccurrence lists
-# Useful for debug or potentially ablation studies
-_ATOM_LOSSLESS = os.environ.get("LLMOSES_ATOM_LOSSLESS", "").strip().lower() in (
-    "1", "true", "yes", "on")
 
 
 def atom_label_resolver(alphabet_block):
@@ -101,13 +107,38 @@ def _peel_modifier(node):
 
 
 def _depth_bucket(d):
-    """Collapse exact clause depth into bounded bands (the agent levers on bands,
-    and raw depth shatters the keyspace). 0 -> shallow, 1-2 -> mid, 3+ -> deep."""
+    """Operator-log roll-up only (D-DISC-011 retired it from the state doc):
+    0 -> shallow, 1-2 -> mid, 3+ -> deep."""
     if d <= 0:
         return "shallow"
     if d <= 2:
         return "mid"
     return "deep"
+
+
+def _tree_stats(ast, ops):
+    """Per-program bounds for the raw depth events: (max_clause_depth,
+    node_count). Clause depth counts clause-op nesting from the root clause
+    (root = 0), the same unit the lossless events report in `depth`; a tree
+    that is not a clause has max depth 0. node_count counts every AST node
+    (clause ops, NOT wrappers, and leaves)."""
+    stats = {"max_depth": 0, "count": 0}
+
+    def visit(node, cdepth):
+        stats["count"] += 1
+        if not isinstance(node, list):
+            return
+        if _is_clause_op(node, ops):
+            stats["max_depth"] = max(stats["max_depth"], cdepth)
+            for child in node[1:]:
+                visit(child, cdepth + 1)
+        else:
+            # NOT wrapper or an unknown head: does not add clause depth.
+            for child in node[1:]:
+                visit(child, cdepth)
+
+    visit(ast, 0)
+    return stats["max_depth"], stats["count"]
 
 
 def _canonical_members(members, ordered):
@@ -124,8 +155,8 @@ def _coocc_key(members):
 
 
 def _score_summary(scores, gen_best, eps=1e-9):
-    """Summarize a bucket's host-program penalized scores. n_best_tier counts
-    distinct hosts sitting at the generation's best_penalized_score."""
+    """Operator-log roll-up only. Summarize a bucket's host-program penalized
+    scores; n_best_tier counts hosts at the generation's best_penalized_score."""
     vals = [s for s in scores if isinstance(s, (int, float))]
     if not vals:
         return {"mean_penalized": None, "best_penalized": None, "n_best_tier": 0}
@@ -163,8 +194,8 @@ def _normalize_clause(raw_members, cfg, degen):
 
 def _walk_member(tree_ast, cfg, alpha_map, pid, pen, acc):
     """Walk one candidate AST, feeding the appearance/cooccurrence/degenerate
-    accumulators directly (no intermediate per-event lists, except the optional
-    lossless raw lists). See build_atom_evidence for accumulator shapes."""
+    accumulators and the always-on raw event lists. See build_atom_evidence
+    for accumulator shapes."""
     ops, ordered = cfg["ops"], cfg["ordered"]
     app, co, degen = acc["app"], acc["co"], acc["degen"]
 
@@ -185,37 +216,37 @@ def _walk_member(tree_ast, cfg, alpha_map, pid, pen, acc):
         bucket = _depth_bucket(depth)
 
         # Lossless raw events: pre-normalization, mirrors the un-aggregated walk.
-        if _ATOM_LOSSLESS:
-            for m in raw_members:
-                acc["raw_app"].append({
-                    "atom_index": m["atom_index"], "atom_label": m["atom_label"],
-                    "polarity": m["polarity"], "score_ref": pid,
-                    "clause_type": op, "parent_operator": op,
-                    "depth": depth, "node_ref": m["node_ref"],
-                    "clause_adjacent": has_nested})
-            if len(raw_members) >= 2:
-                ordered_raw = _canonical_members(raw_members, ordered)
-                acc["raw_co"].append({
-                    "members": [{"atom": m["atom_key"], "polarity": m["polarity"]}
-                                for m in ordered_raw],
-                    "key": _coocc_key(ordered_raw), "score_ref": pid,
-                    "clause_type": op, "parent_operator": op,
-                    "depth": depth, "node_ref": node_ref,
-                    "clause_adjacent": has_nested})
+        # `depth` is exact clause depth; the bound lives in programs[pid].
+        for m in raw_members:
+            acc["raw_app"].append({
+                "atom_index": m["atom_index"], "atom_label": m["atom_label"],
+                "atom": m["atom_key"], "polarity": m["polarity"],
+                "score_ref": pid, "clause_type": op,
+                "depth": depth, "node_ref": m["node_ref"],
+                "clause_adjacent": has_nested})
+        if len(raw_members) >= 2:
+            ordered_raw = _canonical_members(raw_members, ordered)
+            acc["raw_co"].append({
+                "members": [{"atom": m["atom_key"], "polarity": m["polarity"]}
+                            for m in ordered_raw],
+                "key": _coocc_key(ordered_raw), "score_ref": pid,
+                "clause_type": op, "depth": depth, "node_ref": node_ref,
+                "clause_adjacent": has_nested})
 
         distinct, degenerate = _normalize_clause(raw_members, cfg, degen)
 
-        # dedupe distinct members even in a degenerate clause 
+        # Aggregate distinct members even in a degenerate clause.
         for m in distinct:
-            ak = (m["atom_key"], m["polarity"], op, op, bucket)
+            ak = (m["atom_key"], m["polarity"], op)
             b = app.get(ak)
             if b is None:
                 b = app[ak] = {"atom": m["atom_key"], "polarity": m["polarity"],
-                               "clause_type": op, "parent_operator": op,
-                               "depth_bucket": bucket, "count": 0,
-                               "programs": {}, "clause_adjacent": 0}
+                               "clause_type": op, "count": 0,
+                               "programs": {}, "clause_adjacent": 0,
+                               "depth_buckets": {}}
             b["count"] += 1
             b["programs"][pid] = pen
+            b["depth_buckets"][bucket] = b["depth_buckets"].get(bucket, 0) + 1
             if has_nested:
                 b["clause_adjacent"] += 1
 
@@ -244,44 +275,58 @@ def build_atom_evidence(members, g, ptype, gen_best, alpha_map, cumulative,
                         version, run_seq):
     """Drive the normalize -> aggregate pass over the retained metapop members
     for generation g, update the run-scoped cumulative accumulator (mutated in
-    place), and finalize rollup records. Returns (evidence_block, lossless|None)."""
+    place), and finalize records. Returns (evidence_block, lossless_block, rollup):
+    the first two go into the Call 4 state document, the third to the native log."""
     cfg = _PROBLEM_CONFIG.get(ptype, _DEFAULT_CONFIG)
     acc = {"app": {}, "co": {},
            "degen": {"contradiction_dropped": 0, "repeats_collapsed": 0},
            "raw_app": [], "raw_co": []}
+    programs = {}
+    n_walked = 0
     for m in members:
         ast = m.get("tree_ast")
         if ast is None:
             continue
+        pid = m["program_id"]
         pen = m.get("cscore", {}).get("penalized_score")
-        _walk_member(ast, cfg, alpha_map, m["program_id"], pen, acc)
+        max_depth, node_count = _tree_stats(ast, cfg["ops"])
+        programs[pid] = {"tree_max_depth": max_depth, "node_count": node_count}
+        n_walked += 1
+        _walk_member(ast, cfg, alpha_map, pid, pen, acc)
 
-    # Appearance buckets drop per-program score duplication: emit n_programs cardinality + a score summary
-    appearances = []
+    # Agent-facing aggregates: counts with their totals, nothing derived.
+    appearances, app_rollup = [], []
     for b in acc["app"].values():
         progs = b["programs"]
         appearances.append({
             "atom": b["atom"], "polarity": b["polarity"],
-            "clause_type": b["clause_type"], "parent_operator": b["parent_operator"],
-            "depth_bucket": b["depth_bucket"],
+            "clause_type": b["clause_type"],
             "count": b["count"], "n_programs": len(progs),
             "clause_adjacent": b["clause_adjacent"],
+        })
+        app_rollup.append({
+            "atom": b["atom"], "polarity": b["polarity"], "clause_type": b["clause_type"],
+            "depth_buckets": b["depth_buckets"],
             "score": _score_summary(list(progs.values()), gen_best),
         })
-    appearances.sort(key=lambda r: (r["atom"], r["polarity"], r["clause_type"],
-                                    r["depth_bucket"]))
+    appearances.sort(key=lambda r: (r["atom"], r["polarity"], r["clause_type"]))
+    app_rollup.sort(key=lambda r: (r["atom"], r["polarity"], r["clause_type"]))
 
-    cooccurrences = []
+    cooccurrences, co_rollup = [], []
     for c in acc["co"].values():
         progs = c["programs"]
         cooccurrences.append({
             "key": c["key"], "members": c["members"], "width": c["width"],
             "ordered": c["ordered"], "clause_type": c["clause_type"],
             "count": c["count"], "n_programs": len(progs),
+        })
+        co_rollup.append({
+            "key": c["key"], "clause_type": c["clause_type"],
             "depth_buckets": c["depth_buckets"],
             "score": _score_summary(list(progs.values()), gen_best),
         })
     cooccurrences.sort(key=lambda r: (r["key"], r["clause_type"]))
+    co_rollup.sort(key=lambda r: (r["key"], r["clause_type"]))
 
     # Cumulative accumulator: per-alphabet-key totals across generations
     counts_this_gen = {}
@@ -297,14 +342,17 @@ def build_atom_evidence(members, g, ptype, gen_best, alpha_map, cumulative,
             rec["last_seen_gen"] = g
 
     evidence = {
+        "n_programs_total": n_walked,
         "atom_appearances": appearances,
         "realized_cooccurrences": cooccurrences,
         "atom_cumulative": {k: dict(v) for k, v in cumulative.items()},
         "degenerate_summary": acc["degen"],
     }
-    lossless = None
-    if _ATOM_LOSSLESS:
-        lossless = {"schema_version": version, "run_seq": run_seq, "generation": g,
-                    "atom_appearances": acc["raw_app"],
-                    "realized_cooccurrences": acc["raw_co"]}
-    return evidence, lossless
+    lossless = {"schema_version": version, "run_seq": run_seq, "generation": g,
+                "programs": programs,
+                "atom_appearances": acc["raw_app"],
+                "realized_cooccurrences": acc["raw_co"]}
+    rollup = {"generation": g, "gen_best": gen_best,
+              "atom_appearances": app_rollup,
+              "realized_cooccurrences": co_rollup}
+    return evidence, lossless, rollup

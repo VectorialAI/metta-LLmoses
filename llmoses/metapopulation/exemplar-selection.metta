@@ -1,21 +1,7 @@
-;; llmoses/metapopulation/exemplar-selection.metta
-;;
-;; LLMOSES fork of metapopulation/exemplar-selection.metta (import INSTEAD of
-;; the base file — never both, D-FSFORK). Phase II lever 1: exemplar selection.
-;;
-;; The native Boltzmann machinery is kept intact: getPnScore -> normalizeProbs
-;; produce the same native probability numerators. The only change is the draw
-;; site — instead of the MeTTa rouletteSelect, the fork streams
-;; (index, native-prob, tree) per member to Python (the proven sbEmitMembers
-;; pattern) and state_builder.select_index() performs the roulette there,
-;; applying the utility bias w' = w_native * (lam*u^(1/T) + (1-lam)) when the
-;; exemplar_selection lever is on. Lever off: same roulette over the same
-;; native numerators with the same process-wide RNG (random.random), so the
-;; off path is distribution-identical to native. Returns a scalar index; the
-;; exemplar is fetched MeTTa-side via OS.getByIdx.
-
+;; LLMOSES exemplar overlay: a separately configured native temperature,
+;; bounded score offsets, mix then sharpen, one native RNG draw at b=0.
 (= (NO_EXEMPLAR) "empty metapopulation")
-(= (COMPXY_TEMP) 6)
+(= (COMPXY_TEMP) (py-call (state_builder.selection_temperature)))
 (= (INV_TEMP) (/ 100.0 (COMPXY_TEMP)))
 
 ;; exemplar selection
@@ -27,7 +13,8 @@
 (= (selectExemplar $metaPop)
     (case $metaPop
         ((() (Error $metaPop (NO_EXEMPLAR)))
-        ((cons $x ()) $x)
+        ((cons $x ()) (let* (((mkExemplar $tree $id $cs $bs) $x)
+                              ($_one (py-call (state_builder.selection_single $tree)))) $x))
         ($_ (let* (
                     ($probs (getPnScore $metaPop))
                     ($hstScr (List.max $probs))
@@ -48,7 +35,8 @@
 (= (sbStreamSelCands (cons $x $rest) (cons $p $ps) $i)
    (let* (
      ((mkExemplar $tree $demeId $cscore $bscore) $x)
-     ($_c (py-call (state_builder.add_selection_candidate $i $p $tree)))
+     ($score (eval (getPenScore $cscore)))
+     ($_c (py-call (state_builder.add_selection_candidate $i $p $tree $score)))
    ) (sbStreamSelCands $rest $ps (+ $i 1))))
 
 ;; get penalized scores of all the exemplars as a list of Numbers

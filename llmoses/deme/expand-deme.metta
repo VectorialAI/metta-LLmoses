@@ -130,8 +130,10 @@ $optimDeme
 ; (: runMoses (-> Number Cscore Number (OS (Exemplar $a)) Number Number Bool Symbol (TruthTableBScore $a) (-> Deme (TruthTableBScore $a) Instance $Scorer (Instance Deme $state)) $Scorer Number Number Number Number (ITable $a) Number Number Number (OS (Exemplar $a))))
 ;; Public entry: initialize one LLMOSES run, then keep the original generation
 ;; budget pinned so emitted generations count upward while MOSES counts down.
+;; A run owns irreversible Python/RNG side effects. Commit to its first result
+;; so PeTTa's result enumeration cannot backtrack through completed calls.
 (= (runMoses $maxGen $maxScore $maxCandOutput $metaPop $nExpansion $nDeme $context $optimize $nEval $maxCandsPerDeme $minPoolSize $complexityTemperature $nToKeep $capCoef $genCount)
-   (let* (
+   (once (let* (
      ($_ (case $context
            ((($prune-exemplar $fs-algo $truthTableBScore $itable)
              (sbBeginRunBoolean
@@ -144,82 +146,119 @@ $optimDeme
             ($_x 0)))))
      (runMosesLoop $maxGen $maxGen $maxScore $maxCandOutput $metaPop $nExpansion $nDeme
                    $context $optimize $nEval $maxCandsPerDeme $minPoolSize
-                   $complexityTemperature $nToKeep $capCoef $genCount)))
+                   $complexityTemperature $nToKeep $capCoef $genCount))))
 
-;; Phase II lever 4 rebuilds the scoring context with a new complexity ratio.
-(= (llmRebuildContext $ctx $newRatio)
-   (case $ctx
-     ((($pe $fs (mkTruthTableBScore $cr $size $tbl) $itable)
-        ($pe $fs (mkTruthTableBScore $newRatio $size $tbl) $itable))
-      (($nGames $cr) ($nGames $newRatio))
-      ($other $other))))
 
-(= (runMosesLoop $maxGen $totalGen $maxScore $maxCandOutput $metaPop $nExpansion $nDeme $context $optimize $nEval $maxCandsPerDeme $minPoolSize $complexityTemperature $nToKeep $capCoef $genCount)
-   (if (== $maxGen 0)
-       (if (<= $maxCandOutput (OS.length $metaPop))
-           (OS.getTopN $maxCandOutput $metaPop)
-           $metaPop)
+;; Four calls within one generation; checkpoint constructors hold native atoms.
+;; No constructor below evaluates until llmContinue dispatches it.
+(= (runMosesLoop $remaining $total $target $output $mp $exp $nDeme $ctx $opt
+                $nEval $maxCands $minimum $trim $keep $cap $legacyGen)
+   (if (== $remaining 0)
+       (let* (($_terminal (sbEmitTerminal (+ $total 1) $mp)))
+         (if (<= $output (OS.length $mp)) (OS.getTopN $output $mp) $mp))
        (let* (
-         ($_ (println! (Generation $maxGen)))
-         ($genIndex (+ (- $totalGen $maxGen) 1))
-         ($_fence (sbEnterGen $genIndex))
-         ($_ulog (sbLogUtilities $genIndex))
-         ($ratioOverride (py-call (state_builder.current_complexity_ratio $genIndex)))
-         ($ctx2 (if (== $ratioOverride 0) $context (llmRebuildContext $context $ratioOverride)))
-         ($cmpOn (py-call (state_builder.comparator_resort_active)))
-         ($mp2 (if (== $cmpOn 1) (llmResortMetapop $metaPop) $metaPop))
-         ($optimizedDemes
-           (case $ctx2
-             ((($prune-exemplar $fs-algo $truthTableBScore $itable)
-               (trace! "expand  deme returnn"
-                 (expandDeme $mp2 $nExpansion $nDeme $prune-exemplar $fs-algo
-                             $truthTableBScore $optimize $itable mi)))
-              (($nGames $complexityRatio)
-              (trace! "expand deme return"
-                 (expandDeme $mp2 $nExpansion $nDeme $nGames $complexityRatio
-                             $maxScore $optimize))))))
-         ;; Force expansion before opening the merge buffer without requiring
-         ;; the optimized-deme list to contain exactly one element.
-         ((mkDeme $rep $sInst $demeId) (car-atom $optimizedDemes))
-         ($_ (println! (FirstOptimizedDeme: (List.length (second $sInst)))))
-         ($_ (sbBeginMerge))
-         ($updatedMetaPop
-           (case $ctx2
-             ((($prune-exemplar $fs-algo $truthTableBScore $itable)
-               (trace! "Merging Deme"
-                 (mergeDemes $optimizedDemes $nEval $maxCandsPerDeme $minPoolSize
-                             $complexityTemperature $itable $mp2 $nToKeep $capCoef $genCount)))
-              (($nGames $complexityRatio)
-               (trace! "Merging Deme"
-                 (mergeDemes $optimizedDemes $nEval $maxCandsPerDeme $minPoolSize
-                             $complexityTemperature $nGames $mp2 $nToKeep $capCoef $genCount))))))
-         ($top (OS.getByIdx 0 $mp2))
-         ($topScore (getExemplarCscore $top))
-         ($_ (sbEmitAllMerged $updatedMetaPop))
-         ($_emit (sbEmitGeneration $genIndex $mp2 $optimizedDemes))
-         ($_resp (sbAwaitResponse $genIndex))
-         ($_term (if (or (== $maxGen 1) (== $topScore $maxScore))
-                     (sbEmitTerminal (+ $genIndex 1) $updatedMetaPop)
-                     0))
-         ($resultCandi (if (<= $maxCandOutput (OS.length $updatedMetaPop))
-                           (OS.getTopN $maxCandOutput $updatedMetaPop)
-                           $updatedMetaPop))
-         ($nothing (clearSpace &treeSpace))
-         ($_ (cut))
-         ($_ (println! ""))
-       )
-       (if (== $topScore $maxScore)
-           $resultCandi
-           (runMosesLoop (- $maxGen 1) $totalGen $maxScore $maxCandOutput $updatedMetaPop
-                         $nExpansion $nDeme $ctx2 $optimize $nEval $maxCandsPerDeme
-                         $minPoolSize $complexityTemperature $nToKeep $capCoef $genCount)))))
+         ($g (+ (- $total $remaining) 1))
+         ($_enter (sbEnterGen $g))
+         ($_begin (sbBeginGen $g))
+         ($_snapshot (sbSnapshotMembers $mp))
+         ($frame (mkM2Frame $remaining $total $target $output $mp $exp $nDeme $ctx $opt
+                           $nEval $maxCands $minimum $trim $keep $cap $legacyGen $g))
+         ($_checkpoint (sbCheckpoint (mkM2Rows $frame)))
+         ($_call (py-call (state_builder.call_rows))))
+         (llmContinue (mkM2Rows $frame)))))
 
+;; Weight installation changes scalar scores only; cached behavioural vectors survive.
+(= (llmRebuildContext) (py-call (state_builder.install_row_weights)))
+(= (llmRescoreMetaPop $mp) (llmRescoreInto $mp ()))
+(= (llmRescoreInto () $acc) $acc)
+(= (llmRescoreInto (cons (mkExemplar $tree $id $cs $bs) $rest) $acc)
+   (let* (
+     ((mkCscore $raw $complexity $penalty $uniformity $oldPen) $cs)
+     ($nativeSum (sumBScore $bs))
+     ($weighted (py-call (state_builder.weighted_sum $bs $nativeSum)))
+     ($newCs (updatePenalizedScore (mkCscore $weighted $complexity $penalty $uniformity $oldPen) False))
+     ($next (OS.insert compareExemplar (mkExemplar $tree $id $newCs $bs) $acc)))
+     (llmRescoreInto $rest $next)))
 
+(= (llmContinue (mkM2Rows
+       (mkM2Frame $remaining $total $target $output $mp $exp $nDeme $ctx $opt
+                  $nEval $maxCands $minimum $trim $keep $cap $legacyGen $g)))
+   (let* (
+     ($changed (llmRebuildContext))
+     ($rescored (if (== $changed 1) (llmRescoreMetaPop $mp) $mp))
+     ($_snapshot (sbSnapshotMembers $rescored))
+     ($frame (mkM2Frame $remaining $total $target $output $rescored $exp $nDeme $ctx $opt
+                       $nEval $maxCands $minimum $trim $keep $cap $legacyGen $g))
+     ($_checkpoint (sbCheckpoint (mkM2Exemplar $frame)))
+     ($_call (py-call (state_builder.call_exemplar))))
+     (llmContinue (mkM2Exemplar $frame))))
 
-;; Some helpers specific to final testing
-(= (mapG $f $xs) (map-atom $xs $f))
+(= (llmContinue (mkM2Exemplar
+       (mkM2Frame $remaining $total $target $output $mp $exp $nDeme $ctx $opt
+                  $nEval $maxCands $minimum $trim $keep $cap $legacyGen $g)))
+   (let* (
+     ($exemplar (selectExemplar $mp))
+     ($tree (getExemplarTree $exemplar))
+     ($_selection (sbSetSelection $tree))
+     ($frame (mkM2Frame $remaining $total $target $output $mp $exp $nDeme $ctx $opt
+                       $nEval $maxCands $minimum $trim $keep $cap $legacyGen $g))
+     ($_checkpoint (sbCheckpoint (mkM2Atom $frame $tree)))
+     ($_call (py-call (state_builder.call_atom))))
+     (llmContinue (mkM2Atom $frame $tree))))
 
-(= (printExemplar (mkExemplar $tree $demeId $cscore $bscore)) (println! (Tree: (preOrder $tree) CScore: $cscore Bscore: $bscore)))
-(= (cleanedExemplar (mkExemplar $tree $demeId $cscore (mkBScore $bscore))) ((preOrder $tree) (List.sum $bscore)))
+(= (llmExpandSelected $tree $exp $nDeme ($prune $fs $bsc $table) $target $opt)
+   (let* (
+     ($ids (createDemeIds $exp $nDeme))
+     ($demes (createDeme $nDeme $ids $tree $table $fs $prune () mi)))
+     (map-atom $demes $deme (expandDemeHelper $deme $bsc $opt))))
+(= (llmExpandSelected $tree $exp $nDeme ($games $ratio) $target $opt)
+   (let* (
+     ($ids (createDemeIds $exp $nDeme))
+     ($demes (createDeme $nDeme $ids $tree)))
+     (map-atom $demes $deme (expandDemeHelper $deme ($games $ratio $target) $opt))))
 
-(= (printInstance (mkInst $inst)) (println! (List.listToExpr $inst)))
+(= (llmContinue (mkM2Atom
+       (mkM2Frame $remaining $total $target $output $mp $exp $nDeme $ctx $opt
+                  $nEval $maxCands $minimum $trim $keep $cap $legacyGen $g) $tree))
+   (let* (
+     ($optimized (llmExpandSelected $tree $exp $nDeme $ctx $target $opt))
+     ;; Force and record every deme before the merge buffer opens.
+     ($_demes (map-atom $optimized $deme (sbEmitDeme $g $deme)))
+     ($_merge (sbBeginMerge))
+     ($scoreContext (case $ctx
+         ((($prune $fs $bsc $table) $table) (($games $ratio) $games))))
+     ($pool (llmFilterDemes $optimized $nEval $maxCands $minimum $trim
+                            $scoreContext $mp $keep $cap $g))
+     ($_snapshot (sbSnapshotMembers $pool))
+     ($frame (mkM2Frame $remaining $total $target $output $mp $exp $nDeme $ctx $opt
+                       $nEval $maxCands $minimum $trim $keep $cap $legacyGen $g))
+     ($_checkpoint (sbCheckpoint (mkM2Retention $frame $pool $optimized)))
+     ($_call (py-call (state_builder.call_retention $minimum $trim $g))))
+     (llmContinue (mkM2Retention $frame $pool $optimized))))
+
+(= (llmContinue (mkM2Retention
+       (mkM2Frame $remaining $total $target $output $mp $exp $nDeme $ctx $opt
+                  $nEval $maxCands $minimum $trim $keep $cap $legacyGen $g) $pool $optimized))
+   (let* (
+     ($survivors (llmCommitRetained $pool))
+     ($_merged (sbEmitAllMerged $survivors))
+     ($_snapshot (sbSnapshotMembers $survivors))
+     ($_emit (py-call (state_builder.flush_gen $g)))
+     ($empty (== $survivors ()))
+     ($topScore (if $empty $target (getExemplarCscore (OS.getByIdx 0 $survivors))))
+     ($finished (or $empty (or (== $remaining 1) (== $topScore $target))))
+     ($_terminal (if $finished (sbEmitTerminal (+ $g 1) $survivors) 0))
+     ($_clear (clearSpace &treeSpace))
+     ($_cut (cut)))
+     (if $finished
+         (if (<= $output (OS.length $survivors)) (OS.getTopN $output $survivors) $survivors)
+         (runMosesLoop (- $remaining 1) $total $target $output $survivors $exp $nDeme
+                       $ctx $opt $nEval $maxCands $minimum $trim $keep $cap $g))))
+
+;; Define resume only after the dispatcher is known to PeTTa. Defining it in
+;; the earlier state-builder import returns (llmContinue ...) as data instead
+;; of running the restored continuation. Keep restore and execution inside
+;; once so enumerating the public entry point cannot replay side effects.
+(= (sbResume)
+   (once (let $continuation (py-call (state_builder.restore_checkpoint))
+              (llmContinue $continuation))))

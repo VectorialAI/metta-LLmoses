@@ -4,11 +4,7 @@
 ;; Drop-in replacement for representation/add-logical-knobs.metta — do NOT
 ;; import the upstream file (D-FSFORK: one copy per function, ever).
 ;;
-;; D-033: the only change from the base file is that the target node's id is
-;; destructured to its raw tree path and threaded into the perm samplers, so
-;; the atom-prior draw site knows its position (operator + depth) and the
-;; contextual lever_weights can condition combination weights. Everything
-;; else is byte-equivalent base behavior.
+;; Causal policy metadata is threaded explicitly; probe paths stay native.
 ;; ============================================================================
 
 ;; All available game moves
@@ -49,18 +45,22 @@
 
 ;; Current upstream fast path, with the absolute current-node path passed to
 ;; the milestone-2 logical permutation sampler.
-(= (addLogicalKnobsFast (mkTree (mkNode $op) $children) $addIfInExemplar $map $argLabels $disable-discprobe $globalTree $currentNodeId)
+(= (addLogicalKnobsFast (mkTree (mkNode $op) $children) $addIfInExemplar $map $argLabels $disable-discprobe $globalTree $currentNodeId $causalPath $siteKind)
    (let*
      (
       ((mkNodeId $rawPath) $currentNodeId)
       ($lengthOfLabels (size-atom $argLabels))
-      ($perms (sampleLogicalPerms $op $lengthOfLabels $argLabels $rawPath))
+      ($perms (sampleLogicalPerms $op $lengthOfLabels $argLabels $causalPath $siteKind $children))
       ($treePerms (map-atom $perms $perm (buildTree $perm)))
       (($knobs $updatedTree)
         (logicalProbe (mkTree (mkNode $op) $children) $globalTree
                       (mkNodeId (0)) $currentNodeId $treePerms
                       $addIfInExemplar $disable-discprobe))
+      ($_pairTags (py-call (state_builder.register_pair_knobs $updatedTree $causalPath)))
       ($pairs (pairKnobWithSpec $knobs))
       ($mmp (expToMMap $pairs $map discSpec<))
      )
      ($updatedTree $mmp)))
+
+(= (addLogicalKnobsFast $tree $add $map $labels $disc $global $nodeId)
+   (addLogicalKnobsFast $tree $add $map $labels $disc $global $nodeId () exemplar_node))

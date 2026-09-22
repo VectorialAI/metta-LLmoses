@@ -37,6 +37,7 @@ os.replace, or a complete file published exclusively with os.link):
 """
 
 import fcntl
+from contextlib import contextmanager
 import json
 import os
 import socket
@@ -69,6 +70,12 @@ def write_json_atomic(path, doc, fsync=None):
             fh.flush()
             os.fsync(fh.fileno())
     os.replace(tmp, path)
+    if FSYNC if fsync is None else fsync:
+        directory = os.open(os.path.dirname(path), os.O_RDONLY)
+        try:
+            os.fsync(directory)
+        finally:
+            os.close(directory)
 
 
 def read_json(path):
@@ -255,6 +262,15 @@ def owns(run_dir, kind=None, session=None):
     if session and not session_matches_run(session, run_dir):
         return False                     # token from another run
     return _same_owner(rec.get("owner"), kind=kind, session=session)
+
+
+@contextmanager
+def response_write_guard(run_dir, kind, session=None):
+    """Fence response publication against concurrent takeover/release."""
+    with _ClaimLock(run_dir):
+        if not owns(run_dir, kind, session):
+            raise OwnershipConflict("responder claim changed before response publication")
+        yield
 
 
 def release(run_dir, session=None, force=False):

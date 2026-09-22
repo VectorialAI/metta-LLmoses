@@ -1,156 +1,74 @@
-"""Build structured LLMOSES state/action JSON from MeTTa extractor values.
-
-Values arrive through py-call as native Python numbers, strings, nested lists,
-or Cons spines. This module owns the per-run/per-generation accumulator state and
-the public py-call entry points; the value-unwrap primitives (boundary.py), the
-run-directory bootstrap (runspace.py), and the atom-evidence walker
-(atom_evidence.py) live alongside it and are imported here.
-"""
+"""M2 four-call state emission, per-call transport, and policy application."""
+import functools
+import hashlib
+import itertools
 import json
 import math
-import random
-import time
-import hashlib
 import os
+import random
 import sys
+import time
 
 import atom_evidence
+import call_paths
+import checkpointing
+import conditional_policy
+import lever_config
+import lever_policy as policy
+import responder_control as rc
 import runspace
 import utility_schema
-from boundary import (
-    _num, _flat, unwrap_atom, cons_to_list, expr_to_str,
-    cr_or_none as _cr_or_none, present_atom as _present_atom,
-    demeid as _demeid,
-)
+from boundary import (_num, _flat, unwrap_atom, cons_to_list, expr_to_str,
+                      cr_or_none as _cr_or_none, present_atom as _present_atom,
+                      demeid as _demeid)
 
-_VERSION = "0.5-mvp"
-
-# Per problem_type: which action-space levers are live (agent should not score inactive dims).
-_ACTIVE_LEVERS = {
-    "boolean": ["exemplar_selection", "culling", "atom_evidence",
-                "complexity_ratio", "comparator_hook"],
-    "strategy": ["exemplar_selection", "culling", "atom_evidence",
-                 "complexity_ratio", "comparator_hook"],
-}
-
-# --- Phase II lever switches (two independent planes, env-driven) ------------
-# Outbound: which emission sections the agent gets to see (default: all).
-# Inbound: which UtilityResponse components are applied to policy (default:
-# NONE — pure shadow). Per-lever mixing weight lambda in [0,1]; the unified
-# formula everywhere is  w' = w_native * (lam*u_hat + (1-lam)), so lam=0 is
-# exactly native and lam=1 with 0/1 utilities is explicit control.
-_EMIT_LEVER_NAMES = ("exemplar_selection", "culling", "atom_evidence",
-                     "complexity_ratio", "comparator_hook")
-_APPLY_LEVER_NAMES = ("exemplar_selection", "culling", "comparator",
-                      "complexity_ratio", "atom_prior")
-
-
-def _csv_env(name, default):
-    raw = os.environ.get(name)
-    if raw is None:
-        return set(default)
-    return {tok.strip() for tok in raw.split(",") if tok.strip()}
-
-
-def _lever_weight_env(name):
-    raw = os.environ.get(f"LLMOSES_LEVER_WEIGHT_{name.upper()}")
-    try:
-        lam = float(raw) if raw is not None else 1.0
-    except (TypeError, ValueError):
-        lam = 1.0
-    return min(max(lam, 0.0), 1.0)
-
-
-_EMIT_LEVERS = _csv_env("LLMOSES_EMIT_LEVERS", _EMIT_LEVER_NAMES)
-_APPLY_LEVERS = _csv_env("LLMOSES_APPLY_LEVERS", ())
-_LEVER_WEIGHTS = {n: _lever_weight_env(n) for n in _APPLY_LEVER_NAMES}
-
-# The embedding runtime seeds Python's RNG deterministically, so bias-path
-# draws repeat run to run unless a seed is forced (sweep/experiment reps).
-_RNG_SEED = os.environ.get("LLMOSES_RNG_SEED")
-if _RNG_SEED:
-    random.seed(_RNG_SEED)
-
-# --- run-directory bootstrap (paths, native log, run_meta) ------------------
-_THIS_DIR = os.path.dirname(os.path.abspath(__file__))      # .../llmoses/utilities
-_LLMOSES_DIR = os.path.dirname(_THIS_DIR)                   # .../llmoses
-
+_VERSION = "2.0-four-call"
+_THIS_DIR = os.path.dirname(os.path.abspath(__file__))
+_LLMOSES_DIR = os.path.dirname(_THIS_DIR)
 _RS = runspace.bootstrap(_LLMOSES_DIR, _VERSION)
-_RUN_ID = _RS.run_id
-_RUN_DIR = _RS.run_dir
-_STATE_DIR = _RS.state_dir
-_ACTION_DIR = _RS.action_dir
-_READY_DIR = _RS.ready_dir
-_RESPONSE_DIR = _RS.response_dir
-_NFH = _RS.native_log
-
-# --- per-run + per-gen accumulator state -----------------------------------
-_run_seq = 0
-_cur_state_dir = _STATE_DIR
-_cur_action_dir = _ACTION_DIR
-_gen = {}                 # gen -> accumulating record
-_pending_selection = None  # buffered {id, tree} from set_selection, consumed by flush_gen
-_pending_merge = None      # buffered post-merge metapop ids from sbEmitAllMerged, consumed by flush_gen
-_pending_deme_evals = {}   # deme_id -> currentNInstances (from expandDemeHelper)
-_depth = {}               # program_id -> lineage depth (reset per run)
-_total_evals = 0           # cumulative true fitness calls across all gens in the current run
-_explored_ids = set()      # program_ids selected in a prior gen (reset per run; "explored" flag)
-_problem_spec = None       # {input_labels, arity}; set once per run by set_problem_spec
-_last_complexity_ratio = None  # derived cratio from flush_gen; reused by flush_terminal
-_pending_run_params = {}   # name -> raw value; persists across gens, reset by new_run
-_atom_alphabet = None      # {problem_type, prefix, atoms:[{index,key,label}]}; static, run_config
-_atom_alphabet_map = {}    # label -> {index, key}; walker lookup, derived from _atom_alphabet
-_atom_cumulative = {}      # key -> {appearances_total, first_seen_gen, last_seen_gen} (run-scoped)
-_capture_failures = {}     # kind -> count; reset by new_run. Unifies flush-section
-                           # degradations and response_timeouts as one validity signal.
-_pending_utilities = None  # parsed UtilityResponse (latest ingested); None = native
-_utility_gen = None        # generation whose response filled _pending_utilities
-_effective_cratio = None   # complexity-ratio lever accumulator (persists across gens)
-_cratio_applied_for = None  # last response gen whose ratio delta was consumed
-_comparator_overrides = 0  # comparator-lever override count since last flush_gen
-_sel_buf = None            # streamed selection candidates (begin_selection..select_index)
-_cull_buf = None           # streamed cull candidates (begin_cull..cull_index)
-_combo_buf = None          # streamed sampler combos (begin_combo_draw..weighted pick)
-
-# --- M2 hardening state (PLAN-m2-hardening.md) --------------------------------
-# W-2 generation fence: the buffer is valid for exactly one generation.
-#   _await_gen   = the generation MOSES most recently asked a response for
-#                  (set at the top of await_response, timeout or not);
-#   _current_gen = the generation whose draws are in progress (enter_gen);
-#   _ingest_key  = (run_seq, gen) of the last ingest (re-ingest is a no-op).
-# Invariant while any lever is consulted: _utility_gen == _await_gen, and at
-# the top of generation G: _await_gen == G-1. A violation is FATAL (abort),
-# never a fallback — an offset other than 1 means the meta-loop is broken.
-_await_gen = None
-_current_gen = None
-_ingest_key = None
-_quality = {}              # W-19 experiment-quality counters (nonzero => degraded)
-_confab = {}               # W-23 confabulation statistics (run-scoped)
-_lost_streak = 0           # W-23 consecutive non-decline responses that yielded nothing
-_versions_seen = set()     # W-28 responder protocol versions observed in responses
-_context_stats = {}        # W-22 context-strategy instrumentation (aggregated)
-_logging_degraded = 0      # W-17 audit-log writes that failed (surfaced in terminal)
-_aborted = False           # W-20 set once _abort_run has fired
-_abort_record = None
-_exit_fn = os._exit        # test hook: replaced by a BaseException raiser in tests
-_ABORT_EXIT_CODE = 3       # the driver reads a non-zero exit as "not a run"
-
-# --- Phase II return leg (blocking watcher handshake) -----------------------
-# OFF by default so existing watcher-less smoke tests are byte-for-byte unchanged;
-# Phase II runs opt in with LLMOSES_AWAIT_RESPONSE=1 and a live watcher.
+_RUN_ID, _RUN_DIR = _RS.run_id, _RS.run_dir
+_STATE_DIR, _ACTION_DIR = _RS.state_dir, _RS.action_dir
+_READY_DIR, _RESPONSE_DIR, _NFH = _RS.ready_dir, _RS.response_dir, _RS.native_log
+_CONTROL_DIR = os.path.join(_RUN_DIR, "CONTROL")
 _AWAIT_ENABLED = os.environ.get("LLMOSES_AWAIT_RESPONSE", "0") == "1"
+_EXPECT_SPEC = os.environ.get("LLMOSES_EXPECT_RESPONSE_GENS", "all")
 _RESP_POLL_S = float(os.environ.get("LLMOSES_RESPONSE_POLL_S", "0.05"))
-_RESP_TIMEOUT_S = float(os.environ.get("LLMOSES_RESPONSE_TIMEOUT_S", "30"))
-# R1: the RUN CONFIGURATION declares which generations expect an estimate —
-# never the responder (a responder that crashes before declaring itself must
-# not be able to turn a failed run into a clean native one). With
-# LLMOSES_AWAIT_RESPONSE=1, LLMOSES_EXPECT_RESPONSE_GENS is a generation
-# predicate: "all" (default), "none", or a comma list of ints / inclusive
-# ranges ("1-3,5", "4-", "-2") for frontloaded / backloaded interlock
-# ablations. Inside the window a missing response ABORTS; outside it MOSES
-# does not block at all — native by design, recorded, never degradation.
-_EXPECT_SPEC = os.environ.get("LLMOSES_EXPECT_RESPONSE_GENS", "all").strip() or "all"
-
+_RESP_TIMEOUT_S = float(os.environ.get("LLMOSES_RESPONSE_TIMEOUT_S", "300"))
+_HB_STALL_S = float(os.environ.get("LLMOSES_HEARTBEAT_STALL_S", "120"))
+_HB_READ_EVERY_S = 0.5
+_FSYNC = os.environ.get("LLMOSES_FSYNC", "0") == "1"
+_RNG_SEED = os.environ.get("LLMOSES_RNG_SEED")
+if _RNG_SEED is not None:
+    random.seed(_RNG_SEED)
+_exit_fn = os._exit
+_ID_SAMPLE_CAP = 10
+_EVAL_COUNT_INDEX = 8
+_HC_MAX_EVALS_DEFAULT = 10000
+_KIND_BY_TAG = {"LSK": "boolean", "SSK": "strategy"}
+_CSCORE_FIELDS = ("raw_score", "complexity", "complexity_penalty", "uniformity_penalty", "penalized_score")
+_run_seq = 0
+_cur_state_dir, _cur_action_dir = _STATE_DIR, _ACTION_DIR
+_gen, _pending_deme_evals, _depth, _pending_run_params = {}, {}, {}, {}
+_explored_ids, _versions_seen = set(), set()
+_atom_alphabet, _atom_alphabet_map, _atom_cumulative = None, {}, {}
+_pending_selection, _pending_merge, _problem_spec = None, None, None
+_capture_failures, _quality, _confab, _context_stats = {}, {}, {}, {}
+_total_evals, _logging_degraded = 0, 0
+_aborted, _abort_record = False, None
+_current_gen, _current_call, _await_gen = None, 0, None
+_config, _run_config = None, None
+_responses, _call_states, _call_status, _site_records = {}, {}, {}, {}
+_row_weights, _sel_buf, _retained, _generation_start_members = [], [], set(), []
+_combo_bufs, _draws, _candidate_pairs = {}, [], {}
+_construction_history, _previous_draws = [], []
+_needs_initial_rescore = False
+_build_seq = 0
+_build_tree = None
+_site_seq = 0
+_next_token = 0
+_known_ids, _native_by_design = set(), []
+_continuation, _checkpoint_request = None, None
+_previous_outcome, _native_evolution = {}, None
 
 def _parse_gen_spec(spec):
     """Return predicate(gen) -> bool for an expected-generation spec."""
@@ -184,97 +102,6 @@ def _parse_gen_spec(spec):
     return expected
 
 
-try:
-    _EXPECT = _parse_gen_spec(_EXPECT_SPEC)
-except ValueError as _e:
-    sys.stderr.write(f"[state_builder] bad LLMOSES_EXPECT_RESPONSE_GENS "
-                     f"{_EXPECT_SPEC!r}: {_e}; expecting every generation\n")
-    _EXPECT_SPEC, _EXPECT = "all", (lambda g: True)
-_native_by_design = []     # generations skipped because they were outside the window
-# W-3 heartbeat reader: a declared responder whose CONTROL/heartbeat counter
-# has not advanced for this many seconds of MOSES's OWN monotonic clock is
-# dead (clock-domain free: only "did the counter change" is compared).
-_HB_STALL_S = float(os.environ.get("LLMOSES_HEARTBEAT_STALL_S", "120"))
-_HB_READ_EVERY_S = 0.5
-# W-23 fatal threshold: consecutive non-decline responses that yielded no
-# applicable guidance (schema failure / fabricated ids) abort the run.
-_MAX_LOST_STREAK = int(os.environ.get("LLMOSES_MAX_CONSECUTIVE_LOST", "2"))
-# W-23 fatal threshold (plan §3): consecutive schema-invalid responses abort
-# the run even when something salvaged through — with constrained generation
-# (--output-schema, slot template) a schema failure should be near-impossible,
-# so a run of them means the responder is broken, not unlucky.
-_MAX_SCHEMA_STREAK = int(os.environ.get("LLMOSES_MAX_CONSECUTIVE_SCHEMA_FAILURES", "3"))
-_schema_fail_streak = 0
-# W-10 durability: fsync every atomic JSON write (default off).
-_FSYNC = os.environ.get("LLMOSES_FSYNC", "0") == "1"
-_CONTROL_DIR = os.path.join(_RUN_DIR, "CONTROL")
-_ID_SAMPLE_CAP = 10
-
-# Boltzmann selection constants; mirror exemplar-selection.metta COMPXY_TEMP / INV_TEMP.
-_COMPXY_TEMP = 6.0
-_INV_TEMP = 100.0 / _COMPXY_TEMP
-
-
-# ===========================================================================
-# Problem-type resolution (reads run-scoped _problem_spec; uses marshal prims)
-# ===========================================================================
-def _effective_problem_type(raw_problem_type=None):
-    """Resolve the canonical problem-type string from the buffered run param,
-    falling back to _problem_spec. Returns None if genuinely unknown."""
-    p = _present_atom(raw_problem_type)
-    if p is not None:
-        return p
-    if isinstance(_problem_spec, dict):
-        p = _present_atom(_problem_spec.get("problem_type"))
-        if p is not None:
-            return p
-        if "input_labels" in _problem_spec:
-            return "boolean"
-    return None
-
-
-def _build_run_parameters(cratio_override=None):
-    """Assemble run_parameters dict from buffered _pending_run_params."""
-    rp = _pending_run_params
-    ptype = _effective_problem_type(rp.get("problem_type"))
-    cratio = cratio_override if cratio_override is not None else _cr_or_none(rp.get("complexity_ratio"))
-    if cratio is None:
-        cratio = _last_complexity_ratio
-    hc_max = get_hill_climb_max_evals()
-    hill_climb_max_evals = rp.get("hill_climb_max_evaluations")
-    if hill_climb_max_evals is not None:
-        hc_max = _num(hill_climb_max_evals) or hc_max
-    return {
-        "problem_type": ptype,
-        "complexity_ratio": cratio,
-        "n_eval": _num(rp.get("n_eval")),
-        "hill_climb_max_evaluations": hc_max,
-        "max_cands_per_deme": _num(rp.get("max_cands_per_deme")),
-        "min_pool_size": _num(rp.get("min_pool_size")),
-        "complexity_temperature": _num(rp.get("complexity_temperature")),
-        "n_to_keep": _num(rp.get("n_to_keep")),
-        "cap_coef": _num(rp.get("cap_coef")),
-        "n_deme": _num(rp.get("n_deme")),
-        "optimizer": _flat(rp.get("optimizer")),
-    }
-
-
-def _boltzmann(pen_scores):
-    """Reproduce normalizeProbs + the sum in selectExemplar.
-    w_i = exp((s_i - best) * INV_TEMP) / sum(w), aligned to input order.
-    Returns a parallel list of floats (or None for non-finite inputs)."""
-    finite_scores = [score for score in pen_scores
-                     if isinstance(score, (int, float)) and not math.isinf(score)]
-    if not finite_scores:
-        return [None] * len(pen_scores)
-    best = max(finite_scores)
-    weights = [0.0 if (not isinstance(score, (int, float)) or math.isinf(score))
-               else math.exp((score - best) * _INV_TEMP)
-               for score in pen_scores]
-    total = sum(weights)
-    return [0.0] * len(weights) if total <= 0 else [w / total for w in weights]
-
-
 def _pid(expr_str):
     return "p" + hashlib.sha1(expr_str.encode("utf-8")).hexdigest()[:10]
 
@@ -299,13 +126,6 @@ def _gs(gen):
     if g not in _gen:
         _gen[g] = _blank(g)
     return _gen[g]
-
-
-def _member_out(m):
-    """Emit-shape of a member: drop the internal tree_ast (walker input only),
-    tag the explored flag."""
-    return {k: v for k, v in m.items() if k != "tree_ast"} | {
-        "explored": m["program_id"] in _explored_ids}
 
 
 def _best_penalized(members):
@@ -376,9 +196,6 @@ def _bump(counter, key, n=1):
     counter[key] = counter.get(key, 0) + n
 
 
-# ===========================================================================
-# Public API — MeTTa entry points (all receive list-marshalled values)
-# ===========================================================================
 def sb_run_dir():
     return _RUN_DIR
 
@@ -401,71 +218,9 @@ def _max_existing_run_seq():
     return max(seqs) if seqs else 0
 
 
-def new_run():
-    """Open a fresh per-run subdir. Call once at the top of each runMoses."""
-    global _run_seq, _cur_state_dir, _cur_action_dir, _pending_selection, _pending_merge
-    global _pending_deme_evals, _depth, _total_evals, _explored_ids, _problem_spec
-    global _last_complexity_ratio, _pending_run_params
-    global _atom_alphabet, _atom_alphabet_map, _atom_cumulative, _capture_failures
-    global _pending_utilities, _utility_gen, _effective_cratio, _cratio_applied_for
-    global _comparator_overrides, _sel_buf, _cull_buf, _combo_buf
-    global _await_gen, _current_gen, _ingest_key, _quality, _confab, _lost_streak
-    global _versions_seen, _context_stats, _aborted, _abort_record
-    global _gen, _logging_degraded, _native_by_design, _schema_fail_streak
-    _run_seq = max(_run_seq + 1, _max_existing_run_seq() + 1)
-    _aborted = False
-    _abort_record = None
-    _gen = {}                # a run's terminal/abort record must never show a prior run's members
-    _logging_degraded = 0
-    _cur_state_dir = os.path.join(_STATE_DIR, f"run-{_run_seq}")
-    _cur_action_dir = os.path.join(_ACTION_DIR, f"run-{_run_seq}")
-    os.makedirs(_cur_state_dir, exist_ok=True)
-    os.makedirs(_cur_action_dir, exist_ok=True)
-    _pending_selection = None
-    _pending_merge = None
-    _pending_deme_evals = {}
-    _depth = {}
-    _total_evals = 0
-    _explored_ids = set()
-    _problem_spec = None
-    _last_complexity_ratio = None
-    _pending_run_params = {}
-    _atom_alphabet = None
-    _atom_alphabet_map = {}
-    _atom_cumulative = {}
-    _capture_failures = {}
-    _pending_utilities = None
-    _utility_gen = None
-    _effective_cratio = None
-    _cratio_applied_for = None
-    _comparator_overrides = 0
-    _sel_buf = None
-    _cull_buf = None
-    _combo_buf = None
-    _await_gen = None
-    _current_gen = None
-    _ingest_key = None
-    _quality = {}
-    _confab = {}
-    _lost_streak = 0
-    _versions_seen = set()
-    _context_stats = {}
-    _native_by_design = []
-    _schema_fail_streak = 0
-    runspace.ensure_context_docs(_LLMOSES_DIR, _RUN_ID, _RUN_DIR, run_seq=_run_seq)
-    return _run_seq
-
-
 def begin_gen(gen):
     _gen[_num(gen)] = _blank(_num(gen))
     return 0
-
-
-# cscore crosses as a flat list from `cscoreFields (memberCscore $x)`
-# (state-builder.metta sbEmitMembers). Field order confirmed against cscoreFields
-# (extractors.metta:7) -> (getScore getComp getCompPen getUniPen getPenScore):
-_CSCORE_FIELDS = ("raw_score", "complexity", "complexity_penalty",
-                  "uniformity_penalty", "penalized_score")
 
 
 def add_member(gen, expr, tree, cscore, bscore):
@@ -481,6 +236,10 @@ def add_member(gen, expr, tree, cscore, bscore):
     cscore_values += [None] * (len(_CSCORE_FIELDS) - len(cscore_values))
     cscore_fields = dict(zip(_CSCORE_FIELDS, cscore_values))
     bscore_values = [_num(v) for v in cons_to_list(bscore)]
+    pid = _pid(raw)
+    if pid not in _depth:
+        parent = (_pending_selection or {}).get("program_id")
+        _depth[pid] = _depth.get(parent, 0) + 1 if parent else 0
     _gs(gen)["members"].append({
         "program_id": _pid(raw),        # identity off the full tree
         "tree_str": tree_str,           # lossless clean AST (replaces expr + tree)
@@ -490,9 +249,6 @@ def add_member(gen, expr, tree, cscore, bscore):
         "bscore": bscore_values if bscore_values else None,
     })
     return 0
-
-
-_KIND_BY_TAG = {"LSK": "boolean", "SSK": "strategy"}
 
 
 def add_knob(gen, deme_id, loc, multip, default, tag=None):
@@ -573,18 +329,6 @@ def set_selection(tree):
     return 0
 
 
-# Boundary shape 
-#   `state` is the hill-climbing optimizer state tuple returned by optimizeDemes
-#   and passed in from expandDemeHelper:
-#     0:alreadyXover 1:lastChance 2:_ 3:prevCenter 4:prevStart 5:prevSize
-#     6:bestSscore 7:bestScore 8:currentNInstances 9:d 10:i
-#   Index 8 (currentNInstances) is the deme's running fitness-eval count, in one
-#   of two marshalled forms:
-#     * a bare Number                  e.g.  240
-#     * an unreduced sum expr (+ a b)  e.g.  ['+', 180, 60]   
-_EVAL_COUNT_INDEX = 8  # currentNInstances; see note above
-
-
 def set_deme_evals(deme_id, state):
     """Record one deme's fitness-call count. Keyed by deme_id because the
     expandDemeHelper caller passes no generation index; flush_gen reconciles it."""
@@ -624,9 +368,6 @@ def get_total_evals():
     return _total_evals
 
 
-_HC_MAX_EVALS_DEFAULT = 10000
-
-
 def get_hill_climb_max_evals():
     """Per-deme hill-climbing fitness-eval cap for this run (fixed at init).
     Defaults to 10000 (OpenCog Classic default) when not explicitly set."""
@@ -645,44 +386,6 @@ def set_run_param(name, value):
     return 0
 
 
-def emit_run_config():
-    """Write run_config.json preamble (static config) before evolution starts.
-    Resolves the static atom_alphabet here (and builds the walker's label map)."""
-    global _atom_alphabet, _atom_alphabet_map
-    ptype = _effective_problem_type(_pending_run_params.get("problem_type"))
-    _atom_alphabet, _atom_alphabet_map = atom_evidence.build_atom_alphabet(_problem_spec, ptype)
-    doc = {
-        "schema_version": _VERSION,
-        "run_seq": _run_seq,
-        "record_type": "run_config",
-        "timestamp_ms": int(time.time() * 1000),
-        "problem_spec": _problem_spec,
-        "atom_alphabet": _atom_alphabet,
-        "run_parameters": _build_run_parameters(),
-        "active_levers": [l for l in _ACTIVE_LEVERS.get(ptype, [])
-                          if l in _EMIT_LEVERS],
-        "comparator_hook_available": True,
-        # Phase II switch state: runs are self-describing about which lever
-        # data went out and which utility components were applied back in.
-        "lever_switches": {
-            "emit": sorted(_EMIT_LEVERS & set(_EMIT_LEVER_NAMES)),
-            "apply": sorted(_APPLY_LEVERS & set(_APPLY_LEVER_NAMES)),
-            "weights": {n: _LEVER_WEIGHTS[n]
-                        for n in sorted(_APPLY_LEVERS & set(_APPLY_LEVER_NAMES))},
-            "rng_seed": _RNG_SEED,
-        },
-        # W-16: the responder reads the MOSES-side deadline from here to
-        # assert LIVE_TIMEOUT_S * (RETRIES+1) < RESPONSE_TIMEOUT_S before its
-        # first provider call (the two processes do not share an environment).
-        "handshake": _handshake_block(),
-    }
-    _write_json(os.path.join(_cur_state_dir, "run_config.json"), doc)
-    runspace.ensure_context_docs(_LLMOSES_DIR, _RUN_ID, _RUN_DIR, run_seq=_run_seq,
-                                 problem_type=ptype, problem_spec=_problem_spec,
-                                 active_levers=doc["active_levers"])
-    return 0
-
-
 def set_problem_spec_strategy(moves, n_games, opponent_policy, complexity_ratio):
     """Strategy analog of set_problem_spec. Moves arrive as a marshalled flat list
     of symbols (bare MeTTa tuple, not a Cons spine), from sbSetProblemSpecStrategy"""
@@ -696,17 +399,6 @@ def set_problem_spec_strategy(moves, n_games, opponent_policy, complexity_ratio)
         "complexity_ratio": _num(complexity_ratio),
     }
     return 0
-
-
-def _handshake_block():
-    return {"await_enabled": _AWAIT_ENABLED,
-            "expect_response_gens": _EXPECT_SPEC,
-            "response_timeout_s": _RESP_TIMEOUT_S,
-            "poll_s": _RESP_POLL_S,
-            "heartbeat_stall_s": _HB_STALL_S,
-            "max_consecutive_lost": _MAX_LOST_STREAK,
-            "max_consecutive_schema_failures": _MAX_SCHEMA_STREAK,
-            "fsync": _FSYNC}
 
 
 def _compute_verdict():
@@ -765,133 +457,6 @@ def _confab_block():
     return out
 
 
-def _terminal_doc(members, verdict, abort=None):
-    best = _best_penalized(members)
-    members_out = [_member_out(m) for m in members]
-    responder = _responder_declared() or _read_json_quiet(_control_path("responder"))
-    return {
-        "schema_version": _VERSION, "run_seq": _run_seq, "record_type": "terminal",
-        "timestamp_ms": int(time.time() * 1000),
-        "total_hill_climb_evaluations": _total_evals,
-        "total_evaluations": _total_evals,
-        "metapopulation": {"size": len(members_out),
-                           "best_penalized_score": best, "members": members_out},
-        "problem_spec": _problem_spec,
-        "run_parameters": _build_run_parameters(),
-        # Run total, per-kind (incl. response_timeout): nonzero == partly-blind run.
-        "capture_failures": dict(_capture_failures),
-        # --- M2 hardening (W-19 and friends) ---------------------------------
-        "run_verdict": verdict,
-        "quality_flags": _quality_flags(),
-        "confabulation": _confab_block(),
-        "logging_degraded": _logging_degraded,
-        "abort": abort,
-        "handshake": _handshake_block(),
-        "responder": responder,
-        # W-28: the responder-declared protocol identifier (None = undeclared
-        # responder); versions_seen lists every identifier stamped on a
-        # response this run — more than one is undeclared drift.
-        "protocol_version": ((responder or {}).get("protocol_version")
-                             if responder else None),
-        "protocol_versions_seen": sorted(_versions_seen),
-        # W-22: context strategy as recorded by the responder, plus the
-        # per-generation instrumentation aggregate.
-        "context_strategy": ((responder or {}).get("context_strategy")
-                             if responder else None),
-        "context_instrumentation": dict(_context_stats) or None,
-        "generations_awaited": _await_gen,
-        # R1: the expected-response window and the generations that ran
-        # native BY DESIGN (outside it) — reported as such, not as degradation.
-        "response_window": {"spec": _EXPECT_SPEC,
-                            "await_enabled": _AWAIT_ENABLED,
-                            "native_generations": list(_native_by_design)},
-    }
-
-
-def flush_terminal(gen):
-    """Final post-merge metapopulation -> terminal.json (with run_verdict)."""
-    g = _num(gen)
-    s = _gs(g)
-    doc = _terminal_doc(s["members"], _compute_verdict())
-    _write_json(os.path.join(_cur_state_dir, "terminal.json"), doc)
-    _log_event("run_verdict", verdict=doc["run_verdict"],
-               quality_flags=doc["quality_flags"] or None)
-    return 0
-
-
-def _abort_run(reason, **detail):
-    """W-20 / §1.3: end the run NOW and record why. Writes CONTROL/abort (if
-    the responder did not already), a terminal.json with run_verdict
-    'aborted', a run_aborted audit row, then exits the process non-zero so
-    the driver sees a failed run. MOSES never proceeds without an estimate it
-    was supposed to receive. Never returns (the test hook raises instead)."""
-    global _aborted, _abort_record
-    if _aborted:
-        return
-    _aborted = True
-    record = {"reason": reason, "source": detail.pop("source", "moses"),
-              "run_seq": _run_seq, "generation": _await_gen,
-              "current_gen": _current_gen, "ts_ms": int(time.time() * 1000),
-              "detail": detail}
-    _abort_record = record
-    _bump(_capture_failures, f"abort:{reason}")
-    _log_event("run_aborted", reason=reason, detail=detail)
-    try:
-        if not os.path.exists(_control_path("abort")):
-            _write_json(_control_path("abort"), record, durable=True)
-    except Exception as e:
-        sys.stderr.write(f"[abort] could not write CONTROL/abort: {e}\n")
-    try:
-        gens = [k for k in _gen if isinstance(k, (int, float))]
-        members = _gs(max(gens))["members"] if gens else []
-        _write_json(os.path.join(_cur_state_dir, "terminal.json"),
-                    _terminal_doc(members, "aborted", abort=record),
-                    durable=True)
-    except Exception as e:
-        sys.stderr.write(f"[abort] could not write terminal.json: {e}\n")
-    # R4: os._exit skips every Python-level flush, so the audit log (the
-    # run_aborted row and everything before it) is pushed to disk HERE.
-    _flush_native_log(durable=True)
-    sys.stderr.write(f"[abort] run {_run_seq} aborted: {reason} {detail}\n")
-    try:
-        sys.stderr.flush()
-        sys.stdout.flush()
-    except Exception:
-        pass
-    _exit_fn(_ABORT_EXIT_CODE)
-
-
-def _check_abort_channel():
-    """W-20: a CONTROL/abort written by the responder/supervisor ends the run."""
-    doc = _read_json_quiet(_control_path("abort"))
-    if doc is None and os.path.exists(_control_path("abort")):
-        doc = {"reason": "abort_requested", "detail": "unreadable abort document"}
-    if doc is not None:
-        _abort_run("abort_requested", source=str(doc.get("source") or "responder"),
-                   requested_reason=doc.get("reason"),
-                   requested_detail=doc.get("detail"))
-
-
-def enter_gen(g):
-    """Top of generation g (before any draw). W-2: assert the response fence
-    is exactly one generation behind; W-20: honour a pending abort. Called
-    from runMosesLoop via sbEnterGen; returns 0 like every sb* hook."""
-    global _current_gen
-    g = _num(g)
-    _current_gen = g
-    try:
-        _check_abort_channel()
-        if _AWAIT_ENABLED and _await_gen is not None and _await_gen != g - 1:
-            _abort_run("generation_fence", where="enter_gen", generation=g,
-                       await_gen=_await_gen, utility_gen=_utility_gen)
-        if _pending_utilities is not None and _utility_gen != g - 1:
-            _abort_run("generation_fence", where="enter_gen", generation=g,
-                       await_gen=_await_gen, utility_gen=_utility_gen)
-    except Exception as e:
-        sys.stderr.write(f"[enter_gen] error gen {g}: {e}\n")
-    return 0
-
-
 class _HeartbeatWatch:
     """W-3 reader: tracks CONTROL/heartbeat's monotonic counter against
     MOSES's own monotonic clock. stalled() is True only when a heartbeat has
@@ -918,334 +483,6 @@ class _HeartbeatWatch:
         return self.seen and (now - self.changed_at) >= _HB_STALL_S
 
 
-def await_response(g):
-    """Phase II return leg: block until the responder signals a response for
-    gen g, ingest it, then hand control back to MOSES.
-
-    Gated by LLMOSES_AWAIT_RESPONSE (default off) so non-Phase-II runs are
-    unaffected. Failure policy (plan §1.3, revision R1): the run
-    configuration says which generations EXPECT an estimate
-    (LLMOSES_EXPECT_RESPONSE_GENS, default all). Inside that window a
-    missing response is a failed run no matter who was supposed to answer —
-    timeout, dead supervisor (W-3 heartbeat stall) and CONTROL/abort (W-20)
-    all exit non-zero with run_verdict 'aborted'. Outside the window MOSES
-    does not block: the generation is native by design and recorded in
-    terminal.json's response_window. Always returns 0 — shape-identical to
-    every sb* hook."""
-    global _await_gen, _pending_utilities
-    if not _AWAIT_ENABLED:
-        return 0
-    g = _num(g)
-    try:
-        if _await_gen is not None and g <= _await_gen:
-            if g == _await_gen:      # hook re-entry: idempotent, logged
-                _log_event("await_reentry", generation=g)
-                return 0
-            _abort_run("generation_fence", where="await_response",
-                       generation=g, await_gen=_await_gen)
-        _await_gen = g
-        if not _EXPECT(g):
-            # Outside the declared window: native by design. Nothing may
-            # carry over into the next generation (the fence still holds:
-            # _await_gen advanced, buffer empty).
-            _pending_utilities = None
-            _native_by_design.append(g)
-            _log_event("await_skipped", generation=g, expected=False,
-                       window=_EXPECT_SPEC)
-            return 0
-        sentinel = os.path.join(_RESPONSE_DIR, f"run-{_run_seq}-step-{g}")
-        start = time.monotonic()
-        deadline = start + _RESP_TIMEOUT_S
-        hb = _HeartbeatWatch()
-        while not os.path.exists(sentinel):
-            now = time.monotonic()
-            _check_abort_channel()
-            hb.observe(now)
-            if hb.stalled(now):
-                # A heartbeat file exists only because a responder wrote it;
-                # a static counter means that responder is dead.
-                _bump(_capture_failures, "supervisor_dead")
-                _log_event("supervisor_dead", generation=g,
-                           heartbeat_counter=hb.counter,
-                           stalled_s=round(now - hb.changed_at, 3))
-                _abort_run("supervisor_dead", generation=g,
-                           heartbeat_counter=hb.counter,
-                           stalled_s=round(now - hb.changed_at, 3))
-            if now >= deadline:
-                declared = _responder_declared()
-                _bump(_capture_failures, "response_timeout")
-                _log_event("response_timeout", generation=g,
-                           timeout_s=_RESP_TIMEOUT_S,
-                           responder_declared=declared is not None,
-                           heartbeat_seen=hb.seen)
-                # R1: an expected estimate did not arrive. Whether a
-                # responder ever declared itself is irrelevant — the more
-                # broken the responder, the more important this abort is.
-                _pending_utilities = None
-                _abort_run("response_timeout", generation=g,
-                           timeout_s=_RESP_TIMEOUT_S,
-                           responder=(declared or {}).get("owner"),
-                           responder_declared=declared is not None,
-                           heartbeat_seen=hb.seen)
-                return 0
-            time.sleep(_RESP_POLL_S)
-        # Response present — ingest the UtilityResponse payload into module
-        # state (Phase II consumption).
-        _ingest_utilities(g)
-    except Exception as e:                       # never raise into the Prolog goal
-        sys.stderr.write(f"[await_response] error run {_run_seq} step {g}: {e}\n")
-    return 0
-
-
-def flush_gen(gen):
-    """Flush dynamic per-step state; static config lives in run_config.json."""
-    global _pending_selection, _pending_merge, _pending_deme_evals, _depth
-    global _total_evals, _explored_ids, _last_complexity_ratio
-    g = _num(gen)
-    ptype = _effective_problem_type(_pending_run_params.get("problem_type"))
-    s = _gs(g)
-    members = s["members"]
-
-    best = _best_penalized(members)
-    cur_ids = {m["program_id"] for m in members}
-    probs = _boltzmann([m["cscore"]["penalized_score"] for m in members])
-
-    selected_id, selection_status = None, "no_selection"
-    sel = _pending_selection
-    _pending_selection = None
-    if sel is not None:
-        if sel["program_id"] in cur_ids:
-            selected_id, selection_status = sel["program_id"], "ok"
-        else:
-            selected_id, selection_status = "MISMATCH", "mismatch"
-
-    post_ids, counts, cull_cands = set(), {}, []
-    if _pending_merge is not None:
-        post_ids   = set(_pending_merge["post_ids"])
-        counts     = _pending_merge["counts"]
-        cull_cands = _pending_merge.get("cull_candidates", [])
-        _pending_merge = None
-
-    ts = int(time.time() * 1000)
-
-    # Flush-layer fail-flags: each section's assembly runs under _section so a
-    # malformed section degrades to a placeholder (carrying capture_status:"failed"
-    # when it's a dict) instead of taking down the run. Generalizes the long-standing
-    # atom_evidence try/except. failed_sections drives the per-gen capture_status
-    # summary; _capture_failures is the run-scoped, per-kind validity counter.
-    failed_sections = []
-
-    def _section(name, build_fn, placeholder):
-        try:
-            return build_fn()
-        except Exception as e:  # capture failure must never fail the run
-            _capture_failures[name] = _capture_failures.get(name, 0) + 1
-            failed_sections.append(name)
-            sys.stderr.write(f"[flush_gen] section '{name}' failed run {_run_seq} "
-                             f"gen {g}: {e}\n")
-            # W-17: the WHY lands in the run directory, not only on stderr.
-            _log_event("section_failed", generation=g, section=name,
-                       error=repr(e)[:500])
-            if isinstance(placeholder, dict):
-                return {**placeholder, "capture_status": "failed"}
-            return placeholder
-
-    lineage_diff = _section("lineage_diff", lambda: {
-        "seed_exemplar_id": selected_id,
-        "new_programs": sorted(post_ids - cur_ids),
-        "culled": sorted(cur_ids - post_ids),
-    }, {"seed_exemplar_id": selected_id, "new_programs": [], "culled": []})
-
-    def _build_demes():
-        demes_l, evals_l = [], 0
-        for deme_id in s["deme_order"]:
-            deme = s["demes"][deme_id]
-            knob_breakdown = {"boolean": 0, "strategy": 0, "other": 0}
-            for knob in deme["knobs"]:
-                knob_breakdown[knob["kind"]] = knob_breakdown.get(knob["kind"], 0) + 1
-            neighborhood_size = sum(max(_num(knob["multiplicity"]) - 1, 0)
-                                    for knob in deme["knobs"]
-                                    if isinstance(knob["multiplicity"], (int, float)))
-            deme_evaluations = (deme["evaluations"] if deme["evaluations"] is not None
-                                else (_num(deme["instances"]) or 0))
-            evals_l += deme_evaluations or 0
-            demes_l.append({
-                "deme_id": deme_id, "exemplar_program_id": selected_id,
-                "exemplar_expr": deme["deme_tree"],
-                "knobs": deme["knobs"], "knob_count": len(deme["knobs"]),
-                "knob_type_breakdown": knob_breakdown,
-                "neighborhood_size": neighborhood_size,
-                "instances_evaluated": deme["instances"],
-                "hill_climb_evaluations": deme["evaluations"],
-            })
-        return demes_l, evals_l
-    demes, evals_gen = _section("demes", _build_demes, ([], 0))
-    _total_evals += evals_gen
-
-    def _build_merge_summary():
-        pool_ids = cur_ids | {c["program_id"] for c in cull_cands}
-        return {
-            "candidates_produced":     counts.get("candidates_produced"),
-            "duplicates_dropped":      counts.get("duplicates_dropped"),
-            "dominated_count_removed": counts.get("dominated_removed"),
-            "resize_cull": {
-                "incumbents":   sorted(cur_ids),
-                "new_entrants": cull_cands,
-                "survivors":    sorted(post_ids),
-                "culled":       sorted(pool_ids - post_ids),
-            },
-        }
-    merge_summary = _section("merge_summary", _build_merge_summary, {})
-    # W-26: every program id that existed in generation g — pre-merge members,
-    # resize-cull entrants, and post-merge survivors — is the universe a
-    # responder may legitimately reference for g. Kept on the gen record
-    # (reset only by begin_gen/new_run) so ingest validates without a disk read.
-    s["known_ids"] = cur_ids | post_ids | {c["program_id"] for c in cull_cands}
-    # R2: what the responder was OFFERED as slots — the survivor set
-    # (response_template._survivor_ids: members ∪ entrants restricted to
-    # resize_cull.survivors; the whole pool when no survivors list exists).
-    s["offered_ids"] = set(post_ids) if post_ids else set(s["known_ids"])
-
-    seed_depth = _depth.get(selected_id, 0)
-    for pid in lineage_diff["new_programs"]:
-        _depth.setdefault(pid, seed_depth + 1)
-    for m in members:
-        _depth.setdefault(m["program_id"], 0)
-
-    def _build_cratio():
-        c = _cr_or_none(_pending_run_params.get("complexity_ratio"))
-        if c is None:
-            for m in members:
-                cpx, cpen = m["complexity"], m["cscore"]["complexity_penalty"]
-                if isinstance(cpx, (int, float)) and isinstance(cpen, (int, float)) and cpen:
-                    c = cpx / cpen
-                    break
-        return c
-    cratio = _section("complexity_ratio", _build_cratio, None)
-    _last_complexity_ratio = cratio
-
-    members_out = [_member_out(m) for m in members]
-
-    def _build_post_selection():
-        if selection_status == "no_selection":
-            return None
-        rank = None
-        if selected_id not in (None, "MISMATCH"):
-            rank = next((i for i, m in enumerate(members)
-                         if m["program_id"] == selected_id), None)
-        return {
-            "event_type": "post_selection", "generation": g, "timestamp_ms": ts,
-            "chosen_program_id": selected_id,
-            "native_boltzmann_probability": (probs[rank]
-                                             if rank is not None and rank < len(probs) else None),
-            "selected_position": rank, "llm_utility": None,
-            "selection_status": selection_status,
-        }
-    post_selection_evt = _section("post_selection", _build_post_selection,
-                                  {"event_type": "post_selection", "generation": g})
-
-    # Atom evidence is best-effort emission metadata; malformed trees must not
-    # interrupt search or generation output. Routed through _section so its
-    # failures land in the same per-kind counter as every other section.
-    # Emit-gated: with the lever off the walker never runs.
-    if "atom_evidence" in _EMIT_LEVERS:
-        atom_evidence_block, atom_lossless = _section(
-            "atom_evidence",
-            lambda: atom_evidence.build_atom_evidence(
-                members, g, ptype, best, _atom_alphabet_map, _atom_cumulative,
-                _VERSION, _run_seq),
-            ({"atom_appearances": [], "realized_cooccurrences": [],
-              "atom_cumulative": {},
-              "degenerate_summary": {"contradiction_dropped": 0,
-                                     "repeats_collapsed": 0}},
-             None))
-    else:
-        atom_evidence_block = {"atom_appearances": [], "realized_cooccurrences": [],
-                               "atom_cumulative": {},
-                               "degenerate_summary": {"contradiction_dropped": 0,
-                                                      "repeats_collapsed": 0},
-                               "emit_disabled": True}
-        atom_lossless = None
-
-    state_doc = {
-        "schema_version": _VERSION, "run_seq": _run_seq, "generation": g,
-        "problem_type": ptype,
-        "timestamp_ms": ts,
-        "hill_climb_evaluations_this_generation": evals_gen,
-        "total_hill_climb_evaluations": _total_evals,
-        "total_evaluations": _total_evals,
-        "metapopulation": {
-            "size": len(members_out), "best_penalized_score": best, "members": members_out,
-        },
-        "demes": demes,
-        "merge_summary": merge_summary,
-        "lineage_diff": lineage_diff,
-        "moses_native_events": {"post_selection": post_selection_evt},
-        "atom_evidence": atom_evidence_block,
-        # Contract: ready/ now means "written + self-describing completeness".
-        # Consumers must read this rather than assume the step is fully captured.
-        "capture_status": {"failed_sections": failed_sections,
-                           "ok": not failed_sections},
-    }
-
-    action_doc = {
-        "schema_version": _VERSION, "run_seq": _run_seq, "generation": g,
-        "problem_type": ptype,
-        # Each action component is emit-gated by LLMOSES_EMIT_LEVERS; a gated
-        # section emits its empty shape so consumers see stable keys.
-        "exemplar_candidates": ([
-            {"program_id": m["program_id"], "tree_str": m["tree_str"],
-             "penalized_score": m["cscore"]["penalized_score"],
-             "complexity": m["complexity"],
-             "raw_score": m["cscore"]["raw_score"],
-             "lineage_depth": _depth.get(m["program_id"])}
-            for m in members
-        ] if "exemplar_selection" in _EMIT_LEVERS else []),
-        "culling_candidates": ((cull_cands if cull_cands else [])
-                               if "culling" in _EMIT_LEVERS else []),
-        "complexity_ratio": ({
-            "current_value": cratio,
-            "options": ([cratio] if cratio is not None else []),
-        } if "complexity_ratio" in _EMIT_LEVERS
-            else {"current_value": None, "options": []}),
-    }
-
-    _write_json(os.path.join(_cur_state_dir, f"step-{g}.json"), state_doc)
-    _write_json(os.path.join(_cur_action_dir, f"step-{g}.json"), action_doc)
-    if atom_lossless is not None:
-        _write_json(os.path.join(_cur_state_dir, f"atom_lossless-{g}.json"), atom_lossless)
-    global _comparator_overrides
-    _NFH.write(json.dumps({
-        "run_seq": _run_seq, "generation": g, "size": len(members),
-        "best_penalized_score": best,
-        "capture_failures": len(failed_sections),  # live tail-able blind-spot signal
-        "comparator_overrides": _comparator_overrides,  # lever-3 decisions this gen
-        "ts_ms": int(time.time() * 1000),
-    }) + "\n")
-    _comparator_overrides = 0
-
-    if selection_status == "ok":
-        _explored_ids.add(selected_id)
-
-    # W-9: the ready sentinel is edge-triggered, write-once, existence-only.
-    # Nothing reads its content; liveness lives in CONTROL/heartbeat instead.
-    ready = os.path.join(_READY_DIR, f"run-{_run_seq}-step-{g}")
-    with open(ready, "w", encoding="utf-8") as fh:
-        fh.write(f"{int(time.time()*1000)}\n")
-    return 0
-
-
-# ===========================================================================
-# Phase II utility guidance: ingestion + policy application
-#
-# The watcher's UtilityResponse for generation G is ingested at the end of
-# gen G (await_response) and applied to the meta-loop's draws during gen G+1.
-# Every application site uses the one mixing formula
-#     w' = w_native * (lam * u_hat + (1 - lam)),   u_hat = u ** (1/T)
-# so lam=0 reproduces native behavior exactly and lam=1 with 0/1 utilities
-# hands the utility explicit control. Every function here is called from a
-# Prolog goal and must never raise: errors degrade to native + a log row.
-# ===========================================================================
 def _log_event(event, **fields):
     """One JSONL audit row in moses_native_log.jsonl; never raises. A failed
     write must not kill the run, but it must not be silent either (W-17):
@@ -1261,128 +498,6 @@ def _log_event(event, **fields):
             sys.stderr.write(f"[log_event] audit write failed ({event}): {e!r}\n")
         except Exception:
             pass
-
-
-def _clamp01(x):
-    try:
-        return min(max(float(x), 0.0), 1.0)
-    except (TypeError, ValueError):
-        return 0.0
-
-
-def _sharpen(u, temp):
-    """sampling_temperature: u ** (1/T). T<=0/None/1 leave u unchanged."""
-    u = max(float(u), 0.0)
-    if temp and temp > 0 and temp != 1.0:
-        try:
-            return u ** (1.0 / temp)
-        except (OverflowError, ZeroDivisionError):
-            return u
-    return u
-
-
-def _mix(native_w, u_hat, lam):
-    return native_w * (lam * u_hat + (1.0 - lam))
-
-
-def _lever_on(name, data_key=None):
-    """Lever applies iff switched on, lambda > 0, and a response is buffered
-    (pass=true clears the buffer, so it reads as native everywhere).
-
-    W-2 fence: a buffered response is consulted only while it is exactly one
-    generation behind — it was ingested for the generation MOSES most
-    recently awaited. Any other offset is a broken meta-loop, so it aborts."""
-    if _pending_utilities is None:
-        return False
-    if _utility_gen != _await_gen:
-        _abort_run("generation_fence", where=f"_lever_on:{name}",
-                   utility_gen=_utility_gen, await_gen=_await_gen,
-                   current_gen=_current_gen)
-        return False
-    if name not in _APPLY_LEVERS:
-        return False
-    if _LEVER_WEIGHTS.get(name, 0.0) <= 0.0:
-        return False
-    if data_key is not None and not _pending_utilities.get(data_key):
-        return False
-    return True
-
-
-def _roulette(weights):
-    """Native rouletteSelect semantics: r*sum, walk subtracting. Returns the
-    positional index into weights, or None when the total mass is zero.
-    Zero-weight entries are never selectable — without the skip, a draw of
-    exactly 0.0 would land on a leading zero-weight entry, violating the
-    lambda=1 'zero eliminates the option' guarantee."""
-    total = sum(weights)
-    if total <= 0:
-        return None
-    adjusted = total * random.random()
-    last_positive = None
-    for i, w in enumerate(weights):
-        if w <= 0:
-            continue
-        last_positive = i
-        adjusted -= w
-        if adjusted <= 0:
-            return i
-    return last_positive
-
-
-# Contextual-prior vocabulary: context keys on atom_utility_prior entries map
-# to feature_utility_levers.lever_weights axes (D-033). Mirrors the
-# atom_evidence bucket vocabulary so the agent reads and writes one language.
-_CTX_KEY_AXIS = {
-    "polarity": "polarity", "clause_type": "clause_type",
-    "parent_operator": "parent_operator", "depth_bucket": "tree_depth",
-    "exemplar_id": "selected_exemplar",
-}
-_LEVER_WEIGHT_AXES = ("polarity", "clause_type", "parent_operator", "tree_depth",
-                      "selected_exemplar", "combination_synergy", "novelty")
-_RESPONSE_KEYS = ("pass", "sampling_temperature", "exemplar_utilities",
-                  "atom_utility_prior", "combination_synergy",
-                  "feature_utility_levers", "culling_utilities",
-                  "complexity_ratio_delta", "comparator_bias",
-                  "status", "outcome")     # W-5 additive metadata
-
-
-def _unknown_ids(doc, known, offered=None):
-    """W-26 (R2 split): per id-bearing channel, two buckets over the ids the
-    responder supplied — A `unknown` (existed nowhere in generation G:
-    hallucination) and B `unoffered` (existed in G — e.g. shown pre-merge —
-    but was not in the offered slot set: protocol adherence). Ids in the
-    offered set are simply correct. Rates over total_ids_supplied, sample
-    capped. '*' is the legitimate newborn-default sentinel on the culling
-    channel. Behaviour is unchanged — such entries stay inert at lookup;
-    this only makes them visible."""
-    channels = {
-        "exemplar_utilities": [e.get("program_id") for e in
-                               (doc.get("exemplar_utilities") or [])
-                               if isinstance(e, dict)],
-        "culling_utilities": [e.get("program_id") for e in
-                              (doc.get("culling_utilities") or [])
-                              if isinstance(e, dict)
-                              and str(e.get("program_id")) != "*"],
-        "comparator_bias": list(((doc.get("comparator_bias") or {})
-                                 .get("program_id_ordering") or [])
-                                if isinstance(doc.get("comparator_bias"), dict)
-                                else []),
-    }
-    out = {}
-    for ch, ids in channels.items():
-        ids = [str(i) for i in ids if i is not None]
-        if not ids:
-            continue
-        unknown = [i for i in ids if i not in known]
-        unoffered = ([i for i in ids if i in known and i not in offered]
-                     if offered is not None else [])
-        out[ch] = {"unknown": len(unknown), "unoffered": len(unoffered),
-                   "total": len(ids),
-                   "rate": round(len(unknown) / len(ids), 6),
-                   "unoffered_rate": round(len(unoffered) / len(ids), 6),
-                   "sample": unknown[:_ID_SAMPLE_CAP],
-                   "unoffered_sample": unoffered[:_ID_SAMPLE_CAP]}
-    return out
 
 
 def _record_confab(g, unknown_ids, schema_ok, outcome, decline):
@@ -1456,675 +571,831 @@ def _record_confab(g, unknown_ids, schema_ok, outcome, decline):
                 cs["dropped_total"] = cs.get("dropped_total", 0) + len(ctx["dropped"])
 
 
-def _ingest_utilities(g):
-    """Parse utilities/run-N/step-G.json (written by the responder BEFORE the
-    response sentinel) into normalized per-lever lookups. Anything supplied
-    but not usable is reported in the utility_ingest row's `ignored` map —
-    an estimation must never drop silently.
+_EXPECT = _parse_gen_spec(_EXPECT_SPEC)
 
-    W-2 fence: re-ingest of the same (run, gen) is a no-op; a generation older
-    than the fence is rejected; an unreadable response clears the buffer and,
-    like every non-200/204 status (W-5, plan §1.3), aborts the run."""
-    global _pending_utilities, _utility_gen, _ingest_key, _lost_streak
-    global _schema_fail_streak
-    key = (_run_seq, g)
-    if _ingest_key == key:
-        _log_event("utility_ingest_skipped", generation=g, reason="duplicate")
-        return
-    if _utility_gen is not None and g < _utility_gen:
-        _log_event("utility_ingest_skipped", generation=g, reason="stale",
-                   utility_gen=_utility_gen)
-        return
-    path = os.path.join(_RUN_DIR, "utilities", f"run-{_run_seq}", f"step-{g}.json")
-    try:
-        with open(path, encoding="utf-8") as fh:
-            doc = json.load(fh)
-        if not isinstance(doc, dict):
-            raise ValueError("UtilityResponse is not a JSON object")
-    except Exception as e:
-        # W-1b: never leave the previous generation's guidance live.
-        _pending_utilities, _utility_gen, _ingest_key = None, g, key
-        _bump(_capture_failures, "utility_ingest_error")
-        _log_event("utility_ingest_error", generation=g, error=str(e)[:200])
-        _abort_run("responder_failure", generation=g, status=500,
-                   error_class="unreadable_response", detail=str(e)[:200])
-        return
-    ignored = {}
-    for k in doc:
-        if k not in _RESPONSE_KEYS:
-            v = doc[k]
-            ignored[k] = len(v) if isinstance(v, (list, dict)) else "present"
-    # Diagnostic schema check: logged and counted (W-23), never a filter —
-    # ingest still normalizes what it can.
-    schema_ok, schema_errors = utility_schema.validate_utility_response(
-        doc, _atom_alphabet)
-    status = utility_schema.effective_status(doc)
-    outcome = doc.get("outcome") if isinstance(doc.get("outcome"), dict) else None
-    known = _gs(g).get("known_ids") if g in _gen else None
-    offered = _gs(g).get("offered_ids") if g in _gen else None
-    unknown_ids = (_unknown_ids(doc, known, offered)
-                   if known is not None else {})
-    decline = bool(doc.get("pass", True))
-    _record_confab(g, unknown_ids, schema_ok, outcome, decline)
-    _schema_fail_streak = 0 if schema_ok else _schema_fail_streak + 1
-    if not schema_ok and _MAX_SCHEMA_STREAK > 0 \
-            and _schema_fail_streak >= _MAX_SCHEMA_STREAK:
-        _pending_utilities, _utility_gen, _ingest_key = None, g, key
-        _log_event("schema_failure_cascade", generation=g,
-                   streak=_schema_fail_streak, schema_errors=schema_errors[:3])
-        _abort_run("schema_failure_cascade", generation=g,
-                   streak=_schema_fail_streak, schema_errors=schema_errors[:3])
-        return
-    if status not in utility_schema.CONTINUE_STATUSES or \
-            (status == 200) == decline:
-        # W-5/W-15/§1.3: the responder reported a failure (or a status that
-        # contradicts `pass`, which is a contract break and reads the same).
-        # Guidance that should have existed did not; that contaminates every
-        # later generation, so the run is not the experiment it claims to be.
-        _pending_utilities, _utility_gen, _ingest_key = None, g, key
-        _bump(_capture_failures, f"responder_{status}")
-        _log_event("responder_failure", generation=g, status=status,
-                   pass_flag=decline,
-                   error_class=(outcome or {}).get("error_class"),
-                   detail=str((outcome or {}).get("detail"))[:200],
-                   schema_ok=schema_ok)
-        _abort_run("responder_failure", generation=g, status=status,
-                   error_class=(outcome or {}).get("error_class"),
-                   detail=str((outcome or {}).get("detail"))[:200])
-        return
-    if decline:
-        _pending_utilities, _utility_gen, _ingest_key = None, g, key
-        _lost_streak = 0
-        _log_event("utility_ingest", generation=g, decline=True, status=status,
-                   ignored=ignored or None, schema_ok=schema_ok,
-                   schema_errors=schema_errors[:3] or None,
-                   unknown_ids=unknown_ids or None,
-                   outcome=outcome or None)
-        return
-
-    exemplar = {}
-    for e in doc.get("exemplar_utilities") or []:
-        if isinstance(e, dict) and e.get("program_id") is not None:
-            exemplar[str(e["program_id"])] = _clamp01(e.get("utility"))
-        else:
-            ignored["exemplar_utilities"] = \
-                ignored.get("exemplar_utilities", 0) + 1
-    retention = {}
-    retention_default = None
-    for e in doc.get("culling_utilities") or []:
-        if not isinstance(e, dict) or e.get("program_id") is None:
-            ignored["culling_utilities"] = ignored.get("culling_utilities", 0) + 1
-            continue
-        r = e.get("retention_utility", e.get("retain_utility"))
-        if r is None and e.get("cull_utility") is not None:
-            r = 1.0 - _clamp01(e.get("cull_utility"))
-        if r is None:
-            ignored["culling_utilities"] = ignored.get("culling_utilities", 0) + 1
-            continue
-        # program_id "*" = default retention for candidates the agent has not
-        # seen (programs born after the response) — without it, fresh
-        # candidates are structurally exempt from culling guidance.
-        if str(e["program_id"]) == "*":
-            retention_default = _clamp01(r)
-        else:
-            retention[str(e["program_id"])] = _clamp01(r)
-    atom_prior = {}
-    atom_prior_ctx = []   # contextual entries, response order preserved (D-033)
-    for e in doc.get("atom_utility_prior") or []:
-        if not (isinstance(e, dict) and e.get("atom") is not None):
-            continue
-        ctx = e.get("context")
-        if isinstance(ctx, dict) and ctx:
-            keys = {k: str(v) for k, v in ctx.items()
-                    if k in _CTX_KEY_AXIS and v is not None}
-            if keys:
-                atom_prior_ctx.append({"atom": str(e["atom"]),
-                                       "utility": _clamp01(e.get("utility")),
-                                       "context": keys})
-            else:
-                ignored["atom_utility_prior.context"] = \
-                    ignored.get("atom_utility_prior.context", 0) + 1
-            continue
-        atom_prior[str(e["atom"])] = _clamp01(e.get("utility"))
-    synergy = []
-    for e in doc.get("combination_synergy") or []:
-        if isinstance(e, dict) and isinstance(e.get("atoms"), list) and e["atoms"]:
-            synergy.append({"atoms": frozenset(str(a) for a in e["atoms"]),
-                            "utility": _clamp01(e.get("utility"))})
-    # W-23 "usable": did this response carry ANY guidance MOSES can apply?
-    # Judged on what was SUPPLIED (before inert-entry pruning — a responder
-    # may deliberately emit inert entries) and, for id channels, on ids that
-    # actually existed in generation g (a channel made only of fabricated
-    # ids contributes nothing). Consulted for the lost-generation cascade.
-    def _known_hits(channel, supplied_n):
-        """Ids that can actually match a draw: offered ones (an unoffered id
-        was culled at merge and is as inert as a fabricated one)."""
-        st = unknown_ids.get(channel)
-        if st is None:
-            return supplied_n
-        return st["total"] - st["unknown"] - st.get("unoffered", 0)
-    # Atom channels: an atom outside the run's alphabet (or a synergy set of
-    # the wrong width / unknown labels) can never match a draw site — it is
-    # the atom analogue of a fabricated program id (W-23 "unknown atoms").
-    labels = set(_atom_alphabet_map) if _atom_alphabet_map else None
-    if labels is not None:
-        known_atoms = ([a for a in atom_prior if a in labels]
-                       + [e for e in atom_prior_ctx if e["atom"] in labels])
-        known_syn = [e for e in synergy if e["atoms"] <= labels]
-        unknown_atoms = ((len(atom_prior) - sum(1 for a in atom_prior if a in labels))
-                         + sum(1 for e in atom_prior_ctx if e["atom"] not in labels)
-                         + (len(synergy) - len(known_syn)))
-    else:
-        known_atoms, known_syn, unknown_atoms = (list(atom_prior) + atom_prior_ctx,
-                                                 list(synergy), 0)
-    if unknown_atoms:
-        _bump(_confab, "unknown_atoms", unknown_atoms)
-        _bump(_quality, "unknown_atoms", unknown_atoms)
-    supplied_usable = bool(
-        _known_hits("exemplar_utilities", len(exemplar)) > 0
-        or _known_hits("culling_utilities", len(retention)) > 0
-        or retention_default is not None
-        or known_atoms or known_syn)
-    levers = doc.get("feature_utility_levers") or {}
-    aggregate_fn = levers.get("aggregate_fn") if isinstance(levers, dict) else None
-    if aggregate_fn not in ("product", "mean", "geometric_mean", "softmax"):
-        aggregate_fn = "product"
-    lever_weights = {}
-    lw = levers.get("lever_weights") if isinstance(levers, dict) else None
-    if isinstance(lw, dict):
-        for k, v in lw.items():
-            if k in _LEVER_WEIGHT_AXES:
-                lever_weights[k] = _clamp01(v)
-            else:
-                ignored[f"lever_weights.{k}"] = "unknown_axis"
-    # Inert-entry pruning: a contextual entry whose named axes multiply to a
-    # zero blend weight, or synergy under a zero combination_synergy axis,
-    # can never affect a draw. Prune here so begin_combo_draw's gate stays 0
-    # and the native selector path (and its RNG consumption) is untouched —
-    # the all-zero lever_weights => v1-byte-identical guarantee is a gate
-    # property, not just a weight property.
-    inert = {}
-    kept_ctx = []
-    for e in atom_prior_ctx:
-        w = 1.0
-        for k in e["context"]:
-            w *= lever_weights.get(_CTX_KEY_AXIS[k], 0.0)
-        if w > 0.0:
-            kept_ctx.append(e)
-    if len(kept_ctx) != len(atom_prior_ctx):
-        inert["atom_prior_ctx"] = len(atom_prior_ctx) - len(kept_ctx)
-        atom_prior_ctx = kept_ctx
-    if synergy and lever_weights.get("combination_synergy", 0.0) <= 0.0:
-        inert["combination_synergy"] = len(synergy)
-        synergy = []
-    comparator_rank = {}
-    cb = doc.get("comparator_bias")
-    if isinstance(cb, dict):
-        for rank, pid in enumerate(cb.get("program_id_ordering") or []):
-            comparator_rank.setdefault(str(pid), rank)
-    elif cb is not None:
-        ignored["comparator_bias"] = "invalid_shape"
-    delta = doc.get("complexity_ratio_delta")
-    if not (isinstance(delta, dict) and delta.get("direction") in
-            ("increase", "decrease", "maintain")):
-        if delta is not None:
-            # Pre-D-030 bare strings land here: rejected by design — the agent
-            # must constrained-generate the {direction, magnitude} object.
-            ignored["complexity_ratio_delta"] = "invalid_shape"
-        delta = None
-    temp = doc.get("sampling_temperature")
-    try:
-        temp = float(temp) if temp is not None and float(temp) > 0 else None
-    except (TypeError, ValueError):
-        temp = None
-
-    _pending_utilities = {
-        "exemplar": exemplar, "retention": retention,
-        "retention_default": retention_default, "atom_prior": atom_prior,
-        "atom_prior_ctx": atom_prior_ctx, "synergy": synergy,
-        "lever_weights": lever_weights,
-        "aggregate_fn": aggregate_fn, "comparator_rank": comparator_rank,
-        "complexity_ratio_delta": delta, "sampling_temperature": temp,
-    }
-    _utility_gen = g
-    _ingest_key = key
-    # W-23 fatal threshold: a non-decline response that yields NOTHING
-    # applicable (every id fabricated, schema failure dropped everything) is
-    # a lost generation; consecutive lost generations abort the run.
-    usable = bool(supplied_usable
-                  or _known_hits("comparator_bias", len(comparator_rank)) > 0
-                  or delta is not None)
-    if usable:
-        _lost_streak = 0
-    else:
-        _lost_streak += 1
-        _bump(_confab, "lost_generations")
-        _bump(_quality, "lost_generations")
-    _log_event("utility_ingest", generation=g, decline=False, status=status,
-               exemplar=len(exemplar), retention=len(retention),
-               atoms=len(atom_prior), atoms_ctx=len(atom_prior_ctx),
-               synergy=len(synergy),
-               lever_weights=({k: v for k, v in lever_weights.items() if v > 0}
-                              or None),
-               comparator=len(comparator_rank),
-               ratio_delta=(delta or {}).get("direction"), temperature=temp,
-               ignored=ignored or None, inert=inert or None,
-               schema_ok=schema_ok,
-               schema_errors=schema_errors[:3] or None,
-               unknown_ids=unknown_ids or None,
-               usable=usable, lost_streak=_lost_streak,
-               outcome=outcome or None)
-    if _lost_streak >= _MAX_LOST_STREAK > 0:
-        _abort_run("guidance_lost_cascade", generation=g,
-                   lost_streak=_lost_streak, schema_ok=schema_ok,
-                   unknown_ids=unknown_ids or None)
+def _experiment():
+    global _config
+    if _config is None:
+        _config = lever_config.load()
+    return _config
 
 
-def utility_summary(g):
-    """sbLogUtilities probe: prove the buffered estimates are reachable from
-    the MeTTa loop. Prints a one-liner; returns the exemplar-utility count."""
-    g = _num(g)
-    try:
-        if _pending_utilities is None:
-            print(f"[utility] gen {g}: buffer empty (native)", flush=True)
-            return 0
-        p = _pending_utilities
-        delta = p["complexity_ratio_delta"]
-        print(f"[utility] gen {g}: from-step {_utility_gen} "
-              f"exemplar={len(p['exemplar'])} retention={len(p['retention'])} "
-              f"atoms={len(p['atom_prior'])} comparator={len(p['comparator_rank'])} "
-              f"ratio={(delta or {}).get('direction')} "
-              f"temp={p['sampling_temperature']}", flush=True)
-        return len(p["exemplar"])
-    except Exception as e:
-        sys.stderr.write(f"[utility_summary] error: {e}\n")
-        return 0
+def new_run():
+    global _run_seq, _cur_state_dir, _cur_action_dir, _config, _run_config
+    global _pending_selection, _pending_merge, _problem_spec, _atom_alphabet
+    global _current_gen, _current_call, _await_gen, _total_evals, _logging_degraded
+    global _aborted, _abort_record, _continuation, _previous_outcome, _next_token
+    global _row_weights, _generation_start_members, _build_seq, _site_seq, _build_tree
+    global _needs_initial_rescore
+    _config = lever_config.load()
+    _run_seq = max(_run_seq + 1, _max_existing_run_seq() + 1)
+    _cur_state_dir = os.path.join(_STATE_DIR, f"run-{_run_seq}")
+    _cur_action_dir = os.path.join(_ACTION_DIR, f"run-{_run_seq}")
+    for path in (_cur_state_dir, _cur_action_dir):
+        os.makedirs(path, exist_ok=True)
+    for value in (_gen, _pending_deme_evals, _depth, _pending_run_params,
+                  _atom_alphabet_map, _atom_cumulative, _capture_failures,
+                  _quality, _confab, _context_stats, _responses, _call_states,
+                  _call_status, _site_records, _combo_bufs, _candidate_pairs):
+        value.clear()
+    for value in (_explored_ids, _versions_seen, _known_ids, _retained,
+                  _native_by_design, _draws, _sel_buf, _construction_history, _previous_draws):
+        value.clear()
+    _pending_selection = _pending_merge = _problem_spec = _atom_alphabet = None
+    _current_gen, _current_call, _await_gen = None, 0, None
+    _total_evals = _logging_degraded = _next_token = _build_seq = _site_seq = 0
+    _build_tree = None
+    _aborted, _abort_record, _continuation = False, None, None
+    _needs_initial_rescore = any(w != 1.0 for w in _row_weights)
+    _row_weights, _generation_start_members, _previous_outcome = [], [], {}
+    _run_config = None
+    return _run_seq
 
 
-# --- Lever 1: exemplar selection ---------------------------------------------
-# The exemplar-selection fork streams (index, native Boltzmann numerator, tree)
-# per member, then select_index() draws. Lever off => same roulette over the
-# same native numerators with the same process-wide RNG the native selector
-# used (py-call random.random), so the off path is distribution-identical.
-def begin_selection(n):
-    global _sel_buf
-    _sel_buf = {"n": _num(n), "cands": []}
+def _effective_problem_type():
+    # Resolve the run-parameter override at every site, including Call 1. Using
+    # it only for config emission made strategy game scores look like rows.
+    return (_present_atom(_pending_run_params.get("problem_type"))
+            or (_problem_spec or {}).get("problem_type"))
+
+
+def _build_run_parameters():
+    cfg = _experiment()
+    params = {k: _num(v) for k, v in _pending_run_params.items() if k != "complexity_ratio"}
+    params["complexity_coef"] = complexity_coef(_pending_run_params.get("complexity_ratio", 3.5))
+    params["selection_temperature"] = cfg["selection_temperature"]
+    return params
+
+
+def emit_run_config():
+    global _atom_alphabet, _atom_alphabet_map, _run_config
+    ptype = _effective_problem_type()
+    if ptype != "boolean" and any(s["b"] for s in _experiment()["levers"].values()):
+        _abort_run("unsupported_guided_problem", problem_type=ptype)
+    _atom_alphabet, _atom_alphabet_map = atom_evidence.build_atom_alphabet(_problem_spec, ptype)
+    _run_config = {"schema_version": _VERSION, "record_type": "run_config",
+                   "run_seq": _run_seq, "problem_spec": _problem_spec,
+                   "atom_alphabet": _atom_alphabet, "run_parameters": _build_run_parameters(),
+                   "experiment": _experiment(),
+                   "active_levers": [n for n, s in _config["levers"].items() if s["b"] > 0],
+                   "rng_seed": _RNG_SEED, "handshake": _handshake_block(),
+                   "baseline": "upstream plus declared retention redesign and overlay fixes"}
+    _write_json(os.path.join(_cur_state_dir, "run_config.json"), _run_config, durable=True)
+    runspace.ensure_context_docs(_LLMOSES_DIR, _RUN_ID, _RUN_DIR, run_seq=_run_seq,
+        problem_type=ptype, problem_spec=_problem_spec,
+        active_levers=_run_config["active_levers"], experiment=_config)
+    _log_event("effective_config", experiment=_config, parameters=_build_run_parameters())
     return 0
 
 
-def add_selection_candidate(i, prob, tree):
+def _handshake_block():
+    return {"await_enabled": _AWAIT_ENABLED, "expect_response_gens": _EXPECT_SPEC,
+            "response_timeout_s": _RESP_TIMEOUT_S, "poll_s": _RESP_POLL_S,
+            "heartbeat_stall_s": _HB_STALL_S, "per_call": True}
+
+
+def _member_out(member):
+    pid = member["program_id"]
+    out = {k: v for k, v in member.items() if k != "tree_ast"}
+    out.update(explored=pid in _explored_ids, lineage_depth=_depth.get(pid, 0),
+               max_lineage_depth=max(_depth.values(), default=0),
+               unweighted_score=sum(member.get("bscore") or []),
+               active_pairs=_candidate_pairs.get(pid, []))
+    return out
+
+
+def _terminal_doc(members, verdict, abort=None):
+    return {"schema_version": _VERSION, "run_seq": _run_seq, "record_type": "terminal",
+            "generation": _current_gen, "total_evaluations": _total_evals,
+            "metapopulation": {"size": len(members), "members": [_member_out(m) for m in members],
+                              "best_penalized_score": _best_penalized(members)},
+            "run_verdict": verdict, "quality_flags": _quality_flags(), "abort": abort,
+            "stop_reason": "empty_population" if not members else "generation_or_target_limit",
+            "confabulation": _confab_block(), "logging_degraded": _logging_degraded,
+            "protocol_versions_seen": sorted(_versions_seen),
+            "context_instrumentation": _context_stats,
+            "response_window": {"spec": _EXPECT_SPEC, "native_calls": _native_by_design},
+            "handshake": _handshake_block(), "experiment": _experiment(),
+            "run_parameters": _build_run_parameters(), "problem_spec": _problem_spec}
+
+
+def flush_terminal(gen):
+    doc = _terminal_doc(_gs(gen)["members"], _compute_verdict())
+    _log_event("run_verdict", verdict=doc["run_verdict"], quality_flags=doc["quality_flags"])
+    _write_json(os.path.join(_cur_state_dir, "terminal.json"), doc, durable=True)
+    _flush_native_log(durable=True)
+    return 0
+
+
+def _abort_run(reason, **detail):
+    global _aborted, _abort_record
+    _aborted = True
+    _abort_record = {"reason": reason, "detail": detail, "run_seq": _run_seq,
+                     "generation": _current_gen, "call": _current_call}
+    _log_event("run_aborted", **_abort_record)
     try:
-        _sel_buf["cands"].append({
-            "i": int(_num(i)), "prob": max(_num(prob) or 0.0, 0.0),
-            "pid": _pid(expr_to_str(tree)),
-        })
-    except Exception as e:
-        sys.stderr.write(f"[add_selection_candidate] error: {e}\n")
+        _write_json(_control_path("abort"), _abort_record, durable=True)
+        members = _gs(_current_gen)["members"] if _current_gen is not None else []
+        _write_json(os.path.join(_cur_state_dir, "terminal.json"),
+                    _terminal_doc(members, "aborted", _abort_record), durable=True)
+        sys.stderr.write(f"[LLMOSES abort] {reason}: {json.dumps(detail, default=str)}\n")
+    finally:
+        _flush_native_log(durable=True)
+        sys.stdout.flush()
+        sys.stderr.flush()
+        _exit_fn(3)
+    raise RuntimeError("abort exit hook returned")
+
+
+def _check_abort_channel():
+    if os.path.exists(_control_path("abort")):
+        _abort_run("abort_requested", request=_read_json_quiet(_control_path("abort")))
+
+
+def enter_gen(g):
+    global _current_gen, _current_call, _generation_start_members
+    g = int(_num(g))
+    _check_abort_channel()
+    if _current_gen is not None and (g != _current_gen + 1 or _current_call != 4):
+        _abort_run("generation_fence", previous_generation=_current_gen, next_generation=g)
+    if _combo_bufs:
+        _abort_run("unreleased_sampler_tokens", tokens=list(_combo_bufs))
+    _current_gen, _current_call = g, 0
+    _responses.clear()
+    _call_states.clear()
+    _call_status.clear()
+    _site_records.clear()
+    _previous_draws[:] = _draws
+    _construction_history.clear()
+    _draws.clear()
+    _generation_start_members = []
+    _known_ids.clear()
+    return 0
+
+
+def checkpoint_native(continuation):
+    global _continuation
+    # mkM2... constructors are data, not evaluable calls. The bridge preserves
+    # the atom's nested list shape; llmContinue pattern-matches it on restore.
+    _continuation = continuation
+    return 0
+
+
+_CHECKPOINT_GLOBALS = (
+    "_run_seq", "_gen", "_pending_deme_evals", "_depth", "_pending_run_params",
+    "_explored_ids", "_versions_seen", "_atom_alphabet", "_atom_alphabet_map",
+    "_atom_cumulative", "_pending_selection", "_pending_merge", "_problem_spec",
+    "_capture_failures", "_quality", "_confab", "_context_stats", "_total_evals",
+    "_logging_degraded", "_current_gen", "_current_call", "_await_gen", "_config",
+    "_run_config", "_responses", "_call_states", "_call_status", "_site_records",
+    "_row_weights", "_needs_initial_rescore", "_sel_buf", "_retained", "_generation_start_members",
+    "_combo_bufs", "_draws", "_candidate_pairs", "_next_token",
+    "_construction_history", "_previous_draws", "_build_seq", "_build_tree", "_site_seq",
+    "_known_ids", "_native_by_design", "_previous_outcome", "_native_evolution")
+
+
+def _save_checkpoint(request):
+    state = {name: globals()[name] for name in _CHECKPOINT_GLOBALS}
+    context = checkpointing.context_snapshot(_RUN_DIR, _run_seq)
+    path = os.path.join(_RUN_DIR, "checkpoints", f"run-{_run_seq}", "latest.json")
+    checkpointing.save(path, state, _continuation, request, context)
+    _flush_native_log(durable=True)
+    return path
+
+
+def restore_checkpoint():
+    global _cur_state_dir, _cur_action_dir, _continuation, _current_call
+    path = os.environ.get("LLMOSES_RESUME_CHECKPOINT")
+    if not path:
+        raise ValueError("LLMOSES_RESUME_CHECKPOINT is required")
+    state, continuation, doc = checkpointing.restore(path)
+    for name in _CHECKPOINT_GLOBALS:
+        globals()[name] = state[name]
+    _cur_state_dir = os.path.join(_STATE_DIR, f"run-{_run_seq}")
+    _cur_action_dir = os.path.join(_ACTION_DIR, f"run-{_run_seq}")
+    _continuation = continuation
+    checkpointing.restore_context(_RUN_DIR, doc["agent_context"])
+    request = doc["request"]
+    _current_call = request["call"] - 1
+    pause = _read_json_quiet(_control_path("pause"))
+    if pause:
+        fence = {k: request[k] for k in ("run_seq", "generation", "call")}
+        if any(pause.get(k) != v for k, v in fence.items()):
+            _abort_run("checkpoint_pause_fence", expected=fence, pause=pause)
+        # Rejoin the persisted pause. Do not checkpoint/log a second pause just
+        # because its waiting process was restarted.
+        _wait_for_resume(fence)
+        paths = call_paths.paths(_RUN_DIR, _run_seq, f"{_current_gen}-call-{request['call']}")
+        for key in ("response", "utilities"):
+            if os.path.exists(paths[key]):
+                os.unlink(paths[key])
+    _call(request["call"], payload=request)
+    if request["call"] == 4:
+        apply_retention(_pending_run_params["min_pool_size"],
+                        _pending_run_params["complexity_temperature"], _current_gen)
+    return continuation
+
+
+def _pause(reason, request):
+    path = _save_checkpoint(request)
+    if os.path.exists(_control_path("pause_requested")):
+        os.unlink(_control_path("pause_requested"))
+    fence = {k: request[k] for k in ("run_seq", "generation", "call")}
+    pause = {**fence, "reason": reason, "checkpoint": path}
+    _write_json(_control_path("pause"), pause, durable=True)
+    _log_event("run_paused", **pause)
+    _wait_for_resume(fence)
+
+
+def _wait_for_resume(fence):
+    while True:
+        _check_abort_channel()
+        resume = _read_json_quiet(_control_path("resume"))
+        if resume is not None and all(resume.get(k) == v for k, v in fence.items()):
+            os.unlink(_control_path("resume"))
+            os.unlink(_control_path("pause"))
+            _log_event("run_resumed", **fence)
+            return
+        time.sleep(_RESP_POLL_S)
+
+
+def _payload(call):
+    members = [_member_out(m) for m in _gs(_current_gen)["members"]]
+    state = {"schema_version": _VERSION, "run_seq": _run_seq, "generation": _current_gen,
+             "call": call, "problem_type": _effective_problem_type(),
+             "metapopulation": {"size": len(members), "members": members},
+             "capture_status": {"ok": True, "failed_sections": []},
+             "previous_outcome": _previous_outcome,
+             "total_evaluations": _total_evals + (sum(d.get("evaluations") or 0 for d in
+                _gs(_current_gen)["demes"].values()) if call == 4 else 0)}
+    if call == 1:
+        # Row weighting is Boolean-only. Strategy seeds and evaluated members
+        # can have different game-score vector lengths; they are not shared rows.
+        size = (len(members[0].get("bscore") or [])
+                if members and state["problem_type"] == "boolean" else 0)
+        state["rows"] = [{"row": i, "scores": {m["program_id"]: m["bscore"][i] for m in members}}
+                         for i in range(size)]
+    elif call in (2, 4):
+        state["candidates"] = members
+        if call == 2:
+            state["row_weights"] = list(_row_weights)
+        else:
+            state["drawn_pairs"] = list(_draws)
+            state["demes"] = (list(_gs(_current_gen)["demes"].values())
+                              if "demes" in _emitted_sections() else {"gated": None})
+            if "atom_evidence" in _emitted_sections():
+                try:
+                    evidence, lossless, rollup = atom_evidence.build_atom_evidence(
+                        _gs(_current_gen)["members"], _current_gen, _effective_problem_type(),
+                        _best_penalized(_gs(_current_gen)["members"]), _atom_alphabet_map,
+                        _atom_cumulative, _VERSION, _run_seq)
+                    state["atom_evidence"], state["atom_lossless"] = evidence, lossless
+                    # Depth bands and score summaries are operator roll-ups
+                    # (reversal #21): they go to the native log, never to the agent.
+                    _log_event("atom_evidence_rollup", **rollup)
+                except Exception as exc:
+                    _bump(_capture_failures, "atom_evidence")
+                    state["capture_status"] = {"ok": False, "failed_sections": ["atom_evidence"]}
+                    state["atom_evidence"] = state["atom_lossless"] = {"error": str(exc)}
+            else:
+                state["atom_evidence"], state["atom_lossless"] = {"gated": None}, {"gated": None}
+    else:
+        state["selection"] = _pending_selection
+        state["alphabet"] = _atom_alphabet
+        labels = [a["label"] for a in (_atom_alphabet or {}).get("atoms", [])]
+        state["pairs"] = [list(p) for p in itertools.permutations(labels, 2)]
+        state["condition_vocabulary"] = conditional_policy.vocabulary(_experiment()["context_radius"])
+        state["previous_draws"] = list(_previous_draws)
+    return state
+
+
+_EMITTABLE_SECTIONS = ("atom_evidence", "demes")
+
+
+def _emitted_sections():
+    """Optional Call 4 sections. A name outside the known set is a config
+    error, not a gate: silently emitting `gated: null` for a typo would look
+    identical to a deliberate ablation (P3)."""
+    raw = os.environ.get("LLMOSES_EMIT_SECTIONS", ",".join(_EMITTABLE_SECTIONS))
+    names = {n.strip() for n in raw.split(",") if n.strip()}
+    unknown = names - set(_EMITTABLE_SECTIONS)
+    if unknown:
+        _abort_run("unknown_emit_section", unknown=sorted(unknown), allowed=list(_EMITTABLE_SECTIONS))
+    return names
+
+
+def _call(call, payload=None):
+    global _current_call, _await_gen, _checkpoint_request, _generation_start_members
+    if call != _current_call + 1:
+        _abort_run("call_fence", requested=call, previous=_current_call)
+    _current_call, _await_gen = call, _current_gen
+    request = payload or _payload(call)
+    _checkpoint_request = request
+    _call_states[call] = request
+    if call == 1:
+        _generation_start_members = list(_gs(_current_gen)["members"])
+    _known_ids.update(m["program_id"] for m in _gs(_current_gen)["members"])
+    lever = policy.CALL_LEVERS[call]
+    spec = _experiment()["levers"][lever]
+    reason = ("b_zero" if spec["b"] == 0 else "outside_window" if not _EXPECT(_current_gen)
+              else "await_disabled" if not _AWAIT_ENABLED else None)
+    if reason:
+        _responses[call] = None
+        _call_status[call] = reason
+        _native_by_design.append({"generation": _current_gen, "call": call, "reason": reason})
+        _log_event("call_skipped", generation=_current_gen, call=call, reason=reason)
+        return 0
+    step = f"{_current_gen}-call-{call}"
+    paths = call_paths.paths(_RUN_DIR, _run_seq, step)
+    _write_json(paths["state"], request)
+    _write_json(paths["action"],
+                {k: v for k, v in request.items() if k in
+                 ("run_seq", "generation", "call", "rows", "candidates", "pairs", "condition_vocabulary")})
+    _save_checkpoint(request)
+    ready, sentinel = paths["ready"], paths["response"]
+    while True:
+        if not os.path.exists(sentinel):
+            _write_json(ready, {"run_seq": _run_seq, "generation": _current_gen, "call": call})
+        deadline, hb = time.monotonic() + _RESP_TIMEOUT_S, _HeartbeatWatch()
+        while not os.path.exists(sentinel):
+            _check_abort_channel()
+            now = time.monotonic()
+            hb.observe(now)
+            pause_request = _read_json_quiet(_control_path("pause_requested"))
+            if now >= deadline or hb.stalled(now) or pause_request:
+                reason = ((pause_request or {}).get("reason") or
+                          ("response_timeout" if now >= deadline else "responder_dead"))
+                _pause(reason, request)
+                deadline, hb = time.monotonic() + _RESP_TIMEOUT_S, _HeartbeatWatch()
+                _write_json(ready, {"run_seq": _run_seq, "generation": _current_gen, "call": call})
+            time.sleep(_RESP_POLL_S)
+        utility_path = paths["utilities"]
+        raw = _read_json_quiet(utility_path)
+        doc, report = utility_schema.ingest(raw, request, _experiment())
+        trace = _read_json_quiet(paths["trace"]) or {}
+        rejected = [entry["key"][len("member:"):] for entry in trace.get("dropped_keys", [])
+                    if isinstance(entry, dict) and isinstance(entry.get("key"), str)
+                    and entry["key"].startswith("member:")]
+        ids = _id_buckets(raw or {}, request, rejected)
+        if doc is not None and report["dropped"]:
+            previous = doc.setdefault("outcome", {}).get("salvage", {})
+            doc["outcome"]["salvage"] = {
+                "requested": previous.get("requested", report["requested"]),
+                "survived": report["survived"]}
+        _record_confab(_current_gen, ids, doc is not None and not report["dropped"],
+                       (doc or {}).get("outcome", {}), (doc or {}).get("pass", True))
+        _log_event("utility_ingest", generation=_current_gen, call=call, report=report, ids=ids)
+        if doc is not None and doc["status"] in (503, 504):
+            # Infrastructure failure never silently contaminates an experimental arm.
+            _pause((doc.get("outcome") or {}).get("error_class", "provider_failure"), request)
+            os.unlink(sentinel)
+            if os.path.exists(ready):
+                os.unlink(ready)
+            continue
+        if doc is None or doc["status"] in (422, 500):
+            _responses[call] = None
+            _call_status[call] = "semantic_degradation"
+            _bump(_quality, "semantic_degradation")
+            _log_event("call_degraded", generation=_current_gen, call=call,
+                       reason=_call_status[call], divergence=0.0)
+        else:
+            _responses[call] = None if doc["pass"] else doc
+            _call_status[call] = "declined" if doc["pass"] else "applied"
+        return 0
+
+
+def _id_buckets(doc, state, rejected_ids=()):
+    field = utility_schema.FIELDS[state["call"]]
+    if state["call"] not in (2, 4):
+        return {}
+    entries = doc.get(field, []) if isinstance(doc.get(field, []), list) else []
+    ids = [e["program_id"] for e in entries if isinstance(e, dict) and isinstance(e.get("program_id"), str)]
+    ids.extend(rejected_ids)
+    if not ids:
+        return {}
+    offered = {m["program_id"] for m in state.get("candidates", [])}
+    unknown = [p for p in ids if p not in _known_ids]
+    unoffered = [p for p in ids if p in _known_ids and p not in offered]
+    return {field: {"unknown": len(unknown), "unoffered": len(unoffered), "total": len(ids),
+                    "sample": unknown[:_ID_SAMPLE_CAP], "unoffered_sample": unoffered[:_ID_SAMPLE_CAP]}}
+
+
+def _surface(call):
+    spec = _experiment()["levers"][policy.CALL_LEVERS[call]]
+    response = _responses.get(call)
+    if not response:
+        return 0.0, 1.0, {}
+    return spec["b"], response.get(utility_schema.TEMPERATURES[call], spec["T_base"]), response
+
+
+def _site(call, prior, realized, coverage=0.0, preference=None, adjustment=None, **extra):
+    name = policy.CALL_LEVERS[call]
+    preference = prior if preference is None else preference
+    b = _surface(call)[0]
+    mixed = [(1 - b) * p + b * a for p, a in zip(prior, preference)]
+    record = {"generation": _current_gen, "call": call, "lever": name,
+              "fired": bool(_surface(call)[0]), "reason": _call_status.get(call, "not_reached"),
+              "P": prior, "adjustment": adjustment, "A": preference, "D0": mixed,
+              "D": realized, "tv_agent": policy.divergence(prior, preference)["tv"],
+              "tv_realized": policy.divergence(prior, realized)["tv"], "coverage": coverage,
+              **policy.divergence(prior, realized), **extra}
+    _site_records.setdefault(call, []).append(record)
+    _log_event("lever_site", **record)
+
+
+def call_rows():
+    return _call(1)
+
+
+def install_row_weights():
+    global _row_weights, _needs_initial_rescore
+    old_weights = list(_row_weights)
+    count = len(_call_states[1].get("rows", []))
+    prior = [1.0 / count] * count if count else []
+    b, temp, response = _surface(1)
+    utilities = {e["row"]: e["weight"] for e in response.get("row_weights", [])}
+    preference = policy.normalize([utilities.get(i, 1.0) for i in range(count)], prior)
+    realized = policy.mix(prior, preference, b, temp)
+    _row_weights = [count * d for d in realized] if b else [1.0] * count
+    _site(1, prior, realized, len(utilities) / count if count else 0,
+          preference=preference, adjustment=[utilities.get(i, 1.0) for i in range(count)],
+          realized_weights=_row_weights,
+          zero_mass_fallback=bool(count) and not any(utilities.get(i, 1.0) for i in range(count)))
+    changed = _needs_initial_rescore or (old_weights != _row_weights and
+               (any(w != 1.0 for w in old_weights) or any(w != 1.0 for w in _row_weights)))
+    _needs_initial_rescore = False
+    return int(changed)
+
+
+def weighted_sum(bscore, native_sum):
+    values = [_num(v) for v in cons_to_list(bscore)]
+    if not _row_weights or all(w == 1 for w in _row_weights):
+        return _num(native_sum)
+    if len(values) != len(_row_weights):
+        _abort_run("row_weight_shape", rows=len(values), weights=len(_row_weights))
+    return sum(w * value for w, value in zip(_row_weights, values))
+
+
+def complexity_coef(ratio):
+    cfg = _experiment()
+    if "complexity_coef" in cfg:
+        return cfg["complexity_coef"]
+    r = float(_num(ratio))
+    if not math.isfinite(r):
+        raise ValueError("legacy complexity ratio must be finite")
+    return min(1.0, max(0.0, 1.0 / r)) if r > 0 else 1.0
+
+
+def selection_temperature():
+    return _experiment()["selection_temperature"]
+
+
+def call_exemplar():
+    return _call(2)
+
+
+def begin_selection(n):
+    _sel_buf.clear()
+    return 0
+
+
+def add_selection_candidate(index, prob, tree, score):
+    _sel_buf.append({"index": int(_num(index)), "weight": float(_num(prob)),
+                     "pid": _pid(expr_to_str(tree)), "score": float(_num(score))})
     return 0
 
 
 def select_index():
-    """Biased (or native) roulette over the streamed candidates. Returns the
-    metapop index of the chosen exemplar; always a valid int."""
-    try:
-        cands = (_sel_buf or {}).get("cands") or []
-        if not cands:
-            return 0
-        native = [c["prob"] for c in cands]
-        weights, degraded = native, None
-        if _lever_on("exemplar_selection", "exemplar"):
-            lam = _LEVER_WEIGHTS["exemplar_selection"]
-            temp = _pending_utilities["sampling_temperature"]
-            util = _pending_utilities["exemplar"]
-            # missing program_id => neutral (u_hat=1 keeps the native weight)
-            weights = [_mix(n, _sharpen(util[c["pid"]], temp), lam)
-                       if c["pid"] in util else n
-                       for n, c in zip(native, cands)]
-            if sum(weights) <= 0:
-                weights, degraded = native, "all_zero_bias"
-            idx = _roulette(weights)
-            if idx is None:
-                idx = 0
-            _log_event("bias_applied", lever="exemplar_selection",
-                       response_gen=_utility_gen, lam=lam, degraded=degraded,
-                       native_probs=[round(w, 6) for w in native],
-                       biased_probs=[round(w, 6) for w in weights],
-                       chosen_index=cands[idx]["i"], chosen_pid=cands[idx]["pid"])
-            return cands[idx]["i"]
-        idx = _roulette(weights)
-        return cands[idx]["i"] if idx is not None else 0
-    except Exception as e:
-        sys.stderr.write(f"[select_index] error: {e}\n")
-        return 0
+    weights = [m["weight"] for m in _sel_buf]
+    prior = policy.normalize(weights)
+    b, temp, response = _surface(2)
+    by_id = {e["program_id"]: e["offset"] for e in response.get("exemplar_utilities", [])}
+    utilities = {i: by_id[m["pid"]] for i, m in enumerate(_sel_buf) if m["pid"] in by_id}
+    preference = (policy.offset_preference([m["score"] for m in _sel_buf], utilities,
+                  _experiment()["selection_temperature"] / 100.0) if any(utilities.values()) else prior)
+    realized = policy.mix(prior, preference, b, temp)
+    index = policy.roulette(realized if b else weights)
+    _site(2, prior, realized, len(utilities) / len(prior) if prior else 0,
+          chosen_program_id=_sel_buf[index]["pid"], program_ids=[m["pid"] for m in _sel_buf], preference=preference,
+          adjustment=[utilities.get(i, 0.0) for i in range(len(prior))])
+    return _sel_buf[index]["index"]
 
 
-# --- Lever 2a: resize culling -------------------------------------------------
-# The metapopulation fork streams the removable tail [offset-1, popSize-1]
-# (exactly the native randint(offset, popSize)-1 range), then cull_index()
-# picks one to remove. Native weight is uniform 1; cull weight uses
-# u = 1 - retention, and members WITHOUT a retention entry stay native.
-def begin_cull(offset, pop_size):
-    global _cull_buf
-    _cull_buf = {"offset": _num(offset), "pop_size": _num(pop_size), "cands": []}
+def selection_single(tree):
+    pid = _pid(expr_to_str(tree))
+    offsets = {e["program_id"]: e["offset"] for e in _surface(2)[2].get("exemplar_utilities", [])}
+    _site(2, [1.0], [1.0], float(pid in offsets), adjustment=[offsets.get(pid, 0.0)],
+          chosen_program_id=pid, program_ids=[pid], guard="single_member")
     return 0
 
 
-def add_cull_member(i, tree):
-    try:
-        _cull_buf["cands"].append({"i": int(_num(i)),
-                                   "pid": _pid(expr_to_str(tree))})
-    except Exception as e:
-        sys.stderr.write(f"[add_cull_member] error: {e}\n")
+def call_retention(minimum, comp_temp, generation):
+    global _previous_outcome
+    _call(4)
+    return apply_retention(minimum, comp_temp, generation)
+
+
+def apply_retention(minimum, comp_temp, generation):
+    global _previous_outcome
+    members = _gs(_current_gen)["members"]
+    scores = [m["cscore"]["penalized_score"] for m in members]
+    cfg = _experiment()["retention"]
+    prior = policy.softmax(scores, cfg["tau"])
+    old = {m["program_id"] for m in _generation_start_members}
+    entrants = sum(m["program_id"] not in old for m in members)
+    k, budget = policy.retention_budget(prior, scores, len(old), entrants,
+        int(_num(minimum)), float(_num(comp_temp)) * 0.30, cfg, int(_num(generation)))
+    b, temp, response = _surface(4)
+    by_id = {e["program_id"]: e["offset"] for e in response.get("retention_utilities", [])}
+    utilities = {i: by_id[m["program_id"]] for i, m in enumerate(members) if m["program_id"] in by_id}
+    preference = policy.offset_preference(scores, utilities, cfg["tau"]) if any(utilities.values()) else prior
+    realized = policy.mix(prior, preference, b, temp)
+    pi, adjustment = policy.inclusion_probabilities(realized, k, cfg["constraint"])
+    native_pi, _ = policy.inclusion_probabilities(prior, k, cfg["constraint"])
+    chosen = policy.madow(pi, k)
+    _retained.clear()
+    _retained.update(members[i]["program_id"] for i in chosen)
+    _previous_outcome = {"survivors": sorted(_retained),
+                         "culled": [m["program_id"] for m in members if m["program_id"] not in _retained]}
+    _site(4, prior, realized, len(utilities) / len(prior) if prior else 0,
+          preference=preference, adjustment=[utilities.get(i, 0.0) for i in range(len(prior))],
+          program_ids=[m["program_id"] for m in members],
+          inclusion_probabilities=pi, native_inclusion_probabilities=native_pi,
+          mean_inclusion_difference=sum(abs(a - p) for a, p in zip(pi, native_pi)) / len(pi) if pi else 0,
+          budget=budget, inclusion_adjustment=adjustment, survivors=sorted(_retained))
+    _log_event("overflow_valve", generation=_current_gen, fired=False, reason="subsumed_by_K")
     return 0
 
 
-def _retention_of(pid):
-    """Retention for pid, honoring the '*' wildcard default; None = no guidance."""
-    ret = _pending_utilities["retention"]
-    return ret.get(pid, _pending_utilities.get("retention_default"))
+def retain_member(tree):
+    return int(_pid(expr_to_str(tree)) in _retained)
 
 
-def _culling_lever_on():
-    """The culling lever has data when any explicit retention entry OR the '*'
-    wildcard default is present."""
-    return (_lever_on("culling") and
-            (_pending_utilities.get("retention") or
-             _pending_utilities.get("retention_default") is not None))
+def flush_gen(gen):
+    global _total_evals
+    s = _gs(gen)
+    if _pending_selection:
+        _explored_ids.add(_pending_selection["program_id"])
+    for did in s["deme_order"]:
+        _total_evals += s["demes"][did].get("evaluations") or 0
+    for call in policy.CALL_LEVERS:
+        if call not in _site_records:
+            _log_event("lever_site", generation=_current_gen, call=call,
+                       lever=policy.CALL_LEVERS[call], fired=False, reason="no_draw_site",
+                       P=[], adjustment=[], A=[], D0=[], D=[], coverage=0.0,
+                       tv_agent=0.0, tv_realized=0.0, tv=0.0, js=0.0)
+    doc = {"schema_version": _VERSION, "run_seq": _run_seq, "generation": _current_gen,
+           "metapopulation": {"members": [_member_out(m) for m in s["members"]]},
+           "demes": list(s["demes"].values()), "total_evaluations": _total_evals,
+           "merge_summary": {**(_pending_merge or {}), "resize_cull": _previous_outcome},
+           "selection": _pending_selection, "drawn_pairs": list(_draws),
+           "call_status": _call_status}
+    _write_json(os.path.join(_cur_state_dir, f"step-{_current_gen}.json"), doc)
+    _log_event("generation_complete", generation=_current_gen,
+               total_evaluations=_total_evals, call_status=_call_status)
+    return 0
 
 
-def cull_index():
-    try:
-        cands = (_cull_buf or {}).get("cands") or []
-        if not cands:  # degenerate; mirror native lower bound
-            return max(int((_cull_buf or {}).get("offset", 1)) - 1, 0)
-        if _culling_lever_on():
-            lam = _LEVER_WEIGHTS["culling"]
-            temp = _pending_utilities["sampling_temperature"]
-            weights = [_mix(1.0, _sharpen(1.0 - r, temp), lam)
-                       if (r := _retention_of(c["pid"])) is not None else 1.0
-                       for c in cands]
-            degraded = None
-            if sum(weights) <= 0:
-                weights, degraded = [1.0] * len(cands), "all_zero_bias"
-            idx = _roulette(weights)
-            if idx is None:
-                idx = 0
-            _log_event("bias_applied", lever="culling",
-                       response_gen=_utility_gen, lam=lam, degraded=degraded,
-                       removable=[c["pid"] for c in cands],
-                       weights=[round(w, 6) for w in weights],
-                       culled_index=cands[idx]["i"], culled_pid=cands[idx]["pid"])
-            return cands[idx]["i"]
-        return cands[random.randint(0, len(cands) - 1)]["i"]
-    except Exception as e:
-        sys.stderr.write(f"[cull_index] error: {e}\n")
-        return max(int((_cull_buf or {}).get("offset", 1)) - 1, 0)
+def call_atom():
+    return _call(3)
 
 
-# --- Lever 2b: dominated-candidate escape --------------------------------------
-def dominated_escape(tree):
-    """Bernoulli gate on removeDominated: p(keep) = lam * u_hat(retention).
-    Returns 1 to KEEP the dominated candidate, 0 for the native removal."""
-    try:
-        if not _culling_lever_on():
-            return 0
-        pid = _pid(expr_to_str(tree))
-        r = _retention_of(pid)
-        if r is None:
-            return 0
-        lam = _LEVER_WEIGHTS["culling"]
-        temp = _pending_utilities["sampling_temperature"]
-        p_keep = _clamp01(lam * _sharpen(r, temp))
-        keep = random.random() < p_keep
-        if keep:
-            _log_event("bias_applied", lever="dominated_escape",
-                       response_gen=_utility_gen, pid=pid,
-                       p_keep=round(p_keep, 4))
-        return 1 if keep else 0
-    except Exception as e:
-        sys.stderr.write(f"[dominated_escape] error: {e}\n")
+def _items(value):
+    return cons_to_list(value)
+
+
+def begin_build(tree):
+    global _build_seq, _build_tree
+    if _combo_bufs:
+        _abort_run("interleaved_representation_build", tokens=list(_combo_bufs))
+    _build_seq += 1
+    _build_tree = tree
+    _construction_history.clear()
+    return 0
+
+
+def _literal(tree):
+    if not isinstance(tree, list) or not tree:
+        return None
+    if tree[0] == "mkKnob":
+        return _literal(tree[1])
+    if tree[0] != "mkTree" or len(tree) != 3:
+        return None
+    op = unwrap_atom(tree[1])
+    children = _items(tree[2])
+    if op == "NOT" and len(children) == 1:
+        literal = _literal(children[0])
+        if literal:
+            return {"atom": literal["atom"], "polarity": "-" if literal["polarity"] == "+" else "+"}
+    if not children and str(op) in _atom_alphabet_map:
+        return {"atom": str(op), "polarity": "+"}
+    return None
+
+
+def begin_combo_draw(combos, labels, op=None, node_path=None,
+                     site_kind="exemplar_node", local_children=None):
+    global _next_token, _site_seq
+    combinations = [[int(_num(i)) for i in _items(c)] for c in _items(combos)]
+    labels = [str(a) for a in _items(labels)]
+    pairs = [[labels[i] for i in pair] for pair in combinations]
+    path = [int(_num(x)) for x in _items(node_path)]
+    _next_token += 1
+    _site_seq += 1
+    token = _next_token
+    ancestors = [h for h in _construction_history
+                 if len(h["path"]) < len(path) and path[:len(h["path"])] == h["path"]]
+    local = [lit for child in _items(local_children) if (lit := _literal(child))]
+    state = {"op": str(op), "depth": len(path), "site_kind": str(site_kind),
+             "local_literals": local,
+             "ancestor_drew": [p for h in ancestors for p in h["drawn_pairs"]],
+             "already_drawn": [p for h in _construction_history for p in h["drawn_pairs"]]}
+    prior = policy.normalize([1.0] * len(pairs))
+    b, temperature, response = _surface(3)
+    preference, detail = conditional_policy.evaluate(response.get("policy", {}), pairs, prior, state)
+    realized = policy.mix(prior, preference, b, temperature)
+    _combo_bufs[token] = {"pairs": pairs, "combinations": combinations, "labels": labels,
+                         "P": prior, "A": preference, "D": realized, "b": b,
+                         "path": path, "site_seq": _site_seq, "build_seq": _build_seq,
+                         "state": state, "detail": detail, "pick_records": []}
+    return token
+
+
+def combo_guided(token):
+    return int(_combo_bufs[int(_num(token))]["b"] > 0)
+
+
+def weighted_combo_pick(token, lower, upper, picked):
+    buffer = _combo_bufs[int(_num(token))]
+    taken = {int(_num(i)) for i in _items(picked)}
+    eligible = [i for i in range(int(_num(lower)), int(_num(upper)) + 1) if i not in taken]
+    weights = [buffer["D"][i] for i in eligible]
+    zero = not any(weights)
+    if zero:
+        weights = [1.0] * len(eligible)
+    index = eligible[policy.roulette(weights)]
+    buffer["pick_records"].append({"remaining": eligible,
+                                   "conditional_D": policy.normalize(weights),
+                                   "chosen": index, "zero_mass_fallback": zero})
+    return index
+
+
+def end_combo_draw(token, picked):
+    buffer = _combo_bufs.pop(int(_num(token)))
+    indices = [int(_num(i)) for i in _items(picked)]
+    if len(indices) != len(set(indices)) or any(i < 0 or i >= len(buffer["pairs"]) for i in indices):
+        _abort_run("invalid_pair_draw", site_seq=buffer["site_seq"])
+    # Preserve the native selector tuple; never infer chronological order from it.
+    pairs = [buffer["pairs"][i] for i in indices]
+    record = {"site_seq": buffer["site_seq"], "build_seq": buffer["build_seq"],
+              "path": buffer["path"], "op": buffer["state"]["op"],
+              "depth": buffer["state"]["depth"], "site_kind": buffer["state"]["site_kind"],
+              "local_literals": buffer["state"]["local_literals"],
+              "labels": buffer["labels"], "drawn_pairs": pairs, "knobs": []}
+    _construction_history.append(record)
+    _draws.append(record)
+    detail = buffer["detail"]
+    _site(3, buffer["P"], buffer["D"], detail["coverage"],
+          preference=buffer["A"], adjustment=detail["factors"],
+          site_seq=buffer["site_seq"], build_seq=buffer["build_seq"],
+          # Diagnostic causal position; site identity remains the sequence ID.
+          path=buffer["path"],
+          causal_state=buffer["state"], pair_universe=buffer["pairs"], fired_rules=detail["fired_rules"],
+          zero_mass_fallback=detail["zero_mass_fallback"], drawn_pairs=pairs,
+          picks=buffer["pick_records"])
+    return 0
+
+
+def register_pair_knobs(tree, causal_path):
+    path = [int(_num(i)) for i in _items(causal_path)]
+    sites = [d for d in _draws if d["build_seq"] == _build_seq and d["path"] == path]
+    if not sites:
+        return 0  # arity-one sites do not draw pairs
+    site = sites[-1]
+    labels = [a["label"] for a in (_atom_alphabet or {}).get("atoms", [])]
+    if not isinstance(tree, list) or tree[0] != "mkTree":
         return 0
+    for child in _items(tree[2]):
+        if not isinstance(child, list) or len(child) != 4 or child[0] != "mkKnob":
+            continue
+        subtree = child[1]
+        if isinstance(subtree, list) and subtree and subtree[0] == "mkNullVex":
+            children = _items(subtree[1])
+            subtree = children[0] if len(children) == 1 else None
+        if not isinstance(subtree, list) or len(subtree) != 3 or subtree[0] != "mkTree":
+            continue
+        literals = [_literal(t) for t in _items(subtree[2])]
+        if len(literals) != 2 or any(t is None for t in literals):
+            continue
+        actual = {(t["atom"], t["polarity"]) for t in literals}
+        for a, b in site["drawn_pairs"]:
+            # getArgs uses the feature set's index order, not alphabet order.
+            label_order = site.get("labels", labels)
+            expected = {(a, "-" if label_order.index(a) < label_order.index(b) else "+"), (b, "+")}
+            if actual == expected:
+                site["knobs"].append({"index": int(_num(child[3])), "pair": [a, b],
+                                      "build_seq": _build_seq, "site_seq": site["site_seq"]})
+    return 0
 
 
-# --- Lever 3: comparator ordering ----------------------------------------------
-def comparator_resort_active():
-    """1 when the comparator lever should re-sort the current metapopulation.
-    Merge inserts always involve a candidate born AFTER the response (its id
-    cannot appear in program_id_ordering), so the ordering is applied by
-    re-sorting the KNOWN population at the top of each generation instead."""
-    try:
-        return 1 if _lever_on("comparator", "comparator_rank") else 0
-    except Exception:
-        return 0
-
-
-def compare_exemplars(tree1, tree2):
-    """comparator lever: -1/0/1 when the response's program_id_ordering covers
-    BOTH exemplars (lower rank = better = Greater); 2 = 'use the native
-    comparison' (lever off, missing ids, or any error). The native comparison
-    itself stays MeTTa-side in the fork, so the off path is exactly native."""
-    global _comparator_overrides
-    try:
-        if not _lever_on("comparator", "comparator_rank"):
-            return 2
-        rank = _pending_utilities["comparator_rank"]
-        pid1, pid2 = _pid(expr_to_str(tree1)), _pid(expr_to_str(tree2))
-        if pid1 not in rank or pid2 not in rank:
-            return 2
-        _comparator_overrides += 1
-        if rank[pid1] == rank[pid2]:
-            return 0
-        return 1 if rank[pid1] < rank[pid2] else -1
-    except Exception as e:
-        sys.stderr.write(f"[compare_exemplars] error: {e}\n")
-        return 2
-
-
-# --- Lever 5: atom-prior weighted combination sampling ---------------------------
-def _aggregate_prior(u_hats, fn):
-    """Width-generic combo weight from per-atom sharpened priors."""
-    if not u_hats:
-        return 1.0
-    if fn == "mean":
-        return sum(u_hats) / len(u_hats)
-    if fn == "geometric_mean":
-        prod = 1.0
-        for u in u_hats:
-            prod *= u
-        return prod ** (1.0 / len(u_hats)) if prod > 0 else 0.0
-    if fn == "softmax":  # exp-weighted mean of the atom priors
-        exps = [math.exp(min(u, 50.0)) for u in u_hats]
-        return sum(u * e for u, e in zip(u_hats, exps)) / sum(exps)
-    prod = 1.0           # default: product — a combo is only as strong as its
-    for u in u_hats:     # weakest atom
-        prod *= u
-    return prod
-
-
-def begin_combo_draw(combos, labels, op=None, path=None):
-    """Gate + setup for one sampler node draw. combos = enumerated index
-    combinations (pairs/triplets) into labels; op = the exemplar node's
-    operator; path = the node id (its tree path — root is (0), a child of the
-    root is (n), deeper nodes concatenate). Returns 1 when the atom_prior
-    lever applies (the fork then draws through weighted_combo_pick); 0 keeps
-    the native lazyRandomSelector untouched.
-
-    D-033 contextual application: each atom's effective utility starts from
-    the global prior (missing => neutral 1.0) and blends matching contextual
-    entries, weighted by the product of the lever_weights of the axes the
-    entry conditions on — all-zero lever_weights reproduces the global-only
-    v1 behavior exactly. The aggregated combo weight is then multiplied by
-    the combination_synergy factor (the non-separable channel)."""
-    global _combo_buf
-    try:
-        p = _pending_utilities
-        if not (_lever_on("atom_prior") and
-                (p["atom_prior"] or p["atom_prior_ctx"] or p["synergy"])):
-            _combo_buf = None
-            return 0
-        label_list = [_flat(l) for l in (labels if isinstance(labels, list) else [labels])]
-        combo_list = []
-        for c in (combos if isinstance(combos, list) else []):
-            idxs = [int(_num(v)) for v in (c if isinstance(c, list) else [c])]
-            combo_list.append(idxs)
-        prior = p["atom_prior"]
-        prior_ctx = p["atom_prior_ctx"]
-        synergy = p["synergy"]
-        lw = p["lever_weights"]
-        temp = p["sampling_temperature"]
-        fn = p["aggregate_fn"]
-        lam = _LEVER_WEIGHTS["atom_prior"]
-
-        # Live draw context. The drawn perm becomes a clause under the SWAPPED
-        # operator (getArgs builds ($swapedOp ...)); under alternating AND/OR
-        # canonicalization clause_type and parent_operator coincide, exactly
-        # as atom_evidence records them. Depth: the node id is its tree path
-        # (root (0) is depth 0; elsewhere depth = path length); the new clause
-        # sits one below the node, bucketed with atom_evidence's bands.
-        op_s = _flat(op) if op is not None else None
-        clause_op = {"AND": "OR", "OR": "AND"}.get(op_s, op_s)
-        path_l = [int(_num(v)) for v in (path if isinstance(path, list)
-                                         else ([] if path in (None, ()) else [path]))]
-        node_depth = 0 if path_l == [0] else len(path_l)
-        depth_bucket = (atom_evidence._depth_bucket(node_depth + 1)
-                        if path_l else None)
-        exemplar_id = (_pending_selection or {}).get("program_id")
-        draw_ctx = {"clause_type": clause_op, "parent_operator": clause_op,
-                    "depth_bucket": depth_bucket, "exemplar_id": exemplar_id}
-
-        def u_eff(atom, pol):
-            """Blend global + matching contextual priors; None = no entry
-            touched this atom (stay neutral, unsharpened)."""
-            touched = atom in prior
-            u = prior[atom] if touched else 1.0
-            for e in prior_ctx:
-                if e["atom"] != atom:
-                    continue
-                w, match = 1.0, True
-                for k, v in e["context"].items():
-                    cur = pol if k == "polarity" else draw_ctx.get(k)
-                    if cur is None or str(cur) != v:
-                        match = False
-                        break
-                    w *= lw.get(_CTX_KEY_AXIS[k], 0.0)
-                if not match or w <= 0.0:
-                    continue
-                if not touched:
-                    touched, u = True, 1.0
-                u = (1.0 - w) * u + w * e["utility"]
-            return u if touched else None
-
-        syn_w = lw.get("combination_synergy", 0.0)
-        syn_map = ({e["atoms"]: e["utility"] for e in synergy}
-                   if syn_w > 0.0 else {})
-
-        weights, names, literals = [], [], []
-        for idxs in combo_list:
-            atoms = [label_list[i] if 0 <= i < len(label_list) else None for i in idxs]
-            # Boolean pair polarity is order-encoded at the draw: getArgs emits
-            # (NOT first, second) for ascending index pairs, a positive pair
-            # otherwise. Strategy triplets carry no NOT at the draw.
-            if len(idxs) == 2 and idxs[0] < idxs[1]:
-                pols = ["-", "+"]
+def _active_settings(tree, settings):
+    """Mirror native effective→actual mapping and skip absent ancestor subtrees."""
+    active = {}
+    def visit(node):
+        if not isinstance(node, list) or not node:
+            return
+        tag = node[0]
+        if tag == "mkKnob":
+            subtree, knob, index = node[1:]
+            index = int(_num(index))
+            effective = int(_num(settings[index]))
+            disc = knob[1]
+            multiplicity = int(_num(unwrap_atom(disc[1])))
+            default = int(_num(unwrap_atom(disc[3])))
+            disallowed = {int(_num(unwrap_atom(d))) for d in _items(disc[4])}
+            if not disallowed:
+                actual = effective
+            elif effective == 0 or multiplicity - len(disallowed - {default}) <= 1:
+                actual = default
             else:
-                pols = ["+"] * len(idxs)
-            u_hats = []
-            for a, pol in zip(atoms, pols):
-                u = u_eff(a, pol)
-                u_hats.append(_sharpen(u, temp) if u is not None else 1.0)
-            w = _mix(1.0, _aggregate_prior(u_hats, fn), lam)
-            if syn_map:
-                key = frozenset(a for a in atoms if a is not None)
-                if key in syn_map:
-                    lam_s = lam * syn_w
-                    w *= lam_s * _sharpen(syn_map[key], temp) + (1.0 - lam_s)
-            weights.append(w)
-            names.append(atoms)
-            literals.append([f"{pol}{a}" for a, pol in zip(atoms, pols)])
-        _combo_buf = {"weights": weights, "names": names, "literals": literals}
-        _log_event("bias_applied", lever="atom_prior", response_gen=_utility_gen,
-                   lam=lam, aggregate_fn=fn, n_combos=len(weights),
-                   nonzero=sum(1 for w in weights if w > 0),
-                   clause_type=clause_op, depth_bucket=depth_bucket,
-                   exemplar_id=exemplar_id,
-                   contextual=bool(prior_ctx), synergy=bool(syn_map))
-        return 1
-    except Exception as e:
-        sys.stderr.write(f"[begin_combo_draw] error: {e}\n")
-        _combo_buf = None
+                options = [v for v in range(multiplicity) if v != default and v not in disallowed]
+                actual = options[effective - 1]
+            if actual == 0:
+                return
+            active[index] = actual
+            if isinstance(subtree, list) and subtree[0] == "mkNullVex":
+                for child in _items(subtree[1]):
+                    visit(child)
+            else:
+                visit(subtree)
+        elif tag == "mkTree":
+            for child in _items(node[2]):
+                visit(child)
+        # Bare null vertices are absent, unless an active knob above unwraps them.
+    visit(tree)
+    return active
+
+
+def tag_candidate(tree, rep, inst, deme_id):
+    if not isinstance(inst, list) or inst[0] != "mkInst":
         return 0
+    settings = _items(inst[1])
+    rep_tree = rep[2] if isinstance(rep, list) and len(rep) > 2 else None
+    rep_key = expr_to_str(rep_tree)
+    build_ids = {d["build_seq"] for d in _draws if d.get("representation") == rep_key}
+    active = _active_settings(rep_tree, settings) if build_ids else {}
+    tags = []
+    for draw in _draws:
+        if draw["build_seq"] not in build_ids:
+            continue
+        for knob in draw["knobs"]:
+            if knob["index"] in active:
+                tags.append({**knob, "setting": active[knob["index"]],
+                             "deme_id": _demeid(deme_id)})
+    _candidate_pairs[_pid(expr_to_str(tree))] = tags
+    return 0
 
 
-def weighted_combo_pick(lower, upper, picked):
-    """One without-replacement weighted draw over combo indices [lower, upper]
-    excluding picked. All-zero remaining mass degrades to uniform (logged)."""
-    try:
-        lo, hi = int(_num(lower)), int(_num(upper))
-        taken = {int(_num(p)) for p in (picked if isinstance(picked, list) else
-                                        ([picked] if picked is not None else []))}
-        remaining = [i for i in range(lo, hi + 1) if i not in taken]
-        if not remaining:
-            return lo
-        buf = _combo_buf or {}
-        weights = [(buf.get("weights") or [])[i]
-                   if i < len(buf.get("weights") or []) else 1.0
-                   for i in remaining]
-        def _row(field):
-            vals = buf.get(field) or []
-            return vals[remaining[pos]] if remaining[pos] < len(vals) else None
-        pos = _roulette(weights)
-        if pos is None:  # zero mass left: deliberate diversity cut exhausted
-            pos = random.randint(0, len(remaining) - 1)
-            _log_event("bias_degraded", lever="atom_prior",
-                       reason="zero_mass_pool", remaining=len(remaining))
-            _log_event("combo_pick", lever="atom_prior", degraded=True,
-                       index=remaining[pos], atoms=_row("names"),
-                       literals=_row("literals"))
-            return remaining[pos]
-        _log_event("combo_pick", lever="atom_prior", degraded=False,
-                   index=remaining[pos], atoms=_row("names"),
-                   literals=_row("literals"))
-        return remaining[pos]
-    except Exception as e:
-        sys.stderr.write(f"[weighted_combo_pick] error: {e}\n")
-        return int(_num(lower)) if lower is not None else 0
+def finish_build(tree):
+    key = expr_to_str(tree)
+    for draw in _draws:
+        if draw["build_seq"] == _build_seq:
+            draw["representation"] = key
+    return 0
 
 
-# --- Lever 4: complexity ratio ---------------------------------------------------
-def current_complexity_ratio(g):
-    """Called once per generation from runMosesLoop. Returns 0 when the context
-    should stay as-is; otherwise the new effective ratio (the loop rebuilds the
-    scoring context with it, and the rebuilt context persists via recursion).
-    Each response's delta is consumed exactly once."""
-    global _effective_cratio, _cratio_applied_for
-    try:
-        if not _lever_on("complexity_ratio", "complexity_ratio_delta"):
-            return 0
-        if _utility_gen is None or _cratio_applied_for == _utility_gen:
-            return 0
-        delta = _pending_utilities["complexity_ratio_delta"]
-        _cratio_applied_for = _utility_gen          # consume even on maintain
-        direction = delta.get("direction")
-        mag = _num(delta.get("magnitude")) or 0.0
-        if direction == "maintain" or mag <= 0:
-            return 0
-        base = _effective_cratio
-        if base is None:
-            base = _cr_or_none(_pending_run_params.get("complexity_ratio"))
-        if base is None:
-            base = _last_complexity_ratio
-        if base is None:
-            _log_event("bias_degraded", lever="complexity_ratio",
-                       reason="no_base_ratio", generation=_num(g))
-            return 0
-        lam = _LEVER_WEIGHTS["complexity_ratio"]
-        new = base + lam * mag * (1.0 if direction == "increase" else -1.0)
-        new = max(new, 0.01)                        # ratio<=0 disables penalties
-        _effective_cratio = new
-        _log_event("bias_applied", lever="complexity_ratio", generation=_num(g),
-                   response_gen=_utility_gen, lam=lam, direction=direction,
-                   magnitude=mag, old=round(base, 6), new=round(new, 6))
-        return float(new)
-    except Exception as e:
-        sys.stderr.write(f"[current_complexity_ratio] error: {e}\n")
-        return 0
+
+def current_generation():
+    return _current_gen
+
+
+def clear_members(generation):
+    _gs(generation)["members"].clear()
+    return 0
+
+
+def _bridge_guard(function):
+    """Do not let a Python failure become an unevaluated atom in MeTTa."""
+    @functools.wraps(function)
+    def guarded(*args, **kwargs):
+        try:
+            return function(*args, **kwargs)
+        except Exception as exc:
+            _abort_run("bridge_failure", function=function.__name__, error=repr(exc))
+    return guarded
+
+
+# Every py-call entry uses the same failure boundary. Ingest handles semantic
+# failures before this boundary; only broken runtime/config invariants abort.
+for _entrypoint in (
+    "new_run", "begin_gen", "add_member", "add_knob", "set_deme", "begin_merge",
+    "add_merged_member", "set_merge_count", "add_cull_candidate", "set_selection",
+    "set_deme_evals", "set_problem_spec", "get_total_evals", "get_hill_climb_max_evals",
+    "set_run_param", "set_problem_spec_strategy", "emit_run_config", "flush_terminal",
+    "enter_gen", "checkpoint_native", "restore_checkpoint", "call_rows",
+    "install_row_weights", "weighted_sum", "complexity_coef", "selection_temperature",
+    "call_exemplar", "begin_selection", "add_selection_candidate", "select_index",
+    "selection_single", "call_retention", "retain_member", "flush_gen", "call_atom",
+    "begin_build", "begin_combo_draw", "combo_guided", "weighted_combo_pick",
+    "end_combo_draw", "register_pair_knobs", "tag_candidate", "finish_build",
+    "current_generation", "clear_members"):
+    globals()[_entrypoint] = _bridge_guard(globals()[_entrypoint])

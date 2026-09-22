@@ -8,48 +8,21 @@ import re
 import sys
 import time
 
+import call_paths
 import responder_control as rc
 
-_READY_RE = re.compile(r"^run-([^-]+)-step-([^-]+)$")
-
-
-def _number(value):
-    try:
-        return (0, int(value))
-    except (TypeError, ValueError):
-        return (1, str(value))
-
-
 def _ready(run_dir):
-    directory = os.path.join(run_dir, "ready")
-    rows = []
-    try:
-        names = os.listdir(directory)
-    except OSError:
-        return rows
-    for name in names:
-        match = _READY_RE.match(name)
-        if match and os.path.isfile(os.path.join(directory, name)):
-            rows.append((match.group(1), match.group(2), name))
-    return sorted(rows, key=lambda row: (_number(row[0]), _number(row[1])))
+    return [(seq, step, os.path.basename(path)) for seq, step, path in call_paths.ready_entries(run_dir)]
 
 
 def _terminal(run_dir):
-    root = os.path.join(run_dir, "state")
-    found = []
-    try:
-        runs = os.listdir(root)
-    except OSError:
-        return None
-    for name in runs:
-        path = os.path.join(root, name, "terminal.json")
-        doc = rc.read_json(path) if name.startswith("run-") else None
-        if doc and doc.get("run_verdict"):
-            found.append((_number(name[4:]), doc["run_verdict"]))
-    # A driver may run several runMoses in one directory; the LATEST run's
-    # terminal is the session's verdict (an earlier run finishing is not
-    # "done" while a later run is still emitting).
-    return sorted(found)[-1][1] if found else None
+    result = call_paths.latest_terminal(run_dir)
+    return result[2] if result else None
+
+
+def _request_pause(run_dir, reason, detail):
+    rc.write_json_atomic(rc.control_path(run_dir, "pause_requested"),
+                         {"reason": reason, "detail": detail, "source": "supervisor"}, fsync=True)
 
 
 def parse_session(value):
@@ -89,14 +62,17 @@ def _status(session, first_seen, now, stall_s):
     elif rc.abort_requested(run_dir):
         state, verdict = "done", "aborted"
         reason = (rc.read_json(rc.control_path(run_dir, "abort")) or {}).get("reason")
+    elif rc.read_json(rc.control_path(run_dir, "pause")):
+        state = "paused"
+        reason = rc.read_json(rc.control_path(run_dir, "pause"))["reason"]
+        first_seen.clear()
     elif name and (stall_s <= 0 or age > stall_s):
         detail = "ready sentinel %s outstanding for %.3fs" % (name, age)
-        rc.request_abort(run_dir, "agent_wedged", "supervisor", detail)
-        state, verdict, reason = "done", "aborted", "agent_wedged"
+        _request_pause(run_dir, "agent_wedged", detail)
+        state, reason = "pausing", "agent_wedged"
     elif name and agent_alive is False:
-        rc.request_abort(run_dir, "agent_dead", "supervisor",
-                         "agent pid %s is not alive" % session["agent_pid"])
-        state, verdict, reason = "done", "aborted", "agent_dead"
+        _request_pause(run_dir, "agent_dead", "agent pid %s is not alive" % session["agent_pid"])
+        state, reason = "pausing", "agent_dead"
     elif moses_alive is False:
         state, verdict, reason = "done", "aborted", "moses_dead"
     else:
@@ -130,16 +106,15 @@ def run(sessions, stall_s, poll_s, once=False, max_wall_s=None):
             break
         if max_wall_s is not None and now - started >= max_wall_s:
             # Backstop expiry must never look like successful supervision:
-            # every session still running is aborted, loudly, before exit.
+            # every unfinished session gets a durable pause request before exit.
             for name, session in sessions.items():
                 if views[name]["state"] != "done":
-                    rc.request_abort(session["run_dir"], "supervisor_backstop",
-                                     "supervisor",
+                    _request_pause(session["run_dir"], "supervisor_backstop",
                                      "supervisor wall-clock backstop %.1fs expired"
                                      % max_wall_s)
-                    views[name].update({"state": "done", "verdict": "aborted",
+                    views[name].update({"state": "pausing", "verdict": None,
                                         "reason": "supervisor_backstop"})
-                    session.update({"state": "done", "verdict": "aborted",
+                    session.update({"state": "pausing", "verdict": None,
                                     "reason": "supervisor_backstop"})
             payload["sessions"] = views
             for session in sessions.values():
@@ -165,7 +140,8 @@ def main(argv=None):
     views = run(sessions, args.stall_s, args.poll_s, args.once, args.max_wall_s)
     print(json.dumps({name: {"verdict": view["verdict"], "reason": view["reason"]}
                       for name, view in views.items()}, sort_keys=True))
-    return 1 if any(view["verdict"] == "aborted" for view in views.values()) else 0
+    return 1 if any(view["verdict"] == "aborted" or view["state"] != "done"
+                    for view in views.values()) else 0
 
 
 if __name__ == "__main__":

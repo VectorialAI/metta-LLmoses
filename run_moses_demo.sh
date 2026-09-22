@@ -14,7 +14,7 @@
 # Usage:
 #   ./run_moses_demo.sh [OPTIONS] list
 #   ./run_moses_demo.sh [OPTIONS] demo pa
-#   ./run_moses_demo.sh [OPTIONS] demo dj|maj|mux|cp|ann-cp|ttt|sr|all
+#   ./run_moses_demo.sh [OPTIONS] demo dj|maj|mux|cp|ann-cp|ttt|all
 #
 # Options:
 #   --trace full|partial|summary   (default: full)
@@ -52,8 +52,6 @@ DEMOS_REL="llmoses/llmoses-tests/demos_test.metta"
 DEMOS="$REPO/$DEMOS_REL"
 STRATEGY_DEMOS_REL="llmoses/llmoses-tests/strategy_demos_test.metta"
 STRATEGY_DEMOS="$REPO/$STRATEGY_DEMOS_REL"
-REGRESSION_TEST_REL="llmoses/llmoses-tests/regression_test.metta"
-REGRESSION_TEST="$REPO/$REGRESSION_TEST_REL"
 
 [[ -f "$DEMOS" ]] || { echo "ERROR: missing $DEMOS_REL under REPO=$REPO" >&2; exit 2; }
 
@@ -64,6 +62,10 @@ RUN_SH="$(command -v run.sh 2>/dev/null || true)"
 LOGDIR="${LOGDIR_OVERRIDE:-$REPO/llmoses/outputs/logs}"
 mkdir -p "$LOGDIR"
 STAMP="$(date +%Y%m%d-%H%M%S)"
+# Protocol 2 refuses to start without an explicit experiment config
+# (selection_temperature is required). Default to the closure config, in which
+# every lever is off, so classic demos run natively with no extra setup.
+export LLMOSES_CONFIG="${LLMOSES_CONFIG:-$REPO/llmoses/configs/m2-closure.json}"
 run_traced() {
     local stem="$1"; shift
     [[ "${1:-}" == "--" ]] && shift
@@ -129,8 +131,10 @@ Classic MOSES demo keys (via $DEMOS_REL):
   ann-cp   ANN combo (parity4 stand-in until ANN scorer ported)
   ttt      tic-tac-toe strategy vs random-player (examples/tic-tac-toe/)
   ttt-mm   tic-tac-toe strategy vs minimax-player
-  sr       simple regression (regression_test.metta)
-  all      every key above
+  all      every implemented key above
+
+Unavailable on the current upstream base:
+  sr       continuous-regression representation/scoring is not implemented
 
 Run:
   $0 demo pa
@@ -151,20 +155,8 @@ run_demo() {
     if [[ "$KEY" == "tictactoe" ]]; then KEY="ttt"; fi
 
     if [[ "$KEY" == "sr" ]]; then
-        [[ -f "$REGRESSION_TEST" ]] || { echo "ERROR: missing $REGRESSION_TEST_REL" >&2; return 2; }
-        driver_rel="llmoses/llmoses-tests/_moses_demo_sr_${STAMP}.metta"
-        driver="$REPO/$driver_rel"
-        cat > "$driver" <<EOF
-!(import! &self $REGRESSION_TEST_REL)
-!(println! "================ MOSES demo: sr begin ================")
-!(println! (regression-metta-result sr-demo (regressionSrDemoTest)))
-!(println! "================ MOSES demo: sr end ==================")
-EOF
-        echo "Running classic demo: sr"
-        echo "LLMOSES state: $REPO/llmoses/outputs/runs/$rid/{state,action,ready}"
-        run_traced "demo-sr-${STAMP}" -- "$RUN_SH" "$driver_rel" || rc=$?
-        rm -f "$driver"
-        return "$rc"
+        echo "ERROR: demo sr is unavailable on this upstream base; continuous-regression representation/scoring is not implemented" >&2
+        return 2
     fi
 
     if is_strategy_demo "$KEY"; then
@@ -207,8 +199,6 @@ run_demo_all() {
         echo; echo "======== demo $k ========"
         run_demo "$k" || overall=$?
     done
-    echo; echo "======== demo sr ========"
-    run_demo sr || overall=$?
     return "$overall"
 }
 
@@ -217,7 +207,7 @@ shift || true
 case "$cmd" in
     list) list_demos ;;
     demo)
-        [[ $# -ge 1 ]] || { echo "usage: $0 demo <pa|dj|maj|mux|cp|ann-cp|ttt|ttt-mm|sr|all>" >&2; exit 2; }
+        [[ $# -ge 1 ]] || { echo "usage: $0 demo <pa|dj|maj|mux|cp|ann-cp|ttt|ttt-mm|all>" >&2; exit 2; }
         if [[ "$1" == "all" ]]; then run_demo_all
         else
             overall=0

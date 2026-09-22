@@ -1,54 +1,15 @@
-# Run Instructions
+# Run instructions
 
-This file is generated inside a run directory and is disposable. It exists so an
-estimator can orient itself locally; the canonical estimator docs remain in
-`llmoses/skills/` and are not copied into runs.
-
-Run id: `{run_id}`
-Current run sequence: `{run_seq_text}`
+Run: `{run_id}`; current sequence: `{run_seq_text}`.
 Problem: {problem_summary}
 Active levers: {lever_text}
 
-Read order for a utility-estimation step:
+Use state/run-N/step-G-call-C.json, the matching action, and the canonical
+llmoses/skills guides. Write utilities and traces before publishing response.
+Call order: rows → exemplar → conditional pair policy → retention.
+step-G.json is observational. CONTROL/pause requires repair and explicit resume.
 
-1. `run_meta.json`
-2. `state/run-*/run_config.json`
-3. Matching `state/run-*/step-G.json`
-4. Matching `action/run-*/step-G.json`
-5. Recent prior `step-*.json` files when trend context is useful
-6. `moses_native_log.jsonl` for native event breadcrumbs
-
-Use the JSON artifacts as ground truth. These markdown files only describe how
-to navigate and interpret the artifacts.
-
-Write two output artifacts for each processed ready sentinel:
-
-- `utilities/run-N/step-G.json`: machine-consumable UtilityResponse.
-- `traces/run-N/step-G.json`: AgentTrace transcript and audit artifact.
-
-The UtilityResponse contains only:
-
-- `pass`
-- `sampling_temperature`
-- `exemplar_utilities`
-- `atom_utility_prior` (optionally context-conditioned; see
-  `llmoses/skills/UTILITY_RESPONSE.md`)
-- `combination_synergy`
-- `feature_utility_levers`
-- `culling_utilities`
-- `complexity_ratio_delta`
-- `comparator_bias`
-
-Prefer building the UtilityResponse through the slot template
-(`llmoses/utilities/response_template.py`): `build_slots` enumerates the real
-per-generation estimation targets, you supply values only, and `assemble`
-yields a contract-valid document by construction.
-
-Put prompt/context manifests, raw model responses, read-file lists, explicit
-audit reasoning, provider metadata, and parse/error diagnostics in AgentTrace.
-Do not rely on hidden model chain-of-thought; traces should contain only
-transcript material and explicit audit text available to the harness.
-
-Complexity-ratio direction: `increase` rewards complexity, `decrease` penalizes
-complexity, and `maintain` leaves pressure unchanged. Always emit the
-`{direction, magnitude}` object — a bare direction string is rejected.
+Effective experiment parameters (operator record; not agent actions):
+```json
+{experiment_json}
+```

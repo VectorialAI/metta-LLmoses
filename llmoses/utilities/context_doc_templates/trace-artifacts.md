@@ -1,15 +1,12 @@
-# Trace Artifacts
+# AgentTrace
 
-This file is generated and may be deleted with its run directory. Use
-`llmoses/skills/AGENT_TRACE.md` for the canonical AgentTrace guide.
+Write `traces/run-N/step-G-call-C.json` with the same fence as the response.
+Record available input_state, input artifact paths, declared read files,
+prompt/context manifest, raw provider outputs, parsed_utility_response,
+status/outcome, attempts, diagnostics, context strategy/load/truncation,
+protocol version and concise audit_reasoning. Do not reconstruct hidden
+chain-of-thought. Tokens are recorded only when actually measured.
 
-Trace files are written under `traces/run-N/` as `step-G.json`.
-
-Each file is an AgentTrace transcript and audit artifact for the matching
-UtilityResponse. It should include available prompt/context manifests, read-file
-lists, raw model responses, parsed UtilityResponse JSON, explicit audit
-reasoning, provider metadata, and parse/error diagnostics.
-
-Do not require or attempt to reconstruct hidden model chain-of-thought. Store
-only transcript material and explicit reasoning or audit notes available to the
-harness.
+Keep previous states, replies and rationale together in context. Checkpointing
+persists trace contents and run-local summaries, not just their filenames.
+Provider failures and retries belong in the trace even if the call later works.

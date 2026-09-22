@@ -1,0 +1,46 @@
+--- a/AUDIT_REGISTER.md	2026-09-22 17:12:48
++++ b/AUDIT_REGISTER.md	2026-09-22 17:13:04
+@@ -83,6 +83,9 @@
+ | 16 | Lever 5 **per-node masks** keyed by post-decoration node path | **Conditional sampling policy `π(c \| s_N)`**, evaluated causally at every draw site | Verified post-rebase: `buildLogical` recurses into freshly inserted knob subtrees and appends a child that **shares the parent's `$currentNodeId`**. Draw sites are created by earlier draws, and paths are *ambiguous*, not merely premature. |
+ | 17 | Fix mask addressing by **snapshotting exemplar coordinates** before decoration | **Rejected — superseded by #16** | Recommended *contingent on verifying that draws occur only at exemplar nodes.* The verification came back negative on both counts: draws also occur at decoration-created sites, and two sites share one path. The recommendation was wrong on the very condition it was flagged against. |
+ | 18 | U-001 `unify` fix present (`9b43499`) | **Lost in the rebase** | The `general-helpers` overlay became an additive shim; native `unify` still has overlapping clauses and `=`-for-`==`. **An additive shim cannot fix it** — overlapping native clauses persist alongside any added definition. A fix needs a full fork or a renamed helper. |
++| 19 | Lever 4 operator: `w = (1−b)·1 + b·w_agent`, then normalize to mean 1 (spec §6, literal) | **Normalize the agent's multipliers to a distribution first, mix with the uniform prior, then rescale by `n`** (`install_row_weights`) | The literal form is scale-sensitive to the agent's input magnitude at `0 < b < 1` (`u = [3,1]` and `u = [6,2]` give different weights). Normalize-then-mix makes `b` a convex combination of two mean-1 vectors, matching how levers 1, 2 and 5 mix distributions (P2). Both forms coincide at `b = 1`; the test suite now pins `b = 0.5`. |
++| 20 | Legacy `ratio ≤ 0` disables the penalty (`getComplexityCoef → 0.0`, native D-DISC-003) | **`coef` is the primary control in `[0, 1]`; `ratio` is a legacy alias via `coef = 1/ratio`; `ratio ≤ 0` and `ratio ∈ (0, 1)` clamp to the coefficient ceiling `1.0`, the balanced point by design** | The primary range never extends past balanced, so there is no "stronger than balanced" region to reach and no unbounded quantity to clamp after the fact. `ratio ≤ 0` is the alias hitting an undefined computation, not an off switch; the off switch is direct `coef = 0`. Direction reversal relative to native is intentional and now tested. |
++| 21 | Call 4 carries the "full `state_doc`" (spec §11) | **Call 4 `atom_evidence` = primitives only (`atom_cumulative`, `degenerate_summary`); `atom_lossless` = raw per-clause events, always populated; roll-ups go to the operator log** | "Full state_doc" silently re-imported the retired roll-ups: `depth_bucket`/`depth_buckets` (D-DISC-011), `_score_summary` and aggregated `realized_cooccurrences` (W2), and the F-032 `parent_operator` duplicate. The raw block was gated behind an undocumented `LLMOSES_ATOM_LOSSLESS` and defaulted off — a new silent-failure instance. Summary phrases in a contract are where retired material hides. |
+ 
+ **Also corrected mid-audit, smaller:** the "low-bandwidth lever" framing applies to *realized outcomes*, not to *measurable intervention* — the distribution is materialized before the draw (D-DISC-006), so intervention is observable at full resolution every generation · contextual entries generalize by *omitting* a qualifier, so the buckets→integers change costs only the middle granularity · exact-match keying is a conditioning mechanism, not a fragility.
+ 
+--- a/LEVER_DESIGN_SPEC.md	2026-09-22 17:12:48
++++ b/LEVER_DESIGN_SPEC.md	2026-09-22 17:13:18
+@@ -139,7 +139,7 @@
+ | **Site** | `sumBScore` inside the **3-arity `getCscore` core** (`llmoses/scoring/cscore.metta`) — one site, path-agnostic |
+ | **Native prior** | unit row weights `wᵢ = 1` |
+ | **Agent input** | per-row **multipliers on native unit weights**, `[0, W]`, **1.0 = untouched** |
+-| **Operator** | `rawScore = Σ wᵢ·bᵢ`, `w = (1−b)·1 + b·w_agent`, normalized to mean 1 |
++| **Operator** | `rawScore = Σ wᵢ·bᵢ`, `A = normalize(w_agent)` (unspecified rows `1.0`), `D = (1−b)·uniform + b·A` sharpened by `T_rowweight`, `w = n·D` — mean-1 by construction. **Normalize-then-mix** (reversal #19): scale-invariant to the agent's input magnitude at `0 < b < 1`; coincides with the raw mix at `b = 1`. |
+ | **Off-equivalence** | `b = 0` ⇒ `sumBScore` byte-for-byte |
+ 
+ - **Mean-1 normalization preserves `Σwᵢ = n`**, so the score range, lattice and band are invariant to the agent's weights.
+@@ -254,6 +254,8 @@
+ 
+ > **Parameterize by the coefficient directly, clamped `[0, 1]`; keep `ratio` as a legacy alias via `coef = 1/ratio`.** Monotonic, bounded, uniform to sweep, and preserves the native default exactly (`coef 0.2857 ≡ ratio 3.5`). `coef ≈ 1` is where penalty and fitness carry equal total weight.
+ 
++**Legacy alias edge cases (reversal #20).** `coef = 1/ratio` is undefined at `ratio = 0` and exceeds `1` for `ratio ∈ (0, 1)`. Both clamp to the coefficient ceiling `1.0`, which is the balanced point by design — not a "maximum penalty," since the primary range never extends past balanced. This deliberately does **not** reproduce native's `ratio ≤ 0 → 0.0` off switch; the off switch is direct `coef = 0`. A direct `complexity_coef` in config always wins over a legacy ratio arriving from the scoring context.
++
+ Echo the configured coefficient as a run parameter; never derive it from state.
+ 
+ ---
+@@ -277,10 +279,11 @@
+ | **1** | full `state_doc`; row surface (per-row bscore positions) | previous generation's L2 survivors (`resize_cull`) |
+ | **2** | **rescored** population; `exemplar_candidates` (`program_id`, `tree_str`, `penalized_score`, `complexity`, `raw_score`, `lineage_depth` + `max_lineage_depth`) | L4's outcome: the rescored scores |
+ | **3** | selected exemplar tree · alphabet · static ordered-pair universe · enabled condition vocabulary · previous generation's draw log. **No node list.** | L1's outcome: the selection itself |
+-| **4** | full pool `C` with real scores (`culling_candidates`, moved here from Call 1); `atom_lossless` | L5's outcome: drawn pairs, hill-climb products |
++| **4** | full pool `C` with real scores (`culling_candidates`, moved here from Call 1); `atom_evidence` = **primitives only** (`atom_cumulative`, `degenerate_summary`); `atom_lossless` = raw per-clause events (`atom_appearances`, `realized_cooccurrences` with exact `depth`, `clause_type`, `node_ref`) plus per-program `tree_max_depth` and `node_count`, **always populated** | L5's outcome: drawn pairs, hill-climb products |
+ 
+ **Removals:** contextual-axis material · `lever_weights` · `complexity_ratio` section · `total_hill_climb_evaluations` (verified unused) · `knob_count`, `knob_type_breakdown`, `neighborhood_size`.
+-**Additions:** `max_lineage_depth` · per-section `gated: null` in place of empty shapes · unweighted score per member.
++**Additions:** `max_lineage_depth` · per-section `gated: null` in place of empty shapes · unweighted score per member · per-program `tree_max_depth` / `node_count` in `atom_lossless`.
++**Removed from the agent-facing Call 4 payload (reversal #21):** `depth_bucket` / `depth_buckets` (D-DISC-011) · `_score_summary` roll-ups (`mean_penalized`, `best_penalized`, `n_best_tier`) · aggregated `realized_cooccurrences` · the F-032 `parent_operator` duplicate. The roll-ups remain available to operators as an `atom_evidence_rollup` event in `moses_native_log.jsonl`. "Full `state_doc`" in this table means the fields enumerated here, not everything the emitter has ever produced.
+ **Routing, not construction:** `resize_cull`, `lineage_diff`, `post_selection`, `atom_lossless` are all computed and written today, never fed back.
+ **`knobs`** stays as observational context — the decorated tree does not substitute for it (`multiplicity` is a knob-*type* property), but no lever consumes it.
+ 

@@ -1,59 +1,29 @@
-# LLMOSES Live Utility Estimator
+You estimate bounded changes to a Boolean MOSES search. Return only a JSON
+VALUES object conforming to the supplied legal-values schema, not the transport
+envelope. Use exactly the offered keys. The `policy` slot contains a structured
+object; other slots are numbers. You may omit any slot. {} is abstention.
 
-You are estimating utilities for one MOSES generation. You see real evidence
-from generation {generation}. Output ONLY one flat JSON object of slot values:
-no prose, no Markdown fences, no nested objects, no arrays, no unknown keys.
+Each current request identifies a call:
+1. row:N values multiply unit truth-table row weights, identity 1.
+2. member:ID values are score offsets, identity 0, in truth-table-row units.
+3. policy supplies base ordered-pair weights and conditional rules.
+4. member:ID values are score offsets on the full retention candidate pool.
 
-Coverage mode: {coverage}
+Member offsets mutate the existing score prior, not replace it. Row/pair factors
+are neutral at 1; omitted members have zero offset. Stay within schema bounds.
+Only use the current call's surface. Temperatures are legal only when offered.
+The experiment owns influence b, K, capacity, and complexity coefficient.
 
-If coverage is `full`, provide a value for EVERY slot: all pids, all atoms,
-all observed contextual buckets, all synergy sets, all lever axes non-zero,
-`aggregate_fn`, `ratio:direction`, `ratio:magnitude`, and
-`sampling_temperature`. In full mode, do not use `ratio:direction="maintain"`
-unless the score/complexity evidence is truly flat.
+For Call 3 the harness evaluates base factors and every matching rule at each
+future construction site. Conditions are conjunctive and strictly causal:
+op, current depth bounds, site_kind, local_literals, ancestor_drew, already_drawn
+are available only if the schema offers them. Polarity is + or -. A history
+condition names one ordered pair; local_literals is a required subset. Pair
+order matters. Do not reference paths, descendants, final depth or knob states.
+The alphabet, not a guessed site list, defines legal pairs. Empty policy is
+identity. Adjust proposal probabilities; hill climbing still chooses activity.
 
-Slot semantics:
-
-- `exemplar:<pid>`: utility in [0,1].
-- `cull:<pid>` and `cull:*`: retention utility in [0,1]; `*` is the newborn
-  default.
-- `atom:<label>`: global per-atom prior in [0,1].
-- `atomctx:<label>|<k>=<v>`: contextual atom prior in [0,1] for an observed
-  bucket; `k` is `polarity`, `parent_operator`, or `depth_bucket`.
-- `syn:<a>&<b>[&<c>]`: combination synergy in [0,1]; labels are sorted.
-- `rank:<pid>`: comparator rank number, lower is better.
-- `lever:<axis>`: lever weight axis in [0,1].
-- `aggregate_fn`: one of `product`, `mean`, `geometric_mean`, `softmax`.
-- `ratio:direction`: `increase`, `decrease`, or `maintain`.
-- `ratio:magnitude`: number >= 0, only useful with `ratio:direction`.
-- `sampling_temperature`: number > 0.
-
-Value guidance:
-
-- Utilities are in [0,1]. Higher means more useful, except rank slots where
-  lower means better.
-- Comparator ranks should sort likely better programs first.
-- `ratio:direction="increase"` rewards complexity; `decrease` penalizes it;
-  `maintain` leaves pressure unchanged.
-- Contextual `atomctx:` slots are inert unless their matching lever axes are
-  non-zero: `polarity`, `parent_operator`, and `depth_bucket` maps to
-  `tree_depth`.
-- `syn:` slots are inert unless `lever:combination_synergy` is non-zero.
-- If you set any contextual or synergy slot, set the matching lever axes > 0.
-- `product` is strict and favors combinations where every atom is good;
-  `mean` is forgiving; `geometric_mean` is balanced but still punishes zeros;
-  `softmax` emphasizes the strongest atom signal.
-
-Legal slots:
-
-{slots_table}
-
-Closed JSON schema:
-
-{json_schema}
-
-Compact evidence digest (note: evidence rows identify atoms by their
-namespaced alphabet key, e.g. `feature:X1` or `move:playcenter`; the slot
-keys use the bare labels — `run_config.atom_alphabet` is the mapping):
-
-{evidence_digest}
+Use candidate scores, behavioural vectors, structure, previous exchanges and
+primitive outcomes to estimate useful bounded adjustments. Do not invent IDs or
+interpret a proposed pair as active merely because it was drawn. Do not emit
+retired comparator, ratio, synergy, contextual-axis or node-mask controls.

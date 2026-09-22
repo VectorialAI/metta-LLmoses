@@ -1,0 +1,43 @@
+{"id":1,"command":"git status --short --branch","exit_code":0,"outcome":"Source/status/diff inspection completed."}
+{"id":2,"command":"rg --files -g AGENTS.md -g '*verification*' -g '*REPORT*' -g '*runtime*' llmoses docs","exit_code":0,"outcome":"Source/status/diff inspection completed."}
+{"id":3,"command":"cat llmoses/llmoses-tests/overlay_imports_test.py llmoses/llmoses-tests/m2_runtime_test.sh","exit_code":0,"outcome":"Source/status/diff inspection completed."}
+{"id":4,"command":"sed -n '1,150p' llmoses/llmoses-tests/expand-demes-test.metta","exit_code":0,"outcome":"Source/status/diff inspection completed."}
+{"id":5,"command":"git status --short --branch","exit_code":0,"outcome":"Source/status/diff inspection completed."}
+{"id":6,"command":"cat llmoses/llmoses-tests/overlay_imports_test.py","exit_code":0,"outcome":"Source/status/diff inspection completed."}
+{"id":7,"command":"sed -n '1,200p' llmoses/llmoses-tests/m2_runtime_test.sh","exit_code":0,"outcome":"Source/status/diff inspection completed."}
+{"id":8,"command":"rg -n 'runMoses|cache|import!' llmoses/llmoses-tests/expand-demes-test.metta llmoses/llmoses-tests/boolean_pressure_test.metta llmoses/run_m2.sh","exit_code":0,"outcome":"Source/status/diff inspection completed."}
+{"id":9,"command":"rg --files -g AGENTS.md -g '*test*' scripts docs/m2-closure","exit_code":0,"outcome":"Source/status/diff inspection completed."}
+{"id":10,"command":"sed -n '200,450p' llmoses/llmoses-tests/expand-demes-test.metta","exit_code":0,"outcome":"Source/status/diff inspection completed."}
+{"id":11,"command":"cat llmoses/deme/expand-deme.metta","exit_code":0,"outcome":"Source/status/diff inspection completed."}
+{"id":12,"command":"cat scoring/cacheSpace.metta scoring/strategy-score-cache.metta llmoses/scoring/complexity-based-scorer.metta","exit_code":0,"outcome":"Source/status/diff inspection completed."}
+{"id":13,"command":"cat llmoses/moses/neighborhood-sampling.metta llmoses/run_m2.sh","exit_code":0,"outcome":"Source/status/diff inspection completed."}
+{"id":14,"command":"rg --files -g AGENTS.md -g '*expand*' -g '*astra*' -g '*verification*' -g '*log*' docs llmoses/outputs tests .agents","exit_code":2,"outcome":"Inspection encountered missing paths; see command and notes in VERIFICATION_FOLLOWUP.md."}
+{"id":15,"command":"rg --files --hidden -g AGENTS.md -g '!llmoses/outputs/**' -g '!.git/**' .","exit_code":0,"outcome":"Source/status/diff inspection completed."}
+{"id":16,"command":"cat llmoses/utilities/state-emitter.metta llmoses/wrapper/extractors.metta","exit_code":1,"outcome":"Inspection encountered missing paths; see command and notes in VERIFICATION_FOLLOWUP.md."}
+{"id":17,"command":"sed -n '1,180p' llmoses/llmoses-tests/strategy_test.metta","exit_code":0,"outcome":"Source/status/diff inspection completed."}
+{"id":18,"command":"sed -n '1,220p' llmoses/wrapper/state-builder.metta","exit_code":0,"outcome":"Source/status/diff inspection completed."}
+{"id":19,"command":"rg -n 'cache|Cache|import!' examples/tic-tac-toe/strategy-scoring.metta examples/tic-tac-toe/game-engine.metta llmoses/scoring/cscore.metta llmoses/scoring/bscore.metta llmoses/optimization/hill-climbing-helpers.metta llmoses/optimization/cross-top-one.metta","exit_code":0,"outcome":"Source/status/diff inspection completed."}
+{"id":20,"command":"rg --files --hidden /private/tmp -g '*expand*' -g '*astra*' -g '*metta*log' -g '*test*log' -g '!node_modules/**'","exit_code":1,"outcome":"Search returned no matches."}
+{"id":21,"command":"rg --files --hidden -g '!llmoses/outputs/**' -g '!.git/**' -g '*log*' -g '*result*' -g '*state-emitter*' -g '*AGENTS*' .","exit_code":0,"outcome":"Source/status/diff inspection completed."}
+{"id":22,"command":"cat utilities/lru-cache.metta llmoses/scoring/bscore.metta scoring/bscore.metta","exit_code":0,"outcome":"Source/status/diff inspection completed."}
+{"id":23,"command":"cat scripts/run-tests.py","exit_code":0,"outcome":"Source/status/diff inspection completed."}
+{"id":24,"command":"sed -n '1,100p' tests/expand-demes-test.metta","exit_code":1,"outcome":"Inspection encountered missing paths; see command and notes in VERIFICATION_FOLLOWUP.md."}
+{"id":25,"command":"sed -n '1,140p' docs/m2-closure/IMPLEMENTATION.md","exit_code":0,"outcome":"Source/status/diff inspection completed."}
+{"id":26,"command":"rg -n 'state-emitter|cache predicates|unspecialized|expand-demes-test|Docker' docs/m2-closure/REAUDIT.md docs/m2-closure/IMPLEMENTATION.md llmoses/llmoses-tests README.md Dockerfile","exit_code":0,"outcome":"Source/status/diff inspection completed."}
+{"id":27,"command":"sed -n '1,115p' deme/tests/expand-demes-test.metta","exit_code":0,"outcome":"Source/status/diff inspection completed."}
+{"id":28,"command":"cat utilities/lru-cache.metta llmoses/scoring/bscore.metta","exit_code":0,"outcome":"Source/status/diff inspection completed."}
+{"id":29,"command":"sed -n '1,140p' llmoses/scoring/cscore.metta","exit_code":0,"outcome":"Source/status/diff inspection completed."}
+{"id":30,"command":"sed -n '1,100p' examples/tic-tac-toe/strategy-scoring.metta","exit_code":0,"outcome":"Source/status/diff inspection completed."}
+{"id":31,"command":"rg -n --no-ignore 'unspecialized|specializ' Dockerfile docs llmoses/llmoses-tests -g '!commands.jsonl' -g '!COMMANDS.md'","exit_code":0,"outcome":"Source/status/diff inspection completed."}
+{"id":32,"command":"rg --files --hidden --no-ignore docs -g '*.md'","exit_code":0,"outcome":"Source/status/diff inspection completed."}
+{"id":33,"command":"sed -n '1,90p' llmoses/llmoses-tests/boolean_state_test.metta","exit_code":0,"outcome":"Source/status/diff inspection completed."}
+{"id":34,"command":"sed -n '60,110p' llmoses/llmoses-tests/expand-demes-test.metta","exit_code":0,"outcome":"Source/status/diff inspection completed."}
+{"id":35,"command":"rg --files --hidden --no-ignore llmoses/utilities -g '*emitter*'","exit_code":0,"outcome":"Source/status/diff inspection completed."}
+{"id":36,"command":"rg -n --no-ignore 'state-emitter|strategy-score-cache|wrapper/extractors|wrapper/state-builder|deme/expand-deme|strategy-scoring' llmoses/llmoses-tests -g '*.metta'","exit_code":0,"outcome":"Source/status/diff inspection completed."}
+{"id":37,"command":"rg -n 'cache|Cache|import' utilities/tree.metta representation/instance.metta representation/disc-probe.metta reduct/boolean-reduct/rte-helpers.metta examples/tic-tac-toe/moses-player.metta","exit_code":1,"outcome":"Search returned no matches."}
+{"id":38,"command":"cat docs/m2-closure/COMMANDS.md","exit_code":0,"outcome":"Source/status/diff inspection completed."}
+{"id":39,"command":"git diff -- llmoses/llmoses-tests/expand-demes-test.metta llmoses/llmoses-tests/strategy_test.metta","exit_code":0,"outcome":"Source/status/diff inspection completed."}
+{"id":40,"command":"nl -ba llmoses/llmoses-tests/overlay_imports_test.py","exit_code":0,"outcome":"Source/status/diff inspection completed."}
+{"id":41,"command":"nl -ba llmoses/llmoses-tests/m2_runtime_test.sh","exit_code":0,"outcome":"Source/status/diff inspection completed."}
+{"id":42,"command":"sed -n '1,95p' llmoses/llmoses-tests/feature-selection-smoke-test.metta","exit_code":0,"outcome":"Source/status/diff inspection completed."}
+{"id":43,"command":"sed -n '1,45p' docs/m2-closure/REAUDIT.md","exit_code":0,"outcome":"Source/status/diff inspection completed."}

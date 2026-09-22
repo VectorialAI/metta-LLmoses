@@ -1,9 +1,8 @@
 ;; llmoses/llmoses-tests/demos_test.metta — classic MOSES demo key runners.
 ;;
 ;; Covers boolean demos (pa, dj, maj, mux) and combo-program recovery (cp,
-;; annCp) via runDemoProblem. The sr (simple regression) demo is exercised by
-;; regression_test.metta through ./run_moses_demo.sh demo sr instead; contin
-;; scoring uses a different runMoses overload than boolean truth tables.
+;; annCp) via runDemoProblem. The sr (continuous regression) demo is unavailable
+;; on this upstream base, which has Boolean and strategy representations.
 ;;
 ;; Run via:  ./run_moses_demo.sh demo <key>
 ;; Keys: pa | dj | maj | mux | cp | ann-cp | ttt | ttt-mm
@@ -49,7 +48,7 @@
 !(import! &self representation/logical-canonize)
 !(import! &self llmoses/representation/sample-logical-perms)
 !(import! &self llmoses/representation/add-logical-knobs)
-!(import! &self representation/build-logical)
+!(import! &self llmoses/representation/build-logical)
 !(import! &self representation/build-knobs)
 !(import! &self representation/knob-mapper)
 !(import! &self llmoses/representation/representation)

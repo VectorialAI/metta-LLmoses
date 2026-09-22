@@ -1,21 +1,19 @@
-# Scoring And Selection
+# Scores and selection
 
-MOSES scoring is multi-field. Do not rank candidates from one number unless the run exposes only one meaningful field.
+Larger penalized_score is better. It combines the current weighted behavioural
+sum, complexity penalty, and uniformity penalty. `unweighted_score` is the sum
+of the stored bscore vector; it remains comparable across row-weight changes.
+The direct complexity coefficient is experiment-owned and clamped to [0,1].
+Its legacy ratio alias maps positive r to clamp(1/r), and r<=0 to the ceiling 1.
+The default ratio 3.5 retains coefficient 1/3.5. It is not an agent lever.
 
-Common fields:
+Exemplar selection uses the configured selection_temperature and native
+INV_TEMP=100/selection_temperature. Do not confuse it with the separate native
+deme trimming range or the agent sharpening temperature. Singleton selection
+consumes no roulette RNG; the b=0 multi-member path consumes the native draw.
 
-- `raw_score`: problem-level fitness before complexity penalties.
-- `complexity`: structural size or complexity measure.
-- `complexity_penalty`: penalty derived from complexity pressure.
-- `uniformity_penalty`: additional penalty where present.
-- `penalized_score`: score after penalties; often the best single ranking signal.
-- `bscore`: vector-valued behavior or table score, when present.
-
-Selection signals:
-
-- `moses_native_events.post_selection` records what native MOSES selected this generation.
-- `lineage_diff.selected_program_id` links selection to candidate identity when available.
-- `explored` marks programs already selected in prior generations.
-- `lineage_depth` helps distinguish fresh structures from repeatedly expanded descendants.
-
-Use score and complexity together. Rising complexity with flat score usually favors stronger complexity pressure; rising score with useful structural novelty can justify preserving or rewarding complexity.
+`selection` reports the selected program. `explored` means selected in a prior
+generation. Lineage depth is inherited from the selected parent's depth plus
+one for first-seen offspring. Primitive survivor/cull outcomes are emitted for
+learning from previous decisions; no empirical utility estimator is hidden in
+those outcomes. Ordered-set identity remains native tree identity.

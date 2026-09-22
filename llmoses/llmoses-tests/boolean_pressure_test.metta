@@ -43,7 +43,7 @@
 !(import! &self representation/logical-canonize)
 !(import! &self llmoses/representation/sample-logical-perms)
 !(import! &self llmoses/representation/add-logical-knobs)
-!(import! &self representation/build-logical)
+!(import! &self llmoses/representation/build-logical)
 !(import! &self representation/build-knobs)
 !(import! &self representation/knob-mapper)
 !(import! &self llmoses/representation/representation)
@@ -68,7 +68,7 @@
 !(import! &self llmoses/deme/merge-demes)
 !(import! &self llmoses/wrapper/state-builder)
 !(import! &self llmoses/deme/expand-deme)
-!(import! &self moses/demo-problems)
+!(import! &self llmoses/moses/demo-problems)
 
 !(callPredicate (Predicate (consult "moses/tests/rte-helpers-fast.pl")))
 

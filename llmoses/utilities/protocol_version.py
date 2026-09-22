@@ -24,7 +24,7 @@ import hashlib
 import os
 import sys
 
-PROTOCOL_MAJOR = 1
+PROTOCOL_MAJOR = 2
 
 _THIS_DIR = os.path.dirname(os.path.abspath(__file__))
 _LLMOSES_DIR = os.path.dirname(_THIS_DIR)
@@ -46,6 +46,22 @@ COVERED = (
     # the MOSES-side half of the protocol: ingest policy, fence, abort, and
     # the generation application point
     "utilities/state_builder.py",
+    "utilities/lever_policy.py",
+    "utilities/lever_config.py",
+    "utilities/conditional_policy.py",
+    "utilities/checkpointing.py",
+    "utilities/call_paths.py",
+    # the Call 4 state-document emitter: its field set is agent-facing contract
+    "utilities/atom_evidence.py",
+    "utilities/boundary.py",
+    "utilities/context_docs.py",
+    "utilities/context_doc_templates/*.md",
+    "scoring/cscore.metta",
+    "metapopulation/*.metta",
+    "deme/merge-demes.metta",
+    "representation/build-logical.metta",
+    "representation/add-logical-knobs.metta",
+    "representation/sample-logical-perms.metta",
     "wrapper/state-builder.metta",
     "deme/expand-deme.metta",
 )
