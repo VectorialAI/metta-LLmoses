@@ -62,6 +62,8 @@ RUN_DIR="$OUTPUT_ROOT/runs/$RUN_ID"
 LOGDIR="${LOGDIR_OVERRIDE:-$OUTPUT_ROOT/logs}"
 DRIVER_DIR="$REPO/llmoses/llmoses-tests"
 VERIFY_PY="$REPO/llmoses/llmoses-tests/live_agent_verify.py"
+CAPTURE_SH="$REPO/llmoses/llmoses-tests/run_capture.sh"
+source "$CAPTURE_SH"
 mkdir -p "$LOGDIR" "$RUN_DIR" "$DRIVER_DIR"
 
 # Protocol 2 refuses to start without an explicit experiment config
@@ -175,34 +177,14 @@ run_traced() {
   shift
   [[ "${1:-}" == "--" ]] && shift
   local log="$LOGDIR/${stem}-${RUN_ID}.log"
-  local rc=0
   # Each traced run gets its own run directory so protocol-2 artifacts
   # (state/run-1, moses_native_log.jsonl, terminal.json) are never shared.
   local case_run_dir="${CASE_RUN_DIR:-$RUN_DIR/$stem}"
   mkdir -p "$case_run_dir"
-  if [[ "$TRACE" == "full" ]]; then
-    (cd "$REPO" && LLMOSES_RUN_ID="$RUN_ID" LLMOSES_RUN_DIR="$case_run_dir" "$@") 2>&1 | tee "$log" || rc=${PIPESTATUS[0]}
-  else
-    local tmp
-    tmp="$(mktemp)"
-    (cd "$REPO" && LLMOSES_RUN_ID="$RUN_ID" LLMOSES_RUN_DIR="$case_run_dir" "$@") >"$tmp" 2>&1 || rc=$?
-    case "$TRACE" in
-      partial)
-        head -n "$HEAD_N" "$tmp" || true
-        local total
-        total="$(wc -l < "$tmp")"
-        (( total > HEAD_N )) && echo "... $((total - HEAD_N)) more lines (${total} total)"
-        ;;
-      summary)
-        grep -iE "(boolean-metta|boolean-state|boolean-pressure|result-size|error[: ]|Type error|assertEq|FAILED|PASS|FAIL|Generation|SMD_REP)" "$tmp" || true
-        echo "--- last $HEAD_N lines ---"
-        tail -n "$HEAD_N" "$tmp" || true
-        echo "--- end ($(wc -l < "$tmp") lines total) ---"
-        ;;
-    esac
-    cp "$tmp" "$log"
-    rm -f "$tmp"
-  fi
+  local progress_re="boolean-metta|boolean-state|boolean-pressure|result-size|error[: ]|Type error|assertEq|FAILED|PASS|FAIL|Generation|SMD_REP"
+  local rc=0
+  llmoses_capture_run "$log" "$REPO" "$RUN_ID" "$case_run_dir" \
+    "$TRACE" "$HEAD_N" "$progress_re" -- "$@" || rc=$?
   echo "Saved: $log"
   return "$rc"
 }

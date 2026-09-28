@@ -181,7 +181,7 @@ def verify_resume(paused, full):
         ('continuation did not complete the remaining generations', after_resume)
 
 
-def verify_smoke(run, expect_gens, expect_demes, problem_type='boolean'):
+def verify_smoke(run, expect_gens, expect_demes, problem_type='boolean', require_lineage=False):
     state_dir = run / 'state/run-1'
     terminal = read(state_dir / 'terminal.json')
     assert terminal['run_verdict'] == 'ok', terminal
@@ -198,10 +198,16 @@ def verify_smoke(run, expect_gens, expect_demes, problem_type='boolean'):
         assert problem['opponent_policy'] not in (None, '', 'None'), problem
     assert 'complexity_coef' in config['run_parameters'] and 'complexity_ratio' not in config['run_parameters']
     assert config['active_levers'] == [], ('native smoke run must not activate a lever', config['active_levers'])
+    max_lineage_depths = []
     for g in range(1, expect_gens + 1):
         step = read(state_dir / f'step-{g}.json')
         assert step['generation'] == g, step
         assert step['metapopulation']['members'], f'empty metapopulation in step-{g}'
+        members = step['metapopulation']['members']
+        if require_lineage:
+            assert all(isinstance(m.get('lineage_depth'), int) for m in members), (g, members)
+            assert all(isinstance(m.get('max_lineage_depth'), int) for m in members), (g, members)
+            max_lineage_depths.append(max(m['max_lineage_depth'] for m in members))
         demes = step['demes']
         assert len(demes) >= expect_demes, (g, len(demes))
         knobs = [k for d in demes for k in d.get('knobs', [])]
@@ -215,6 +221,9 @@ def verify_smoke(run, expect_gens, expect_demes, problem_type='boolean'):
     assert not any(e['event'] == 'run_aborted' for e in log)
     completed = [e['generation'] for e in log if e['event'] == 'generation_complete']
     assert completed == list(range(1, expect_gens + 1)), completed
+    if require_lineage:
+        assert max(max_lineage_depths) >= 2, \
+            ('lineage did not advance beyond the initial expansion', max_lineage_depths)
     for site in (e for e in log if e['event'] == 'lever_site'):
         assert site['P'] == site['D'], ('native run realized a non-native distribution', site)
     assert not list((run / 'ready').glob('run-*-step-*')) if (run / 'ready').exists() else True, \
@@ -234,10 +243,12 @@ def main():
     parser.add_argument('--smoke', type=Path)
     parser.add_argument('--expect-gens', type=int, default=1)
     parser.add_argument('--expect-demes', type=int, default=1)
+    parser.add_argument('--require-lineage', action='store_true')
     parser.add_argument('--problem-type', choices=('boolean', 'strategy'), default='boolean')
     args = parser.parse_args()
     if args.smoke:
-        verify_smoke(args.smoke, args.expect_gens, args.expect_demes, args.problem_type)
+        verify_smoke(args.smoke, args.expect_gens, args.expect_demes,
+                     args.problem_type, args.require_lineage)
         return
     results = [verify(run, run.name == 'guided') for run in args.runs]
     by_name = {run.name: result for run, result in zip(args.runs, results)}

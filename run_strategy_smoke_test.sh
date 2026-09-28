@@ -9,7 +9,9 @@
 #   ./run_strategy_smoke_test.sh list
 #   ./run_strategy_smoke_test.sh metta expand-single
 #   ./run_strategy_smoke_test.sh metta all
+#   ./run_strategy_smoke_test.sh state smoke
 #   ./run_strategy_smoke_test.sh state merge-cull-pressure
+#   ./run_strategy_smoke_test.sh state pressure
 #   ./run_strategy_smoke_test.sh state all
 #   ./run_strategy_smoke_test.sh all
 # ============================================================================
@@ -66,6 +68,8 @@ RUN_DIR="$RUNS_ROOT/$RUN_ID"
 LOGDIR="${LOGDIR_OVERRIDE:-$OUTPUT_ROOT/logs}"
 DRIVER_DIR="$REPO/llmoses/llmoses-tests"
 VERIFY_PY="$REPO/llmoses/llmoses-tests/live_agent_verify.py"
+CAPTURE_SH="$REPO/llmoses/llmoses-tests/run_capture.sh"
+source "$CAPTURE_SH"
 mkdir -p "$LOGDIR" "$RUN_DIR" "$DRIVER_DIR"
 
 METTA_CASES=(
@@ -84,6 +88,7 @@ STATE_CASES=(
   multigen-multideme
   empty-seed
   merge-cull-smoke
+  lineage-smoke
   merge-cull-pressure
   deep-lineage
 )
@@ -100,7 +105,7 @@ strategy_metta_tier() {
 
 strategy_state_tier() {
   case "$1" in
-    single|multigen-multideme|empty-seed|merge-cull-smoke)
+    single|multigen-multideme|empty-seed|merge-cull-smoke|lineage-smoke)
       echo smoke ;;
     merge-cull-pressure|deep-lineage)
       echo pressure ;;
@@ -128,6 +133,7 @@ state_func() {
     multigen-multideme)   echo "strategyStateMultigenMultideme" ;;
     empty-seed)           echo "strategyStateEmptySeed" ;;
     merge-cull-smoke)     echo "strategyStateMergeCullSmoke" ;;
+    lineage-smoke)        echo "strategyStateLineageSmoke" ;;
     merge-cull-pressure)  echo "strategyStateMergeCullPressure" ;;
     deep-lineage)         echo "strategyStateDeepLineage" ;;
     *) return 1 ;;
@@ -139,7 +145,7 @@ state_expected_gens() {
     single) echo 1 ;;
     multigen-multideme) echo 3 ;;
     empty-seed|merge-cull-smoke|merge-cull-pressure) echo 2 ;;
-    deep-lineage) echo 5 ;;
+    lineage-smoke|deep-lineage) echo 5 ;;
     *) return 1 ;;
   esac
 }
@@ -147,7 +153,7 @@ state_expected_gens() {
 state_expected_demes() {
   case "$1" in
     single) echo 1 ;;
-    multigen-multideme|empty-seed|merge-cull-smoke|merge-cull-pressure|deep-lineage) echo 2 ;;
+    multigen-multideme|empty-seed|merge-cull-smoke|lineage-smoke|merge-cull-pressure|deep-lineage) echo 2 ;;
     *) return 1 ;;
   esac
 }
@@ -172,34 +178,14 @@ run_traced() {
   shift
   [[ "${1:-}" == "--" ]] && shift
   local log="$LOGDIR/${stem}-${RUN_ID}.log"
-  local rc=0
   # Protocol-2 state and native logs belong to one case. Off runs deliberately
   # emit no agent action JSON or ready sentinels; retain artifacts in place.
   local case_run_dir="$RUN_DIR/$stem"
   mkdir "$case_run_dir" || return 2
-  if [[ "$TRACE" == "full" ]]; then
-    (cd "$REPO" && LLMOSES_RUN_ID="$RUN_ID" LLMOSES_RUN_DIR="$case_run_dir" "$@") 2>&1 | tee "$log" || rc=${PIPESTATUS[0]}
-  else
-    local tmp
-    tmp="$(mktemp)"
-    (cd "$REPO" && LLMOSES_RUN_ID="$RUN_ID" LLMOSES_RUN_DIR="$case_run_dir" "$@") >"$tmp" 2>&1 || rc=$?
-    case "$TRACE" in
-      partial)
-        head -n "$HEAD_N" "$tmp" || true
-        local total
-        total="$(wc -l < "$tmp")"
-        (( total > HEAD_N )) && echo "... $((total - HEAD_N)) more lines (${total} total)"
-        ;;
-      summary)
-        grep -iE "(strategy-state|strategy-metta|result-size|error[: ]|Type error|assertEq|FAILED|PASS|FAIL|New best score|Merging Deme|Metapop size)" "$tmp" || true
-        echo "--- last $HEAD_N lines ---"
-        tail -n "$HEAD_N" "$tmp" || true
-        echo "--- end ($(wc -l < "$tmp") lines total) ---"
-        ;;
-    esac
-    cp "$tmp" "$log"
-    rm -f "$tmp"
-  fi
+  local progress_re="strategy-state|strategy-metta|result-size|error[: ]|Type error|assertEq|FAILED|PASS|FAIL|Generation|New best score|Merging Deme|Metapop size"
+  local rc=0
+  llmoses_capture_run "$log" "$REPO" "$RUN_ID" "$case_run_dir" \
+    "$TRACE" "$HEAD_N" "$progress_re" -- "$@" || rc=$?
   echo "Saved: $log"
   return "$rc"
 }
@@ -222,6 +208,8 @@ list_cases() {
   for c in "${STATE_CASES[@]}"; do
     echo "  state $c [$(strategy_state_tier "$c")]"
   done
+  echo "  state smoke"
+  echo "  state pressure"
   echo "  state all"
   echo
   echo "Combined:  all"
@@ -259,8 +247,11 @@ EOF
 verify_state_artifacts() {
   local case_name="$1" expected_gens="$2" expected_demes="$3"
   local case_run_dir="$RUN_DIR/strategy-state-${case_name}"
+  local lineage_args=()
+  [[ "$case_name" == "lineage-smoke" || "$case_name" == "deep-lineage" ]] && \
+    lineage_args+=(--require-lineage)
   python3 "$VERIFY_PY" --smoke "$case_run_dir" --problem-type strategy \
-    --expect-gens "$expected_gens" --expect-demes "$expected_demes"
+    --expect-gens "$expected_gens" --expect-demes "$expected_demes" "${lineage_args[@]}"
 }
 
 run_state_case() {
@@ -311,6 +302,17 @@ run_state_all() {
   return "$overall"
 }
 
+run_state_tier() {
+  local tier="$1" overall=0 c
+  for c in "${STATE_CASES[@]}"; do
+    [[ "$(strategy_state_tier "$c")" == "$tier" ]] || continue
+    echo
+    echo "======== state $c ========"
+    run_state_case "$c" || overall=$?
+  done
+  return "$overall"
+}
+
 cmd="${1:-list}"
 shift || true
 case "$cmd" in
@@ -320,12 +322,16 @@ case "$cmd" in
     [[ $# -ge 1 ]] || { echo "usage: $0 metta <case|all>" >&2; exit 2; }
     if [[ "$1" == "all" ]]; then run_metta_all; else run_metta_case "$1"; fi ;;
   state)
-    [[ $# -ge 1 ]] || { echo "usage: $0 state <case|all>" >&2; exit 2; }
-    if [[ "$1" == "all" ]]; then run_state_all; else run_state_case "$1"; fi ;;
+    [[ $# -ge 1 ]] || { echo "usage: $0 state <case|smoke|pressure|all>" >&2; exit 2; }
+    case "$1" in
+      all) run_state_all ;;
+      smoke|pressure) run_state_tier "$1" ;;
+      *) run_state_case "$1" ;;
+    esac ;;
   all)
     run_metta_all || exit $?
     run_state_all ;;
   *)
-    echo "usage: $0 [OPTIONS] {list|metta <case|all>|state <case|all>|all}" >&2
+    echo "usage: $0 [OPTIONS] {list|metta <case|all>|state <case|smoke|pressure|all>|all}" >&2
     exit 2 ;;
 esac

@@ -279,6 +279,16 @@
           ($size (eval (OS.length $result))))
      $size))
 
+;; Routine lineage gate.  It preserves the five-generation, two-deme and
+;; empty-seed shape of deep-lineage while bounding candidate and game scoring.
+;; The unreachable target guarantees that all five generations are emitted.
+(= (strategyStateLineageSmoke)
+   (let* (($result (runMoses 5 (mkCscore 100.0 0 0 0.0 100) 2 (emptyStrategyMetaPop)
+                             0 2 (4 3.5) hillClimbing
+                             60 2 1 1.0 2 0.004 1000))
+          ($size (eval (OS.length $result))))
+     $size))
+
 (= (strategyStateMergeCullPressure)
    (let* (($result (runMoses 2 (mkCscore 5.0 5 1.43 0.0 3.57) 2 (strategyMetaPop)
                              0 2 (5 3.5) hillClimbing

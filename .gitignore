@@ -72,5 +72,6 @@ HANDOFF-milestone2.md
 !llmoses/llmoses-tests/*_test.sh
 !llmoses/llmoses-tests/reverse_check.sh
 !llmoses/llmoses-tests/offline_suite.sh
+!llmoses/llmoses-tests/run_capture.sh
 !llmoses/llmoses-tests/m2_test_support.py
 !llmoses/llmoses-tests/m2_merge_regression.metta
