@@ -13,8 +13,14 @@ absolute utilities and masks. No comparator or complexity-ratio agent lever rema
 The experiment JSON is [configs/m2-closure.json](configs/m2-closure.json).
 It explicitly sets selection temperature and defaults every b to zero. Copy it
 for a guided arm and choose b per lever; declare all arm controls in that file.
-Native source files are untouched. All required overlay imports must be used
+For the separate native, LLMOSES off, and exemplar-guided profiles, see
+[native boundary and comparison profiles](docs/native-boundary.md).
+All required overlay imports must be used
 exactly once; general-helpers, bscore and demo-problems are additive shims.
+
+Native MOSES source, fixtures, configuration and the upstream Python harness
+must remain unchanged. LLMOSES behavior belongs under `llmoses/`; native launch
+adjustments belong only in separate shell scripts or Docker configuration.
 
 Prepared commands for the testing phase (not executed during implementation):
 
