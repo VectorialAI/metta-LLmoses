@@ -8,15 +8,16 @@ logs/
 .DS_Store
 
 # ── Containerisation setup (branch-local, not merged to main) ──────────────
-#Dockerfile
-#.dockerignore
-#run_moses_demo.sh
-#run_logical_smoke_test.sh
-#run_strategy_smoke_test.sh
-#Makefile
-#llmoses-tests
-#llmoses-tests/*
-#llmoses/llmoses-tests/*
+Dockerfile
+.dockerignore
+run_moses_demo.sh
+run_logical_smoke_test.sh
+run_boolean_smoke_test.sh
+run_strategy_smoke_test.sh
+Makefile
+llmoses-tests
+llmoses-tests/*
+llmoses/llmoses-tests/*
 llmoses/temp
 llmoses/temp/*
 scripts
