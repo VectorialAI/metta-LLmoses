@@ -2,7 +2,7 @@
 ;; If p is small (close to 0), it means the model is expected to be very accurate, making mistakes rarely.
 ;; If p is large (approaching 0.5), it means the model is expected to be less accurate, making mistakes more often (but still better than random guessing).
 
-;; (: getCscore (-> (ITable $a) (Tree $a) Number Cscore))
+;; (:getCscore (-> (ITable $a) (Tree $a) Number Cscore))
 (= (getCscore $tree $complexityRatio $bs)
        (if-error $bs ;; return worst possible composite score
                 (worstCscore)
@@ -20,16 +20,13 @@
 )
 
 ;; Boolean version - uses scoreTree
-(= (getCscore $itable $tree $complexityRatio $scoreSpace)
-   (getCscore $tree $complexityRatio (scoreTree $itable $tree $scoreSpace)))
-;; Strategy version - uses scoreStrategyTree with caching 
-;; scoreStrategyTree is example/runtime-defined, so defer its dispatch. (llmoses)
-(= (getCscore $tree $nGames $opponentPolicy $complexityRatio $scoreSpace)
-   (getCscore
-      $tree
-      $complexityRatio
-      (eval (scoreStrategyTree $tree $nGames $opponentPolicy $scoreSpace))))
-;; getComplexityCoef -- calcualtes the complexity coeffient of a tree   
+(= (getCscore (mkITable $rows $labels) $tree $complexityRatio $scoreSpace)
+   (getCscore $tree $complexityRatio (scoreTree (mkITable $rows $labels) $tree $scoreSpace)))
+
+;; Strategy version - uses mixed-opponent scoreStrategyTree
+(= (getCscore $tree $nGames $complexityRatio $scoreSpace)
+   (getCscore $tree $complexityRatio (scoreStrategyTree $tree $nGames $scoreSpace)))
+;; getComplexityCoef -- calcualtes the complexity coeffient of a tree
 ;; takes complexity ratio as input and returns complexity coefficient
 ;; complexity ratio, unless set by the user, has 3.5 for a default value
 
@@ -37,9 +34,9 @@
 (= (getComplexityCoef $complexityRatio)
     (if (> $complexityRatio 0)
         (/ 1.0 $complexityRatio)
-        0.0))           
+        0.0))
 
-;; updatePenalizedScore            
+;; updatePenalizedScore
 ;; by default the worst possible score is set as the penalized score for a tree
 ;; there is a bool multiply_diversity parameter if set to true the penalized score has to be multiplied with the uniform penalty
 ;; if not the uniformity penalty is instead subtracted
@@ -48,15 +45,15 @@
 ;; (:Cscore Type)
 ;; (:mkCscore (-> Number Number Number Number Number Cscore))
 
-;; (: updatePenalizedScore (-> Cscore Bool Cscore))
+; (: updatePenalizedScore (-> Cscore Bool Cscore))
 (= (updatePenalizedScore (mkCscore $scor $cpxy $cpxyPenalty $uniformityPenalty $penalizedScore) $multiplyDiversity)
     (let* (($temp (- $scor $cpxyPenalty))
            ($updatedPScore (if $multiplyDiversity (* $temp $uniformityPenalty) (- $temp $uniformityPenalty)))
            ;; ($_ (println! (PenalizedScore: $updatedPScore)))
            )
-        
+
             (mkCscore $scor $cpxy $cpxyPenalty $uniformityPenalty $updatedPScore)))
-;; Converts a score to an expression.
+;converts a score to an expression
 ;; (:cScoreToExpr (-> Cscore Expression))
 (= (cScoreToExpr (mkCscore $scor $cpxy $complexityPenalty $uniformityPenalty $penalizedScore))
     (let* (
@@ -86,7 +83,7 @@
 
 
 ;; worstCscore
-;; (: worstCscore (-> Cscore))
+; (: worstCscore (-> Cscore))
 (= (worstCscore)
     (mkCscore (* -1 (pow-math 10 100)) 0 0.0 0.0 (* -1 (pow-math 10 100))))
 
@@ -98,39 +95,39 @@
 ;; (:getScore (-> Cscore Number))
 (= (getScore (mkCscore $scor $cpxy $complexityPenalty $uniformityPenalty $penalizedScore)) $scor)
 
-;; (: getComp (-> Cscore Number))
+; (: getComp (-> Cscore Number))
 (= (getComp (mkCscore $scor $cpxy $complexityPenalty $uniformityPenalty $penalizedScore)) $cpxy)
 
 ;; (:getCompPen (-> Cscore Number))
 (= (getCompPen (mkCscore $scor $cpxy $complexityPenalty $uniformityPenalty $penalizedScore)) $complexityPenalty)
 
-;; (: getUniPen (-> Cscore Number))
+; (: getUniPen (-> Cscore Number))
 (= (getUniPen (mkCscore $scor $cpxy $complexityPenalty $uniformityPenalty $penalizedScore)) $uniformityPenalty)
 
 ;; cScoreExpr< -- composite score less than operator for expressions
 ;; works directly with expressions using index-atom to extract scores
 ;; index 4 = penalized score, index 1 = complexity score
-;; (: cScoreExpr< (-> Expression Expression Bool))
-(= (cScoreExpr< (($scor $cpxy $complexityPenalty $uniformityPenalty $penalizedScore)) 
+; (: cScoreExpr< (-> Expression Expression Bool))
+(= (cScoreExpr< (($scor $cpxy $complexityPenalty $uniformityPenalty $penalizedScore))
                     (($scor2 $cpxy2 $complexityPenalty2 $uniformityPenalty2 $penalizedScore2)))
-    
+
         (if (isnan-math $penalizedScore)
             (not (isnan-math $penalizedScore2))
             (or (< $penalizedScore $penalizedScore2) (and (== $penalizedScore $penalizedScore2) (> $cpxy $cpxy2)))))
-            
+
 ;; Check for equality, to within floating-point error, EPSILON
-;; (: cScore== (-> Cscore Cscore Bool))
+; (: cScore== (-> Cscore Cscore Bool))
 (= (cScore== $cs1 $cs2)
-    (let ($sL $cL $cpL $upL $pL $sR $cR $cpR $upR $pR) 
+    (let ($sL $cL $cpL $upL $pL $sR $cR $cpR $upR $pR)
             ((getScore $cs1) (getComp $cs1) (getCompPen $cs1) (getUniPen $cs1) (getPenScore $cs1)
-            (getScore $cs2) (getComp $cs2) (getCompPen $cs2) (getUniPen $cs2) (getPenScore $cs2)) 
-        
-            (and (isApproxEq $sL $sR) 
-                (and (isApproxEq $cL $cR) 
-                    (and (isApproxEq $cpL $cpR) 
+            (getScore $cs2) (getComp $cs2) (getCompPen $cs2) (getUniPen $cs2) (getPenScore $cs2))
+
+            (and (isApproxEq $sL $sR)
+                (and (isApproxEq $cL $cR)
+                    (and (isApproxEq $cpL $cpR)
                         (and (isApproxEq $upL $upR) (isApproxEq $pL $pR)))))))
 
-;; (: cScore>= (-> Cscore Cscore Bool))
+; (: cScore>= (-> Cscore Cscore Bool))
 (= (cScore>= $cs1 $cs2)
     (let ($pl $pr $cl $cr) ((getPenScore $cs1) (getPenScore $cs2) (getComp $cs1) (getComp $cs2))
         (if (isnan-math $pl)

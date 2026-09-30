@@ -1,3 +1,4 @@
+Descriptions
 GEMINI.md
 .vscode/
 venv
@@ -6,16 +7,17 @@ __pycache__/
 logs/
 .DS_Store
 
-# ── Containerisation setup (branch-local, not merged to main) ──────────────
-#Dockerfile
-#.dockerignore
-#run_moses_demo.sh
-#run_logical_smoke_test.sh
-#run_strategy_smoke_test.sh
-#Makefile
-#llmoses-tests
-#llmoses-tests/*
-#llmoses/llmoses-tests/*
+# ── Local-only development harness — intentionally ignored and not tracked ──
+Dockerfile
+.dockerignore
+run_moses_demo.sh
+run_logical_smoke_test.sh
+run_boolean_smoke_test.sh
+run_strategy_smoke_test.sh
+Makefile
+llmoses-tests
+llmoses-tests/*
+llmoses/llmoses-tests/*
 llmoses/temp
 llmoses/temp/*
 scripts
@@ -48,11 +50,7 @@ todo
 tree-helper-registration-test.metta
 run_python_tests.py
 
-# Ignore HTML and Prolog files
 *.html
-*.pl
-
-
 llmoses/design-spec/*
 llmoses/deme/tests/extractors-test.metta
 llmoses/drafts/*

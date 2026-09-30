@@ -10,19 +10,23 @@
 !(import! &self scoring/bscore)
 
 (= (scoreTree (mkITable $table $labels) $tree $cacheSpace)
-   (if (== $tree (mkTree (mkNode AND) Nil))
+   (if (== $tree (mkTree (mkNode AND) ()))
        (worstPossibleScore (createTruthTableBScore $compCoeff (mkITable $table $labels)))
        (let $ctx (mkITable $table $labels)
-         (chain (collapse (match $cacheSpace ($ctx $tree $bscore) $bscore)) $val
+         (chain (collapse (match $cacheSpace
+                 ($ctx $tree $bscore)
+                 $bscore))
+             $val
            (if (== $val ())
                (let* (
                    ($expTree (preOrder $tree))
-                   ($scoreList (eval (List.map (compose evaluate ((curry replaceVarsWithTruth) ($labels $expTree))) $table)))
+                   ($scoreList (map-atom $table $ts (scoreTreeHelper $labels $expTree $ts)))
                    ($length (List.length $labels))
-                   ($outputs (eval (List.flatten (List.map (eval (List.drop (- $length 1))) $table))))
+                   ($outputs (List.flatten (List.map (List.drop (- $length 1)) $table)))
                    ($bScore (List.zipWith compareAndScore $scoreList $outputs))
                    ($result (mkBScore $bScore))
                    ($_ (add-atom $cacheSpace ($ctx $tree $result)))
                )
                $result)
-               (car-atom $val))))))
+               (car-atom $val)
+           )))))

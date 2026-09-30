@@ -21,29 +21,41 @@
 (= (metapopSize $os)    (OS.length $os))
 (= (memberByIdx $os $i) (OS.getByIdx $i $os))           ;; native arg order: idx first
 
-;; --- REPRESENTATION field pulls (shape verified in representation.metta) -----
-(= (repDscMp (mkRep (mkKbMap (mkDscKbMp $dscKbMp) (mkDscMp $dscMp)) $tree)) $dscMp)
-(= (repTree  (mkRep (mkKbMap (mkDscKbMp $dscKbMp) (mkDscMp $dscMp)) $tree)) $tree)
+;; --- REPRESENTATION field pulls (upstream mkKbMap now owns one DiscMap) ------
+(= (repDscMp (mkRep (mkKbMap (mkDscMp $dscMp)) $tree)) $dscMp)
+(= (repTree  (mkRep (mkKbMap (mkDscMp $dscMp)) $tree)) $tree)
+(= (repDscMp (mkRep (mkKbMap $dscKbMp (mkDscMp $dscMp)) $tree)) $dscMp)
+(= (repTree  (mkRep (mkKbMap $dscKbMp (mkDscMp $dscMp)) $tree)) $tree)
 
-;; --- KNOBS: walk the DscMp MultiMap by STRUCTURE (mirrors crtDiscKnobMap) ----
-;; Strips each (knobSpec knob) pair to the knob, recursing the ConsMMap spine.
-(= (mmapKnobList NilMMap) Nil)
-(= (mmapKnobList (ConsMMap ($kbSpec $kb) $tail)) (Cons $kb (mmapKnobList $tail)))
-(= (knobsOfRep $rep) (mmapKnobList (repDscMp $rep)))
+;; --- KNOBS: upstream embeds the location/index in mkKnob tree wrappers. -------
+;; The DiscMap preserves that instance order, so enumerate it and carry the
+;; index beside each logical/strategy knob for state emission.
+(= (mmapKnobList () $i) ())
+(= (mmapKnobList (cons ($kbSpec $kb) $tail) $i)
+   (cons (llKnob $i $kb) (mmapKnobList $tail (+ $i 1))))
+(= (legacyKnobList ()) ())
+(= (legacyKnobList (cons ($kbSpec $kb) $tail))
+   (cons $kb (legacyKnobList $tail)))
+(= (knobsOfRep (mkRep (mkKbMap (mkDscMp $dscMp)) $tree))
+   (mmapKnobList $dscMp 0))
+(= (knobsOfRep (mkRep (mkKbMap $dscKbMp (mkDscMp $dscMp)) $tree))
+   (legacyKnobList $dscMp))
 
 ;; --- Per-knob native accessors (thin delegating names) ----------------------
-(= (knobLoc     $kb) (getKnobLoc     $kb))   ;; native NodeId
-(= (knobMultip  $kb) (getKnobMultip  $kb))   ;; native raw multiplicity field (mkMultip n)
-(= (knobDefault $kb) (getKnobDefault $kb))   ;; native Number
-
-;; Relocated from the expand-deme fork so the wrapper files can load before
-;; expand-deme. expand-deme's own createInitialInstance use resolves fine,
-;; since extractors now loads first.
-(= (getKnobDefault (mkLSK (mkDiscKnob $knob $multip $curr (mkDiscSpec $def) $dis))) $def)
-(= (getKnobDefault (mkSSK (mkDiscKnob $knob $multip $curr (mkDiscSpec $def) $dis))) $def)
+(= (knobLoc     (llKnob $i $kb)) $i)
+(= (knobMultip  (llKnob $i $kb)) (getKnobMultip $kb))
+(= (knobDefault (llKnob $i $kb)) (getKnobDefault $kb))
+(= (knobLoc     (mkLSK $dk)) (getKnobLoc (mkLSK $dk)))
+(= (knobLoc     (mkSSK $dk)) (getKnobLoc (mkSSK $dk)))
+(= (knobMultip  (mkLSK $dk)) (getKnobMultip (mkLSK $dk)))
+(= (knobMultip  (mkSSK $dk)) (getKnobMultip (mkSSK $dk)))
+(= (knobDefault (mkLSK $dk)) (getKnobDefault (mkLSK $dk)))
+(= (knobDefault (mkSSK $dk)) (getKnobDefault (mkSSK $dk)))
 
 ;; --- DEME fields: NOT extracted here; runMosesLoop already binds $rep/$sInst/$demeId.
 
 ;; Constructor tag: discriminates knob family without relying on multiplicity.
+(= (knobTag (llKnob $i (mkLSK $dk))) LSK)
+(= (knobTag (llKnob $i (mkSSK $dk))) SSK)
 (= (knobTag (mkLSK $dk)) LSK)
 (= (knobTag (mkSSK $dk)) SSK)

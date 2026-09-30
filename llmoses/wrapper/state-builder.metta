@@ -44,8 +44,8 @@
    (let* (($n (eval (metapopSize $os)))) (sbEmitMembers $g $os 0 $n)))
 
 ;; --- per-deme emit: iterate optimized-deme tuple, keying knobs + meta by demeId -----
-(= (sbEmitDemeKnobs $g $demeId Nil) 0)
-(= (sbEmitDemeKnobs $g $demeId (Cons $k $rest))
+(= (sbEmitDemeKnobs $g $demeId ()) 0)
+(= (sbEmitDemeKnobs $g $demeId (cons $k $rest))
    (let* (
      ($loc (eval (knobLoc $k))) ($mul (eval (knobMultip $k)))
      ($def (eval (knobDefault $k))) ($tag (eval (knobTag $k)))
@@ -97,8 +97,8 @@
 ;; Called at the merge-demes hook site, buffer open from sbBeginMerge.
 ;; cscore fields extracted via named accessors (getScore / getComp / getPenScore)
 ;; so the three scalars cross as ints/floats rather than as a raw mkCscore atom.
-(= (sbEmitCullCands Nil) 0)
-(= (sbEmitCullCands (Cons $ex $rest))
+(= (sbEmitCullCands ()) 0)
+(= (sbEmitCullCands (cons $ex $rest))
    (let* (
      ($tree   (eval (getExemplarTree   $ex)))
      ($expr   (eval (preOrder $tree)))
@@ -141,19 +141,18 @@
      ($_t3 (py-call (state_builder.flush_terminal $g)))
    ) 0))
 
-;; Strategy problem spec: no itable exists; the action-space domain is the hardcoded
-;; move vocabulary (getAllGameMoves, representation/add-logical-knobs.metta L11)
-;; plus the game parameters from the context tuple.
-(= (sbSetProblemSpecStrategy $nGames $opponentPolicy $complexityRatio)
+;; Strategy problem spec: upstream now evaluates a mixed random/minimax budget,
+;; so the former caller-selected opponent is recorded as mixed-opponents.
+(= (sbSetProblemSpecStrategy $nGames $complexityRatio)
    (let* (($moves (eval (getAllGameMoves))))
-     (py-call (state_builder.set_problem_spec_strategy $moves $nGames $opponentPolicy $complexityRatio))))
+     (py-call (state_builder.set_problem_spec_strategy $moves $nGames mixed-opponents $complexityRatio))))
 
 ;; Explicit boolean run initializer — call instead of sbNewRun + sbSetProblemSpec.
 ;; Combines new_run, problem-spec, and run-param buffering in one call.
 ;; Use for the 4-field context: ($prune $fsAlgo $truthTableBScore $itable)
 (= (sbBeginRunBoolean
       $maxGen $nEval $maxCandsPerDeme $minPoolSize $complexityTemperature
-      $nToKeep $capCoef $nDeme $optimizer
+      $nToKeep $capCoef $nDeme
       $truthTableBScore $itable)
    (let* (
      (($cpxCoeff $_size $_tbl) (eval (getTTableParams $truthTableBScore)))
@@ -163,25 +162,25 @@
              "boolean" $cpxCoeff
              $maxGen $nEval $maxCandsPerDeme
              $minPoolSize $complexityTemperature
-             $nToKeep $capCoef $nDeme $optimizer
-             10000))
+             $nToKeep $capCoef $nDeme "hillClimbing"
+             500))
      ($_3 (sbEmitRunConfig))
    ) 0))
 
 ;; Explicit strategy run initializer — call instead of sbNewRun + sbSetProblemSpecStrategy.
-;; Use for the 3-field context: ($nGames $opponentPolicy $complexityRatio)
+;; Use for the upstream 2-field context: ($nGames $complexityRatio)
 (= (sbBeginRunStrategy
       $maxGen $nEval $maxCandsPerDeme $minPoolSize $complexityTemperature
-      $nToKeep $capCoef $nDeme $optimizer
-      $nGames $opponentPolicy $complexityRatio)
+      $nToKeep $capCoef $nDeme
+      $nGames $complexityRatio)
    (let* (
      ($_0 (sbNewRun))
-     ($_1 (sbSetProblemSpecStrategy $nGames $opponentPolicy $complexityRatio))
+     ($_1 (sbSetProblemSpecStrategy $nGames $complexityRatio))
      ($_2 (sbSetRunParams
              "strategy" $complexityRatio
              $maxGen $nEval $maxCandsPerDeme
              $minPoolSize $complexityTemperature
-             $nToKeep $capCoef $nDeme $optimizer
-             10000))
+             $nToKeep $capCoef $nDeme "hillClimbing"
+             500))
      ($_3 (sbEmitRunConfig))
    ) 0))

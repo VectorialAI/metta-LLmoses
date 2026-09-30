@@ -8,25 +8,13 @@ LLMOSES is a shadow wrapper layer for metta-moses that emits MOSES state and act
 - `utilities/`: Python JSON emitters, the watcher stub, and helper shims used by the wrapper.
 - `skills/`: checked-in context docs for the shadow-mode utility estimator.
 - `deme/`, `representation/`, `scoring/`, `feature-selection/`, `moses/`, `optimization/`: shadow MOSES files imported instead of base files where LLMOSES hooks or fixes are needed.
-- `llmoses-tests/`: centralized demo, state-capture, smoke, and pressure test entrypoints. This is an intentional harness layout exception to the repo's per-folder `tests/` convention.
 - `outputs/`: ignored generated logs, run metadata, state/action JSON, ready sentinels, and run-local guide files.
 
-## Quickstart
+## Runtime status
 
-Run these commands from the repository root after Docker Desktop is running:
+The Docker image, Makefile, demo scripts, and LLMOSES test harness are local-only development artifacts. They are deliberately ignored and are not part of this repository's tracked source.
 
-```sh
-make build
-make shell
-./run_moses_demo.sh list
-./run_moses_demo.sh demo pa
-```
-
-Use the full demo sweep when you want to run every demo key exposed by the harness:
-
-```sh
-./run_moses_demo.sh demo all
-```
+The MeTTa source can be run with the Petta runtime. A maintained, portable quickstart package will be added separately.
 
 State/action output is written under:
 
@@ -41,13 +29,5 @@ llmoses/outputs/logs/
 ```
 
 The latest run is recorded in `llmoses/outputs/CURRENT_RUN.json`. Runtime guide files are generated under `llmoses/outputs/` and each run directory; they are local artifacts and are not committed.
-
-Generated runs can be listed and removed without affecting the checked-in estimator docs:
-
-```sh
-make runs-list
-make run-delete RUN_ID=<run-id>
-make runs-refresh-current
-```
 
 Deleting a run removes only `llmoses/outputs/runs/<run-id>`. The canonical estimator docs stay in `llmoses/skills/`; run-local Markdown files are regenerated guide artifacts.
