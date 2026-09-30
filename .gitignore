@@ -7,7 +7,7 @@ __pycache__/
 logs/
 .DS_Store
 
-# ── Containerisation setup (branch-local, not merged to main) ──────────────
+# ── Local-only development harness — intentionally ignored and not tracked ──
 Dockerfile
 .dockerignore
 run_moses_demo.sh
