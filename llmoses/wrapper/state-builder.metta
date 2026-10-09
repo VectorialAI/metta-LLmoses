@@ -11,6 +11,14 @@
 (= (sbNewRun)           (py-call (state_builder.new_run)))
 (= (sbBeginGen $g)      (py-call (state_builder.begin_gen $g)))
 (= (sbGetTotalEvals)    (py-call (state_builder.get_total_evals)))
+(= (sbEnterGen $g) (py-call (state_builder.enter_gen $g)))
+(= (sbCheckpoint $continuation) (py-call (state_builder.checkpoint_native $continuation)))
+;; sbResume is defined after llmContinue in deme/expand-deme.metta. At this
+;; import point PeTTa would compile the unknown dispatcher as a literal atom.
+(= (sbSnapshotMembers $mp)
+   (let* (($g (py-call (state_builder.current_generation)))
+          ($_clear (py-call (state_builder.clear_members $g)))
+          ($_members (sbEmitAllMembers $g $mp))) 0))
 
 ;; --- input feature spec: emit once per run from the ITable ----------------
 ;; Boolean problems have $itable in context; strategy problems pass 0 (no-op).

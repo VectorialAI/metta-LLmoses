@@ -1,11 +1,5 @@
 #!/usr/bin/env python3
-"""Watch LLMOSES ready sentinels and write shadow-agent artifacts.
-
-The watcher is a separate process. It reads <run>/ready/run-<seq>-step-<g>
-markers after the emitter has finished state/action files, writes utility and
-trace JSON under run-local directories, and drains remaining sentinels before
-exit on stop.
-"""
+"""Consume four-call ready markers using a live estimator or deterministic fixture."""
 import argparse
 import json
 import os
@@ -13,192 +7,148 @@ import signal
 import sys
 import time
 
-HEAD_N = 10
+import call_paths
+import protocol_version
+import responder_control as rc
+import response_template
+import utility_schema
 
-# TODO: consider replacing the 100 ms polling loop with an OS-native file-event
-# mechanism such as inotify (Linux) or kqueue/FSEvents (macOS), e.g. via the
-# watchdog library, to reduce latency and CPU overhead on high-generation runs.
+MOCK_MODE = os.environ.get("LLMOSES_MOCK_UTILITY_MODE", "neutral")
+CONTEXT_STRATEGY = os.environ.get("LLMOSES_CONTEXT_STRATEGY", "full_history")
 POLL_S = float(os.environ.get("LLMOSES_WATCH_POLL_S", "0.1"))
-
 _stop = False
 
 
-def _request_stop(*_):
+def _load_json(path):
+    with open(path, encoding="utf-8") as fh:
+        return json.load(fh)
+
+
+def _request_stop(*unused):
     global _stop
     _stop = True
 
 
-def _head(path, n=HEAD_N):
-    """Return up to n lines from path; surface missing/empty files gracefully."""
-    if not os.path.exists(path):
-        return [f"<missing: {os.path.basename(path)}>"]
-    out = []
-    with open(path, "r", encoding="utf-8") as fh:
-        for i, line in enumerate(fh):
-            if i >= n:
-                break
-            out.append(line.rstrip("\n"))
-    return out or ["<empty>"]
+def _mock_utility(mode, state, config, gen=None):
+    slots = response_template.build_slots(state, config)
+    if mode == "neutral":
+        return response_template.assemble(slots, {}, decline=True)
+    if mode not in ("identity", "prefer_worst", "pair_policy"):
+        raise ValueError(f"unsupported mock mode {mode!r}")
+    values = {key: (0.0 if spec["domain"] == "offset" else 1.0)
+              for key, spec in slots.items() if spec["kind"] != "policy"}
+    if "policy" in slots:
+        values["policy"] = {}
+    if mode == "prefer_worst" and state["call"] == 1 and state["rows"]:
+        worst = min(state["rows"], key=lambda row: sum(row.get("scores", {}).values()))["row"]
+        values[f"row:{worst}"] = slots[f"row:{worst}"]["maximum"]
+    if mode == "prefer_worst" and state["call"] in (2, 4) and state["candidates"]:
+        worst = min(state["candidates"], key=lambda m: m["cscore"]["penalized_score"])["program_id"]
+        for key, spec in slots.items():
+            if spec["domain"] == "offset":
+                values[key] = spec["maximum"] if spec["identity"]["program_id"] == worst else spec["minimum"]
+    if mode == "pair_policy" and state["call"] == 3 and state["pairs"]:
+        values["policy"] = {"base": [{"pair": state["pairs"][0],
+                                       "weight": config["experiment"]["utility_max"]}], "rules": []}
+    return response_template.assemble(slots, values)
 
 
-def _write_json(path, doc):
-    """Atomically write one JSON document."""
-    os.makedirs(os.path.dirname(path), exist_ok=True)
-    tmp = path + ".tmp"
-    with open(tmp, "w", encoding="utf-8") as fh:
-        json.dump(doc, fh, indent=2)
-        fh.write("\n")
-    os.replace(tmp, path)
+def _history(run_dir, seq, step):
+    root = os.path.join(run_dir, "traces", f"run-{seq}")
+    rows = []
+    if not os.path.isdir(root):
+        return rows
+    for name in os.listdir(root):
+        if not name.startswith("step-") or not name.endswith(".json"):
+            continue
+        previous = name[5:-5]
+        if call_paths.key(seq, previous) < call_paths.key(seq, step):
+            rows.append((call_paths.key(seq, previous), _load_json(os.path.join(root, name))))
+    return [doc for unused, doc in sorted(rows)]
 
 
-def _parse_sentinel(name):
-    """Parse ``run-<seq>-step-<g>`` into (seq, gen) strings."""
-    if not name.startswith("run-"):
-        return None, None
-    rest = name[len("run-"):]
-    sep = rest.find("-step-")
-    if sep == -1:
-        return None, None
-    seq = rest[:sep]
-    gen = rest[sep + len("-step-"):]
-    if not seq or not gen:
-        return None, None
-    return seq, gen
+def _handle_step(run_dir, seq, step, dirs=None):
+    paths = call_paths.paths(run_dir, seq, step)
+    state, config = _load_json(paths["state"]), _load_json(paths["run_config"])
+    trace = {}
+    if MOCK_MODE == "live":
+        import live_estimator
+        try:
+            live_estimator.check_timeout_invariant(config["handshake"]["response_timeout_s"])
+            doc, trace = live_estimator.estimate(state, config, step, history=_history(run_dir, seq, step))
+        except (live_estimator.TimeoutInvariantError, ValueError) as exc:
+            doc = utility_schema.neutral(state, 503, {"error_class": "configuration", "detail": str(exc)})
+    else:
+        doc = _mock_utility(MOCK_MODE, state, config)
+    clean, report = utility_schema.ingest(doc, state, config["experiment"])
+    if clean is None:
+        clean = utility_schema.neutral(state, 500, {"error_class": "schema", "detail": str(report)})
+    if report["dropped"]:
+        clean.setdefault("outcome", {})["salvage"] = {
+            "requested": report["requested"], "survived": report["survived"]}
+    clean.setdefault("outcome", {})["protocol_version"] = protocol_version.compute()
+    trace.update({"schema_version": "agent-trace-v2", "record_type": "AgentTrace",
+                  "run_seq": int(seq), "generation": state["generation"], "call": state["call"],
+                  "input_state": state, "parsed_utility_response": clean,
+                  "ingest_report": report, "context_strategy": CONTEXT_STRATEGY})
+    # Trace and utility are durable before the response marker is published.
+    with rc.response_write_guard(run_dir, "watcher"):
+        rc.write_json_atomic(paths["utilities"], clean, fsync=True)
+        rc.write_json_atomic(paths["trace"], trace, fsync=True)
+    return paths["utilities"], paths["trace"]
 
 
-def _handle_step(run_dir, seq, gen, dirs):
-    """Stub handler: acknowledge receipt of state-<g> + action-<g>.
-
-    Reads from the per-run subdirectories that mirror the emitter's layout:
-      state/run-<seq>/step-<g>.json
-      action/run-<seq>/step-<g>.json
-    Writes into:
-      utilities/run-<seq>/step-<g>.json  (UtilityResponse)
-      traces/run-<seq>/step-<g>.json     (AgentTrace)
-    """
-    state_p  = os.path.join(dirs["state"],  f"run-{seq}", f"step-{gen}.json")
-    action_p = os.path.join(dirs["action"], f"run-{seq}", f"step-{gen}.json")
-    state_head  = _head(state_p)
-    action_head = _head(action_p)
-    ts = int(time.time() * 1000)
-
-    util_dir = os.path.join(dirs["utilities"], f"run-{seq}")
-    os.makedirs(util_dir, exist_ok=True)
-    util_p = os.path.join(util_dir, f"step-{gen}.json")
-    utility_doc = {
-        "pass": True,
-        "sampling_temperature": None,
-        "exemplar_utilities": [],
-        "pair_utilities": [],
-        "culling_utilities": [],
-        "complexity_ratio_delta": None,
-        "comparator_bias": None,
-    }
-    raw_model_response = json.dumps(utility_doc, sort_keys=True)
-    _write_json(util_p, utility_doc)
-
-    trace_dir = os.path.join(dirs["traces"], f"run-{seq}")
-    os.makedirs(trace_dir, exist_ok=True)
-    trace_p = os.path.join(trace_dir, f"step-{gen}.json")
-    trace_doc = {
-        "schema_version": "agent-trace-v0",
-        "record_type": "AgentTrace",
-        "stub": True,
-        "run_seq": seq,
-        "generation": gen,
-        "timestamp_ms": ts,
-        "ready_sentinel": f"ready/run-{seq}-step-{gen}",
-        "input_artifacts": {
-            "state_path": state_p,
-            "action_path": action_p,
-            "run_config_path": os.path.join(dirs["state"], f"run-{seq}",
-                                            "run_config.json"),
-            "native_log_path": os.path.join(run_dir, "moses_native_log.jsonl"),
-        },
-        "read_files": [state_p, action_p],
-        "prompt_context_manifest": [
-            "stub watcher read state/action JSON heads only",
-        ],
-        "provider": None,
-        "raw_model_response": raw_model_response,
-        "parsed_utility_response": utility_doc,
-        "audit_reasoning": [
-            "stub watcher observed ready sentinel but did not call a provider",
-        ],
-        "parse_diagnostics": [],
-        "debug_heads": {
-            "state_head": state_head,
-            "action_head": action_head,
-        },
-        "summary": (
-            f"observed ready/run-{seq}-step-{gen}; "
-            f"read {len(state_head)} state line(s), "
-            f"{len(action_head)} action line(s); wrote utilities + traces."
-        ),
-    }
-    _write_json(trace_p, trace_doc)
-
-    return util_p, trace_p
-
-
-def _scan_and_process(run_dir, dirs, consumed_dir):
-    """Process every unconsumed ready/ sentinel once. Returns count processed."""
-    ready_dir = dirs["ready"]
-    if not os.path.isdir(ready_dir):
+def _scan_and_process(run_dir, dirs=None, consumed_dir=None):
+    consumed_dir = consumed_dir or os.path.join(run_dir, "ready", ".consumed")
+    os.makedirs(consumed_dir, exist_ok=True)
+    if os.path.exists(rc.control_path(run_dir, "pause")):
         return 0
     processed = 0
-    for entry in sorted(os.scandir(ready_dir), key=lambda e: e.name):
-        if not entry.is_file() or not entry.name.startswith("run-"):
-            continue
-        seq, gen = _parse_sentinel(entry.name)
-        if seq is None:
-            continue
-        try:
-            _handle_step(run_dir, seq, gen, dirs)
-            # Move the marker out of ready/ — drain == "ready/ is empty".
-            os.replace(entry.path, os.path.join(consumed_dir, entry.name))
-            processed += 1
-        except Exception as e:  # never let one bad step kill the watcher
-            sys.stderr.write(f"[watcher] sentinel {entry.name} failed: {e}\n")
+    for seq, step, ready in call_paths.ready_entries(run_dir):
+        if not rc.owns(run_dir, "watcher"):
+            raise rc.OwnershipConflict("watcher no longer owns this run")
+        if rc.abort_requested(run_dir):
+            raise SystemExit(4)
+        paths = call_paths.paths(run_dir, seq, step)
+        if not os.path.exists(paths["response"]):
+            _handle_step(run_dir, seq, step)
+            with rc.response_write_guard(run_dir, "watcher"):
+                rc.write_json_atomic(paths["response"], {"step": step}, fsync=True)
+        if os.path.exists(ready):
+            os.replace(ready, os.path.join(consumed_dir, os.path.basename(ready)))
+        processed += 1
     return processed
 
 
 def main():
-    ap = argparse.ArgumentParser(
-        description="LLMOSES shadow-agent watcher: watches ready/ sentinels "
-                    "and writes stub UtilityResponse + AgentTrace JSON."
-    )
-    ap.add_argument("run_dir", help="Path to the run root directory.")
-    args = ap.parse_args()
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("run_dir")
+    args = parser.parse_args()
     run_dir = os.path.abspath(args.run_dir)
-
-    dirs = {
-        "state":     os.path.join(run_dir, "state"),
-        "action":    os.path.join(run_dir, "action"),
-        "ready":     os.path.join(run_dir, "ready"),
-        "utilities": os.path.join(run_dir, "utilities"),
-        "traces":    os.path.join(run_dir, "traces"),
-    }
-    for k in ("utilities", "traces"):
-        os.makedirs(dirs[k], exist_ok=True)
-    consumed_dir = os.path.join(dirs["ready"], ".consumed")
-    os.makedirs(consumed_dir, exist_ok=True)
-    stop_flag = os.path.join(run_dir, "CONTROL", "stop")
-    os.makedirs(os.path.dirname(stop_flag), exist_ok=True)
-
+    if MOCK_MODE not in ("neutral", "identity", "prefer_worst", "pair_policy", "live"):
+        parser.error("legacy mock modes were retired; use neutral/identity/prefer_worst/pair_policy/live")
+    version = protocol_version.check_pin()
+    rc.claim(run_dir, f"watcher:{MOCK_MODE}", "watcher", version, CONTEXT_STRATEGY)
+    heartbeat = rc.Heartbeat(run_dir, "watcher").start()
     signal.signal(signal.SIGTERM, _request_stop)
-    signal.signal(signal.SIGINT,  _request_stop)
-
-    sys.stderr.write(f"[watcher] watching {dirs['ready']} (poll {POLL_S}s)\n")
-    total = 0
-    while not _stop and not os.path.exists(stop_flag):
-        total += _scan_and_process(run_dir, dirs, consumed_dir)
-        time.sleep(POLL_S)
-
-    # Final drain: guarantee every sentinel on disk at stop time is handled.
-    total += _scan_and_process(run_dir, dirs, consumed_dir)
-    sys.stderr.write(f"[watcher] drained; processed {total} step(s); exiting.\n")
+    signal.signal(signal.SIGINT, _request_stop)
+    try:
+        while not _stop and not os.path.exists(rc.control_path(run_dir, "stop")):
+            if rc.abort_requested(run_dir):
+                return 4
+            _scan_and_process(run_dir)
+            time.sleep(POLL_S)
+        _scan_and_process(run_dir)
+        return 0
+    finally:
+        heartbeat.stop()
+        if rc.owns(run_dir, "watcher"):
+            rc.release(run_dir)
 
 
 if __name__ == "__main__":
-    main()
+    try:
+        sys.exit(main())
+    except (rc.OwnershipConflict, protocol_version.ProtocolPinError, ValueError) as exc:
+        print(str(exc), file=sys.stderr)
+        sys.exit(5)

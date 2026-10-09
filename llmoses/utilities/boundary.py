@@ -35,15 +35,20 @@ def unwrap_atom(x):
 
 
 def cons_to_list(x):
-    """Flatten a Cons spine to a flat Python list.
+    """Read a PeTTa flat list or an explicit Cons/cons spine.
+       ['mkBScore', [-1, 0]] -> [-1, 0] (native PeTTa bridge)
        ['Cons', 1.0, ['Cons', 0.0, 'Nil']] -> [1.0, 0.0]
        'Nil' -> []
-    Also accepts a wrapped list atom like ['mkBScore', <spine>] and unwraps first."""
-    if isinstance(x, list) and len(x) == 2 and isinstance(x[0], str) and x[0] != "Cons":
+    Unwrap mkBScore specifically: a two-label list is already a flat list."""
+    if isinstance(x, (list, tuple)) and len(x) == 2 and x[0] == "mkBScore":
         x = x[1]
+    if not isinstance(x, (list, tuple)):
+        return []
+    if not x or x[0] not in ("Cons", "cons"):
+        return list(x)
     out = []
     cur = x
-    while isinstance(cur, list) and len(cur) == 3 and cur[0] == "Cons":
+    while isinstance(cur, (list, tuple)) and len(cur) == 3 and cur[0] in ("Cons", "cons"):
         out.append(cur[1])
         cur = cur[2]
     return out
@@ -83,4 +88,3 @@ def present_atom(x):
     """Flat string, or None when the value is an absent-style sentinel."""
     s = _flat(x)
     return None if s in _ABSENT_ATOMS else s
-

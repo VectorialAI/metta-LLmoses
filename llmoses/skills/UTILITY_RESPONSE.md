@@ -1,33 +1,49 @@
-# UtilityResponse
+# Call-specific responses
 
-Write exactly one valid JSON object to `utilities/run-N/step-G.json`. Do not wrap it in Markdown.
-
-UtilityResponse is the machine-consumable action utility output. It should not contain prompt text, raw model responses, natural-language reasoning, or transcript material. Those belong in `traces/run-N/step-G.json`.
-
-Required top-level fields:
+Artifacts use `utilities/run-N/step-G-call-C.json`. Required envelope:
 
 ```json
-{
-  "pass": true,
-  "sampling_temperature": null,
-  "exemplar_utilities": [],
-  "pair_utilities": [],
-  "culling_utilities": [],
-  "complexity_ratio_delta": null,
-  "comparator_bias": null
-}
+{"run_seq":1,"generation":1,"call":2,"pass":false,"status":200,
+ "outcome":{},"exemplar_utilities":[{"program_id":"p-offered-id","offset":0.5}]}
 ```
 
-`pass` should be `true` when no intervention is justified, evidence is insufficient, or all exposed levers should stay neutral.
+Only one call's guidance field is legal:
 
-Use empty arrays or `null` for components that are not exposed in the current files. Do not fabricate candidate ids.
+| Call | Field | Entry |
+|---|---|---|
+| 1 | row_weights | row (integer), weight |
+| 2 | exemplar_utilities | program_id, offset |
+| 3 | policy | base and rules, as below |
+| 4 | retention_utilities | program_id, offset |
 
-Recommended utility records:
+```json
+{"base":[{"pair":["X1","X3"],"weight":1.4}],
+ "rules":[{"when":{"op":"OR","depth":{"min":1},"site_kind":"sampled_subtree"},
+           "adjust":[{"pair":["X2","X1"],"weight":0.5}]}]}
+```
 
-- Exemplar utilities: include `program_id` and `utility`.
-- Pair utilities: include the pair or atom keys available in the artifact and `utility`.
-- Culling utilities: include `program_id` and `retain_utility` or `cull_utility`.
-- Complexity ratio: use `increase`, `decrease`, or `maintain` when a directional field is expected.
-- Comparator bias: include only documented comparator dimensions.
+An optional temperature is legal only if commandable for this call:
+T_rowweight, T_exemplar, T_atom, T_retention. Ingest clamps it to configured bounds.
+All numbers must be finite; booleans are not numeric values. Row IDs and member
+IDs must be offered in this call. Pair labels need only belong to the alphabet.
+Duplicate entries are rejected. Valid row/member entries survive invalid peers;
+an invalid policy rejects the policy as a whole. Unknown fields, wrong call
+content, and fence mismatches reject the entire response.
 
-Put all reasons, audit notes, parse diagnostics, prompt/context manifests, and raw provider responses in the matching AgentTrace file under `traces/`.
+A neutral reply carries pass=true and no guidance. Status 204 means intentional
+abstention; 422 means unusable input; 500 means semantic response failure.
+Statuses 503/504 mean infrastructure failure and cause checkpointed pause.
+Status 200 requires pass=false. Envelope metadata is validated on every status,
+including declines. A semantic failure degrades only this call, not later calls.
+
+`outcome` can contain attempts (positive integer), retried (boolean), salvage
+(requested/survived nonnegative integers), coverage (mode full/sparse,
+requested/supplied integers), error_class/detail/protocol_version (strings),
+and context (strategy, chars, optional measured tokens, compressed, dropped).
+Absent token counts mean unavailable; do not fabricate token measurements.
+
+Prefer the slot interface: `row:0` and `member:ID` have numeric values;
+`policy` has a structured object. Commandable temperatures have named numeric
+slots. `assemble` supplies the fence and envelope. Rationale belongs in traces.
+Comparator, complexity-ratio, mask-mode, global-prior, synergy, and contextual-axis
+fields are retired and rejected, including on a decline.

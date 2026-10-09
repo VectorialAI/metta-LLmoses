@@ -135,6 +135,7 @@
                     (((mkITable $rows $labels) (scoreTree $scoringContext $tree &bscoreCache))
                      ($nGames (scoreStrategyTree $tree $nGames &strategyScoreCache)))))
         ($scoredTree (mkExemplar $tree $demeId $cscore $bscore))
+        ($_tags (py-call (state_builder.tag_candidate $tree $rep $inst $demeId)))
         ;; ($_ (println! (Returning...)))
     )
     (cons $scoredTree (demeToTrees (mkDeme $rep (mkSInstSet $sil) $demeId) $scoringContext))
@@ -203,15 +204,15 @@
 (= (removeDominatedRec $exemplar () $acc)
    (cons $exemplar $acc))
 (= (removeDominatedRec $exemplar (cons $other $rest) $acc)
-   (let $domResult (dominates (getExemplarBScore $exemplar) (getExemplarBScore $other))
-      ;; (trace! (if (== $domResult True) Dominated $domResult)
-      (if (== $domResult True) ;; Could also be Indeterminate that's why we use explicit == comparison
+   (let $dom (dominates (getExemplarBScore $exemplar) (getExemplarBScore $other))
+      (if (== $dom True)
           (removeDominatedRec $exemplar $rest $acc)
-          (if (== $domResult False)
-              (removeDominated (cons $other $rest))
-              (removeDominatedRec $exemplar $rest (cons $other $acc))))
-      ;; )
-      ))
+          (if (== $dom False)
+              ;; F-022: revisit every incomparable candidate against the new pivot.
+              (removeDominatedRec $other (llmAppendCons $rest $acc) ())
+              (removeDominatedRec $exemplar $rest (cons $other $acc))))))
+(= (llmAppendCons () $ys) $ys)
+(= (llmAppendCons (cons $x $xs) $ys) (cons $x (llmAppendCons $xs $ys)))
 
 ;; Merges a list of exemplars into the metapopulation, maintaining order based on exemplar comparison.
 ;; Assumes the exemplars are already filtered so it directly inserts them to the metapopulation
@@ -239,7 +240,7 @@
 ;;   $genCount: Generation count for resizing.
 ;; Return: Updated and resized metapopulation.
 ; (: mergeDemes (-> Expression Number Number Number Number (ITable $a) (OS (Exemplar $a)) Number Number Number (OS (Exemplar $a))))
-(= (mergeDemes $demes $nEval $maxCandsPerDeme $minPoolSize $complexityTemperature $scoringContext $metapop $nToKeep $capCoef $genCount)
+(= (llmFilterDemes $demes $nEval $maxCandsPerDeme $minPoolSize $complexityTemperature $scoringContext $metapop $nToKeep $capCoef $genCount)
     (if (== $demes ()) $metapop
         (let*
         (
@@ -273,7 +274,7 @@
             ($updatedMetaPop (mergeCandidates $removedDominated $metapop))  ;;merge candidates into metapop
             ;; ($_ (println! (merged Candidate: $updatedMetaPop)))
             ($_ (println! (Metapop size before resize: (OS.length $updatedMetaPop))))
-            ($resizedMetapop (resizeMetapop $updatedMetaPop $nToKeep $minPoolSize $complexityTemperature $capCoef $genCount))  ;;resize the metapop
+            ($resizedMetapop $updatedMetaPop)  ;;resize the metapop
             ($_ (println! (Metapop size after resize: (OS.length $resizedMetapop))))
             ; ($resizedMetapop (if (<= $nToKeep (OS.length $updatedMetaPop)) (OS.getTopN $nToKeep $updatedMetaPop) $updatedMetaPop)) ;; select top nToKeep candidates
             ;; ($_ (println! (Resized Metapop: $resizedMetapop)))
@@ -281,8 +282,13 @@
             ;; ($_ (println! ("")))
         )
             (if (== $tailDeme ()) $resizedMetapop
-                (mergeDemes $tailDeme $nEval $maxCandsPerDeme $minPoolSize $complexityTemperature $scoringContext $resizedMetapop $nToKeep $capCoef $genCount)
+                (llmFilterDemes $tailDeme $nEval $maxCandsPerDeme $minPoolSize $complexityTemperature $scoringContext $resizedMetapop $nToKeep $capCoef $genCount)
             )
         )
     )
 )
+
+;; Public compatibility entry: filter all demes first, then retain once.
+(= (mergeDemes $demes $nEval $maxCands $minimum $trim $ctx $mp $keep $cap $gen)
+   (let $pool (llmFilterDemes $demes $nEval $maxCands $minimum $trim $ctx $mp $keep $cap $gen)
+        (resizeMetapop $pool $keep $minimum $trim $cap $gen)))

@@ -1,29 +1,24 @@
-# Data Model
+# Four-call state
 
-Treat JSON artifacts as ground truth. Markdown files explain conventions, but they are not authoritative state.
+`state/run-N/run_config.json` is the effective experiment configuration and
+problem specification. Every call state has integer run_seq, generation, call,
+a metapopulation snapshot, cumulative evaluation count, previous_outcome, and
+capture_status. Per-call artifacts are `step-G-call-C.json`; `step-G.json` is
+an observational end-of-generation snapshot, never a request.
 
-Primary files:
+1. Generation top: full members and truth-table row slots, before row rescore.
+2. After row rescore: current scored candidates and installed row weights.
+3. After selection: selected exemplar, alphabet, static ordered-pair universe,
+   enabled condition vocabulary, previous-generation draw history. No node list.
+4. After construction, hill climbing and merge filtering: full candidate pool,
+   draw records, per-deme knobs/counts, atom evidence, active-pair tags.
 
-- `run_meta.json`: run id, mode, builder version, and start timestamp.
-- `state/run-*/run_config.json`: static problem specification, atom alphabet, run parameters, active levers, and comparator availability.
-- `state/run-*/step-G.json`: MosesState for generation `G`.
-- `action/run-*/step-G.json`: ActionVector for generation `G`.
-- `moses_native_log.jsonl`: append-only native event summary.
-- `state/run-*/terminal.json`: final post-merge state when emitted.
-- `state/run-*/atom_lossless-G.json`: optional detailed atom/cooccurrence record when lossless atom emission is enabled.
+Members contain program_id, lossless tree_str, cscore, bscore, unweighted_score,
+complexity, explored, lineage_depth/max_lineage_depth and active_pairs.
+Active-pair tags carry build/site sequence, knob index, effective logical setting
+and deme ID. Absent ancestor knobs suppress nested tags. These describe
+representation activity before final tree reduction, not causal fitness credit.
 
-Important MosesState sections:
-
-- `metapopulation`: current members, scores, complexity, explored flag, and best penalized score.
-- `demes`: per-deme tree, knobs, instances, and evaluation counts.
-- `merge_summary`: merge counts and culling candidates.
-- `lineage_diff`: new, removed, retained, and selected ids across generations.
-- `moses_native_events.post_selection`: native exemplar selection event.
-- `atom_evidence`: atom appearances and realized cooccurrences derived from candidate trees.
-
-Important ActionVector sections:
-
-- `exemplar_candidates`: candidates that could be preferred for future selection.
-- `culling_candidates`: candidates exposed around retention or removal.
-- `complexity_ratio`: current value and available direction context.
-- `pair_sampling_candidates`: future or optional pair guidance if emitted by a run.
+`capture_status.ok=false` means incomplete capture, not deliberate omission.
+Configured omitted sections use `gated: null`. Each draw has a distinct site_seq
+and build_seq; harness-internal causal paths are provenance, not policy keys.

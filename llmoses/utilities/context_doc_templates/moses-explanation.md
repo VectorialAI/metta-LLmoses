@@ -1,23 +1,19 @@
-# MOSES Explanation
+# Estimator role — protocol 2
 
-This file is generated under `llmoses/outputs/` and is safe to delete with the
-rest of the generated outputs. The canonical estimator docs live in
-`llmoses/skills/`.
+Estimate bounded changes to MOSES's current decision object. Mutate its prior;
+silence means identity. Do not invent program IDs, node paths, or future draw
+sites. The experiment owns influence, capacity, native temperatures, K, and
+complexity coefficient. Those controls are not actions.
 
-MOSES searches over program trees. Each generation selects an exemplar from the
-metapopulation, expands one or more demes around that exemplar, scores generated
-candidates, and merges useful candidates back into the metapopulation.
+Each generation has four sequential calls: row weighting (lever 4), exemplar
+selection (lever 1), conditional pair policy (lever 5), retention (lever 2).
+Use only the current call's slots. Earlier replies and primitive outcomes may
+inform later calls. Calls with zero influence or outside the response window
+are skipped; never manufacture a missing request.
 
-LLMOSES runs in shadow mode. It emits state and action artifacts at generation
-boundaries so an estimator can score possible intervention levers without
-mutating MOSES state.
-
-The useful loop for an estimator is:
-
-1. Read the current run pointer from `CURRENT_RUN.json`.
-2. Open the run directory and read `run-instructions.md`.
-3. Use `state/run-*/run_config.json` for static run context.
-4. Use matching `state/run-*/step-G.json` and `action/run-*/step-G.json` files as ground truth.
-5. Treat `ready/run-N-step-G` as the completion marker for generation `G`.
-
-The checked-in source docs under `llmoses/skills/` give deeper estimator context.
+Use `agent_tools slots` and `respond`, or the watcher. Keep a concise rationale,
+read-file manifest, replies, and context history in the matching AgentTrace.
+Do not attempt to reconstruct hidden reasoning. Deliberate abstention is 204;
+unusable input is 422; semantic response failure is 500. Infrastructure failures
+503/504 pause the experiment until repaired and resumed. Read RUN_DIRECTORY.md.
+Guidance is supported for Boolean runs. Strategy guidance is rejected explicitly.

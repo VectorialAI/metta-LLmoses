@@ -7,7 +7,8 @@
        (if-error $bs ;; return worst possible composite score
                 (worstCscore)
                 (let* (
-                       ($bsum (sumBScore $bs))
+                       ($nativeSum (sumBScore $bs))
+                       ($bsum (py-call (state_builder.weighted_sum $bs $nativeSum)))
                        ;; ($_ (println! (Score: $bsum)))
                        ;; ($_ (println! ""))
                        ($cpxy (treeComplexity $tree))
@@ -31,10 +32,8 @@
 ;; complexity ratio, unless set by the user, has 3.5 for a default value
 
 ;; (:getComplexityCoef (-> Number Number))
-(= (getComplexityCoef $complexityRatio)
-    (if (> $complexityRatio 0)
-        (/ 1.0 $complexityRatio)
-        0.0))
+(= (getComplexityCoef $legacyRatio)
+    (py-call (state_builder.complexity_coef $legacyRatio)))
 
 ;; updatePenalizedScore
 ;; by default the worst possible score is set as the penalized score for a tree

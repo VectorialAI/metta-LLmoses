@@ -1,3 +1,22 @@
+;; LLMOSES conditional pair sampler. Helpers and native off draws are unchanged.
+;; Every draw owns an opaque buffer token; end releases it and commits history.
+(= (llmWeightedSelector $lower $upper $n $combos $labels $op $path $kind $children)
+   (let* (
+     ($token (py-call (state_builder.begin_combo_draw $combos $labels $op $path $kind $children)))
+     ($on (py-call (state_builder.combo_guided $token)))
+     ($picked (if (== $on 1)
+                  (llmWeightedPickLoop $token $lower $upper $n ())
+                  (lazyRandomSelector $lower $upper $n)))
+     ($_end (py-call (state_builder.end_combo_draw $token $picked))))
+     $picked))
+
+(= (llmWeightedPickLoop $token $lower $upper $n $picked)
+   (if (<= $n 0) $picked
+       (chain (py-call (state_builder.weighted_combo_pick $token $lower $upper $picked)) $rand
+           (llmWeightedPickLoop $token $lower $upper (- $n 1) (union-atom $picked ($rand))))))
+
+;; --- inlined helpers from representation/sample-logical-perms ---
+
 ;; A function to generate all pairs of numbers from a list, where a != b
 ;; (: genPairs (-> Expression Expression))
 ;; TODO: Rewrite using iterative logic
@@ -55,10 +74,18 @@
 ;; Returns:
 ;;          Union of $perms (the list of logical expressions generated) with args
 
-; (= (sampleLogicalPerms $op $arity) (sampleLogicalPerms $op $arity ()))
-;; (: sampleLogicalPerms (-> Atom Number Expression Expression))
-;; TODO: Rewrite using iterative logic
-(= (sampleLogicalPerms $op $arity $argLabels)
+(= (getMoveArgs $op $PermPairs $picked $moveLabels)
+    (let*
+        (
+            (($a $b $c) (index-atom $PermPairs (superpose $picked)))
+            (($move1 $move2 $move3) ((index-atom $moveLabels $a) (index-atom $moveLabels $b) (index-atom $moveLabels $c)))
+        )
+        ($op $move1 $move2 $move3)
+    ))
+
+;; --- overlay definitions ---
+
+(= (sampleLogicalPerms $op $arity $argLabels $nodePath $siteKind $localChildren)
     (let*
         (
             ($swapedOp (swapAndOr $op))
@@ -69,39 +96,16 @@
             (if (<= $nPairs 1)
                 (let $arg (car-atom $argLabels) ($arg (NOT $arg)))  ;; assuming at worst case, only one argument is returned -- representation building process makes sure that those with empty feature set do not make it to actual knob building stage
                 (let* (($upperbound (- (* $arity (- $arity 1)) 1))
-                        ($picked (lazyRandomSelector 0 $upperbound $nPairs))
+                        ($picked (llmWeightedSelector 0 $upperbound $nPairs $idxPairs $argLabels $op $nodePath $siteKind $localChildren))
                         ($perms (collapse (getArgs $swapedOp $idxPairs $picked $argLabels))))
                    (concatT $argLabels $perms)))))
 
-;; getMoveArgs -> generate move expressions from pairs of move indices
-;; Params:
-;;          $op: move operator (PRIORITIZED-OR)
-;;          $PermPairs: list of pairs of idx permutations
-;;          $picked: list of picked move idxs
-;;          $moveLabels: list of move labels (playcenter, playcorner, etc.)
-;; Returns: move expressions with operator and move combinations
-;; (: getMoveArgs (-> Atom Expression Expression Expression Expression))
-;; TODO: Rewrite using iterative logic
-(= (getMoveArgs $op $PermPairs $picked $moveLabels)
-    (let*
-        (
-            ; ($triplet (index-atom $PermPairs (superpose $picked)))
-            (($a $b $c)(index-atom $PermPairs (superpose $picked)))
-            (($move1 $move2 $move3) ((index-atom $moveLabels $a) (index-atom $moveLabels $b) (index-atom $moveLabels $c)))
-        )
-        ($op $move1 $move2 $move3)
-    ))
+(= (sampleLogicalPerms $op $arity $argLabels $nodePath)
+   (sampleLogicalPerms $op $arity $argLabels $nodePath exemplar_node ()))
+(= (sampleLogicalPerms $op $arity $argLabels)
+   (sampleLogicalPerms $op $arity $argLabels () exemplar_node ()))
 
-;; sampleStrategyPerms -> generate strategy permutations for game strategy evolution
-;; Params:
-;;          $op: the strategy operator (PRIORITIZED-OR)
-;;          $arity: the number of moves in the strategy sequence
-;;          $moveLabels: list of move labels (playcenter, playblock, playcorner, etc.)
-;; Returns:
-;;          Union of original moves with alternative move strategy expressions
-;; (: sampleStrategyPerms (-> Atom Number Expression Expression))
-;; TODO: Rewrite using iterative logic
-(= (sampleStrategyPerms $op $arity $moveLabels)
+(= (sampleStrategyPerms $op $arity $moveLabels $nodePath)
     (let*
         (
             ($list (genList (- (length $moveLabels) 1)))
@@ -113,10 +117,13 @@
             (let*
                 (
                     ($upperbound (- (length $idxPairs) 1))
-                    ($picked (lazyRandomSelector 0 $upperbound $nPairs))
+                    ($picked (llmWeightedSelector 0 $upperbound $nPairs $idxPairs $moveLabels $op $nodePath exemplar_node ()))
                     ($perms (collapse (getMoveArgs $op $idxPairs $picked $moveLabels)))
                 )
                    $perms
             )
         )
 ))
+
+(= (sampleStrategyPerms $op $arity $moveLabels)
+   (sampleStrategyPerms $op $arity $moveLabels ()))
