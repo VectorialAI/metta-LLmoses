@@ -37,8 +37,8 @@ Cold recovery uses the same code/protocol and native runtime. Set
 LLMOSES_RESUME_CHECKPOINT to latest.json and import the original driver definitions
 before invoking `(sbResume)` instead of `(runMoses ...)`. Use the same run directory
 and responder settings, then issue resume for a persisted pause. The checkpoint
-restores Python RNG, native continuation atoms and saved context. Runtime replay
-and cache behavior must be verified in the deferred testing phase.
+restores Python RNG, native continuation atoms and saved context. Verify runtime
+replay and cache behavior when exercising recovery in a new environment.
 
 Live watcher context defaults to full history. LLMOSES_CONTEXT_MAX_CHARS=0 means
 no truncation. A positive limit requires LLMOSES_CONTEXT_TRUNCATION=oldest to
