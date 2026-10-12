@@ -1,13 +1,7 @@
-;; LLMOSES override / extension of utilities/general-helpers.
-;; Import this immediately after utilities/general-helpers so these definitions
-;; are in scope before any feature-selection or representation modules are loaded.
-;;
-;; Changes vs. the base:
-;;   - Uncomments (first ($a $b)) - needed by smd.metta, feature-selection-helpers,
-;;     lsk.metta, and select-top-features.metta.  The base file leaves it commented
-;;     out; this override adds it without touching the root file.
-;;   - Adds first-from-pair / second-from-pair for contexts where the symbol names
-;;     first/second could be ambiguous or shadowed.
+;; LLMOSES additions to utilities/general-helpers.metta. Import right after
+;; utilities/general-helpers, before feature-selection and representation modules.
+;; Defines first, which upstream leaves commented out, and the pair accessors
+;; first-from-pair / second-from-pair used by the feature-selection modules.
 
 ;; From a tuple (Pair) return the first element
 ;; (: first (-> ($a $b) $a))

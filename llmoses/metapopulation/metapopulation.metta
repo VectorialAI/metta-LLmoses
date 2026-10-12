@@ -1,4 +1,7 @@
-;; LLMOSES retention overlay. Comparator and overflow valve remain native.
+;; LLMOSES overlay of metapopulation/metapopulation.metta.
+;; resizeMetapop hands the keep/cull decision to state_builder.call_retention.
+;; The exemplar type, comparator and accessors are unchanged.
+
 ;; importing constants -- a suitable value for each of these has to be determined based on experiment
 ; !(bind! MIN-POOL-SIZE 250) ;; this is copied from the c++ implementation -- XXX a values that works best for the current implementation should be found by experrimentation??
 ; !(bind! COMP-TEMP 6.0)
@@ -10,10 +13,12 @@
 
 ;; resizeMetapop -- resizes the metapopulation based on
 ;;      $nToKeep     -- the number of the top most exemplars which are exempt from removal
-;;      $minPoolSize -- protects the metapopulation against excessive trimming
-;;      $compTemp    -- used to calculate the range of scores that are likely to be preserved by the selection process
+;;      $minimum     -- ($minPoolSize) protects the metapopulation against excessive trimming
+;;      $trim        -- ($compTemp) used to calculate the range of scores that are likely to be preserved by the selection process
 ;;      $capCoef     -- use to balance the number of individuals in the metapopulation by balancing population size so that it neither blows out the RAM or lacks enough variety -- may not even be necessary
-;;      $genCount    -- used with $capCoef in the determination of max pop allowed given the above contstraints
+;;      $generation  -- ($genCount) used with $capCoef in the determination of max pop allowed given the above contstraints
+;; LLMOSES: only $minimum, $trim and $generation are passed on (to state_builder.call_retention);
+;; how many members to keep is otherwise set by the experiment's retention config.
 
 ;; compute useful range
 ; (: usefulScoreRange (-> Number Number))
@@ -26,6 +31,7 @@
      ($_call (py-call (state_builder.call_retention $minimum $trim $generation))))
      (llmCommitRetained $pool)))
 
+;; llmCommitRetained -- keeps the members state_builder marked as retained, in order
 (= (llmCommitRetained ()) ())
 (= (llmCommitRetained (cons $ex $rest))
    (let* (($tree (getExemplarTree $ex))
@@ -35,11 +41,14 @@
 
 ;; calculates cap size based on number of generations -- must be recomuted based on actual data in the new implementation
 ;; for the time being implement the C++ code as it
+;; LLMOSES: unused; lever_policy.retention_budget computes the same cap when anneal_cap is set
 ; (: capSize (-> Number Number Number))
 (= (capSize $capCoef $genCount)
     (* (* $capCoef (+ $genCount 250)) (+ 1 (* 2 (exp (/ (* -1 $genCount) 500))))))
 
 ;; getBetterCandidates -- returns all the memmbers whose score are greater than or equal to a predetermined worst score
+;;      $floor (optional, default 0) -- the first $floor members are kept regardless of score
+;; LLMOSES: getBetterCandidates and cullAtRandom are not called by resizeMetapop above
 ; (: getBetterCandidates (-> (OS (Exemplar $a)) Number (OS (Exemplar $a))))
 (= (getBetterCandidates $pool $worst) (getBetterCandidates $pool $worst 0))
 (= (getBetterCandidates () $worst $floor) ())

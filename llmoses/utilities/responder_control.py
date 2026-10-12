@@ -12,8 +12,8 @@ os.replace, or a complete file published exclusively with os.link):
               CONTROL/responder.lock (kernel-released on holder death), so
               exactly one of any number of concurrent claimants succeeds; a
               second responder is refused unless the record is released or
-              LLMOSES_RESPONDER_TAKEOVER=1. (R1: whether MOSES
-              EXPECTS a response is declared by the run configuration —
+              LLMOSES_RESPONDER_TAKEOVER=1. (Whether MOSES
+              expects a response is declared by the run configuration —
               LLMOSES_AWAIT_RESPONSE / LLMOSES_EXPECT_RESPONSE_GENS — never
               inferred from this file.)
 
@@ -102,7 +102,7 @@ def run_identity(run_dir):
 
 
 def mint_session(run_dir):
-    """R3: a fresh token bound to THIS run. Regenerated at every claim."""
+    """A fresh token bound to this run. Regenerated at every claim."""
     return f"{run_identity(run_dir)}.{uuid.uuid4().hex}"
 
 
@@ -148,7 +148,7 @@ def claim(run_dir, mode, kind, protocol_version=None, context_strategy=None,
         takeover = os.environ.get("LLMOSES_RESPONDER_TAKEOVER", "0") == "1"
     label = None
     if kind == "agent":
-        # R3: ALWAYS mint a fresh run-bound token; a caller-supplied value is
+        # Always mint a fresh run-bound token; a caller-supplied value is
         # kept only as a human label, never as the identity. A token minted
         # for a different run must not be able to claim this one.
         provided = _session_from_env(session)
@@ -355,8 +355,8 @@ def request_abort(run_dir, reason, source, detail=None):
     os.makedirs(control_dir(run_dir), exist_ok=True)
     doc = {"reason": reason, "source": source, "detail": detail,
            "ts_ms": _now_ms(), "owner": owner_record(source)}
-    # R4: evidence — published complete, exclusive and durable (file +
-    # directory); a reader can never see a created-but-empty abort record.
+    # Publish the abort record complete, exclusively and durably (file and
+    # directory), so a reader never sees a created-but-empty record.
     if _publish_exclusive(path, doc):
         return doc
     return read_json(path) or {"reason": "abort_requested",

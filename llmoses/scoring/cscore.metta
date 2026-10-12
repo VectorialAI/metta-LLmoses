@@ -8,7 +8,7 @@
                 (worstCscore)
                 (let* (
                        ($nativeSum (sumBScore $bs))
-                       ($bsum (py-call (state_builder.weighted_sum $bs $nativeSum)))
+                       ($bsum (py-call (state_builder.weighted_sum $bs $nativeSum)))  ;; LLMOSES: row-weighted sum; equals $nativeSum when all row weights are 1
                        ;; ($_ (println! (Score: $bsum)))
                        ;; ($_ (println! ""))
                        ($cpxy (treeComplexity $tree))
@@ -30,6 +30,7 @@
 ;; getComplexityCoef -- calcualtes the complexity coeffient of a tree
 ;; takes complexity ratio as input and returns complexity coefficient
 ;; complexity ratio, unless set by the user, has 3.5 for a default value
+;; LLMOSES: uses the experiment's complexity_coef if set, otherwise 1/ratio clamped to [0, 1] (1.0 when ratio <= 0)
 
 ;; (:getComplexityCoef (-> Number Number))
 (= (getComplexityCoef $legacyRatio)

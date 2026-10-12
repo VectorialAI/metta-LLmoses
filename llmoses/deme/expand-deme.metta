@@ -1,6 +1,8 @@
 ;; LLMOSES overlay of deme/expand-deme.metta.
-;; The evolutionary flow and representation shapes follow upstream; hooks here
-;; open and flush the state/action emission lifecycle around each generation.
+;; runMoses splits each generation into four steps (row weighting, exemplar
+;; selection, deme expansion with atom-pair sampling, retention), each preceded
+;; by a responder call.
+;; See runMosesLoop and the llmContinue clauses below.
 
 ;; WARN: This code might be generating knobs out of order. Check if the knob map returned from the representation building preserves the order of knob creation.
 (= (createInitialInstance $dscMp)
@@ -108,8 +110,8 @@
 $optimDeme
 ))
 
-;; Upstream's strategy builder still carries the legacy two-field KnobMap
-;; while boolean/disc-probe representations use the new single DiscMap shape.
+;; Strategy representations still use the two-field (mkKbMap $dscKbMp (mkDscMp $dscMp))
+;; form; boolean representations use the one-field form handled above.
 (= (expandDemeHelper (mkDeme (mkRep (mkKbMap $dscKbMp (mkDscMp $dscMp)) $updatedTree) $sInstList $demeId) $context $optimize)
 (let*
 (
@@ -128,10 +130,13 @@ $optimDeme
 ;;     - $maxCandOutput : The number of candidates to be returned
 ;;     - other parameters required by the expandDeme method
 ; (: runMoses (-> Number Cscore Number (OS (Exemplar $a)) Number Number Bool Symbol (TruthTableBScore $a) (-> Deme (TruthTableBScore $a) Instance $Scorer (Instance Deme $state)) $Scorer Number Number Number Number (ITable $a) Number Number Number (OS (Exemplar $a))))
-;; Public entry: initialize one LLMOSES run, then keep the original generation
-;; budget pinned so emitted generations count upward while MOSES counts down.
-;; A run owns irreversible Python/RNG side effects. Commit to its first result
-;; so PeTTa's result enumeration cannot backtrack through completed calls.
+;; TODO: $nEval isn't being used. Increase it so that it works as expected.
+;; To enable that, we may need to change our termination condition so that the generation is equivalent to the number of expansion as well.
+;; The number of expansions in the open cog classic is equivalent to the number of deme expansions. That looks like the same thing we are doing here but not sure.
+;; LLMOSES: registers the run with state_builder, then hands off to runMosesLoop.
+;; $maxGen is passed twice: once as the remaining budget, once as the total, so
+;; generations can be numbered upward. `once` stops PeTTa from backtracking into
+;; a finished run and repeating its Python/RNG side effects.
 (= (runMoses $maxGen $maxScore $maxCandOutput $metaPop $nExpansion $nDeme $context $optimize $nEval $maxCandsPerDeme $minPoolSize $complexityTemperature $nToKeep $capCoef $genCount)
    (once (let* (
      ($_ (case $context
@@ -148,9 +153,8 @@ $optimDeme
                    $context $optimize $nEval $maxCandsPerDeme $minPoolSize
                    $complexityTemperature $nToKeep $capCoef $genCount))))
 
-
-;; Four calls within one generation; checkpoint constructors hold native atoms.
-;; No constructor below evaluates until llmContinue dispatches it.
+;; One generation. Each step saves a checkpoint, calls the responder, then
+;; continues through llmContinue: mkM2Rows -> mkM2Exemplar -> mkM2Atom -> mkM2Retention.
 (= (runMosesLoop $remaining $total $target $output $mp $exp $nDeme $ctx $opt
                 $nEval $maxCands $minimum $trim $keep $cap $legacyGen)
    (if (== $remaining 0)
@@ -167,7 +171,7 @@ $optimDeme
          ($_call (py-call (state_builder.call_rows))))
          (llmContinue (mkM2Rows $frame)))))
 
-;; Weight installation changes scalar scores only; cached behavioural vectors survive.
+;; Row weights change the scalar score only; cached behavioural scores are reused.
 (= (llmRebuildContext) (py-call (state_builder.install_row_weights)))
 (= (llmRescoreMetaPop $mp) (llmRescoreInto $mp ()))
 (= (llmRescoreInto () $acc) $acc)
@@ -222,7 +226,7 @@ $optimDeme
                   $nEval $maxCands $minimum $trim $keep $cap $legacyGen $g) $tree))
    (let* (
      ($optimized (llmExpandSelected $tree $exp $nDeme $ctx $target $opt))
-     ;; Force and record every deme before the merge buffer opens.
+     ;; Emit every deme before sbBeginMerge starts the merge record.
      ($_demes (map-atom $optimized $deme (sbEmitDeme $g $deme)))
      ($_merge (sbBeginMerge))
      ($scoreContext (case $ctx
@@ -255,10 +259,9 @@ $optimDeme
          (runMosesLoop (- $remaining 1) $total $target $output $survivors $exp $nDeme
                        $ctx $opt $nEval $maxCands $minimum $trim $keep $cap $g))))
 
-;; Define resume only after the dispatcher is known to PeTTa. Defining it in
-;; the earlier state-builder import returns (llmContinue ...) as data instead
-;; of running the restored continuation. Keep restore and execution inside
-;; once so enumerating the public entry point cannot replay side effects.
+;; Resumes a run from its last checkpoint. Must be defined here, after llmContinue:
+;; defined in wrapper/state-builder.metta, (llmContinue ...) is returned as data
+;; instead of being evaluated.
 (= (sbResume)
    (once (let $continuation (py-call (state_builder.restore_checkpoint))
               (llmContinue $continuation))))

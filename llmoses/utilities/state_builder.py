@@ -139,7 +139,7 @@ def _write_json(path, doc, durable=False):
     """Atomic JSON write (tmp + os.replace). durable=True (or LLMOSES_FSYNC=1)
     also fsyncs the temp file before the rename and the directory after it,
     so the document survives a process that exits with os._exit right
-    after (R4: the abort path must not lose its own evidence)."""
+    after. The abort path relies on this to keep its own record."""
     os.makedirs(os.path.dirname(path), exist_ok=True)
     tmp = path + ".tmp"
     with open(tmp, "w", encoding="utf-8") as fh:
@@ -277,7 +277,7 @@ def set_deme(gen, deme_id, deme_tree, instances):
 
 
 def begin_merge():
-    """post_deme_close Tier A: open a fresh merge buffer before walking $updatedMetaPop."""
+    """Open a fresh merge record; called by sbBeginMerge before demes are merged."""
     global _pending_merge
     _pending_merge = {"post_ids": [], "counts": {}, "cull_candidates": []}
     return 0
@@ -302,7 +302,7 @@ def set_merge_count(name, value):
 
 def add_cull_candidate(expr, tree, bscore, raw, cpx, pen):
     """A merge survivor (mkExemplar from removeDominated) entering the resize cull,
-    fed one-per-call from sbEmitCullCands (state-builder.metta:110).
+    fed one per call from sbEmitCullCands in wrapper/state-builder.metta.
     Boundary shapes: expr = preOrder nested-list AST; tree = full raw mkTree
     (hashed for program_id, same scheme as add_member); bscore = ['mkBScore', spine]."""
     if _pending_merge is None:
@@ -319,10 +319,9 @@ def add_cull_candidate(expr, tree, bscore, raw, cpx, pen):
 
 
 def set_selection(tree):
-    """post_selection hook: record the exemplar selectExemplar chose THIS gen.
-    Buffered (expandDeme lacks $genIndex); flush_gen consumes + validates it.
-    A MISMATCH signals a real defect (stale buffer / multi-or-zero selection /
-    non-canonical id)."""
+    """Record the exemplar selectExemplar chose this generation. It is the
+    parent for new members' depth, goes into the state document, and is
+    marked explored by flush_gen."""
     global _pending_selection
     ts = expr_to_str(tree)
     _pending_selection = {"program_id": _pid(ts), "tree": ts}
@@ -349,7 +348,7 @@ def set_problem_spec(labels, arity=None):
     action spaces are defined over. From getArgLabels (mkITable ...)."""
     global _problem_spec
     # labels crosses as a Cons spine of symbol strings from getArgLabels
-    # (sbSetProblemSpec, state-builder.metta:17) -> ['Cons','X1',['Cons','X2','Nil']].
+    # (sbSetProblemSpec in wrapper/state-builder.metta) -> ['Cons','X1',['Cons','X2','Nil']].
     # Fall back to a bare/native list if it did not arrive as a spine.
     raw_labels = cons_to_list(labels)
     if not raw_labels:

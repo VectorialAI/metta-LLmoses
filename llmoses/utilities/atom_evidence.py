@@ -15,8 +15,8 @@ Contract (spec P7, reversal #21):
     per-program `tree_max_depth` and `node_count` so depth can be normalized
     by the agent against the tree it came from.
   * `rollup` is operator-facing (native log only): depth-band histograms and
-    per-bucket penalized-score summaries. These are the D-DISC-011 / W2
-    roll-ups that were retired from the state document.
+    per-bucket penalized-score summaries. These used to be in the state
+    document and are now only logged.
 """
 from boundary import _flat
 
@@ -107,7 +107,7 @@ def _peel_modifier(node):
 
 
 def _depth_bucket(d):
-    """Operator-log roll-up only (D-DISC-011 retired it from the state doc):
+    """Depth bucket for the operator-log roll-up (not in the state document):
     0 -> shallow, 1-2 -> mid, 3+ -> deep."""
     if d <= 0:
         return "shallow"

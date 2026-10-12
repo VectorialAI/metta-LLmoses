@@ -157,7 +157,7 @@ def _run(cmd, prompt, timeout_s, cwd, env):
     try:
         # subprocess.run(input=...) closes stdin after writing, which the CLI
         # needs: with a prompt argument and stdin left open it prints
-        # "Reading additional input from stdin..." and waits for EOF (§5).
+        # "Reading additional input from stdin..." and waits for EOF.
         return subprocess.run(cmd, input=prompt, text=True, capture_output=True,
                               timeout=timeout_s, cwd=cwd, env=env, check=False)
     except subprocess.TimeoutExpired as e:

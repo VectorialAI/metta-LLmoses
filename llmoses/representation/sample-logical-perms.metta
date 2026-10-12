@@ -1,5 +1,11 @@
-;; LLMOSES conditional pair sampler. Helpers and native off draws are unchanged.
-;; Every draw owns an opaque buffer token; end releases it and commits history.
+;; LLMOSES overlay of representation/sample-logical-perms.metta.
+;; sampleLogicalPerms and sampleStrategyPerms pick their pairs/triplets through
+;; llmWeightedSelector instead of lazyRandomSelector, so the atom-pair policy can
+;; weight the draw. When the policy's guidance weight is 0, lazyRandomSelector is still used.
+
+;; llmWeightedSelector -- picks $n distinct indices in [$lower, $upper] from $combos
+;;      $labels, $op, $path, $kind, $children -- describe the knob site for the policy
+;; begin_combo_draw opens a draw and returns a token; end_combo_draw records the picks.
 (= (llmWeightedSelector $lower $upper $n $combos $labels $op $path $kind $children)
    (let* (
      ($token (py-call (state_builder.begin_combo_draw $combos $labels $op $path $kind $children)))
@@ -14,8 +20,6 @@
    (if (<= $n 0) $picked
        (chain (py-call (state_builder.weighted_combo_pick $token $lower $upper $picked)) $rand
            (llmWeightedPickLoop $token $lower $upper (- $n 1) (union-atom $picked ($rand))))))
-
-;; --- inlined helpers from representation/sample-logical-perms ---
 
 ;; A function to generate all pairs of numbers from a list, where a != b
 ;; (: genPairs (-> Expression Expression))
@@ -74,17 +78,11 @@
 ;; Returns:
 ;;          Union of $perms (the list of logical expressions generated) with args
 
-(= (getMoveArgs $op $PermPairs $picked $moveLabels)
-    (let*
-        (
-            (($a $b $c) (index-atom $PermPairs (superpose $picked)))
-            (($move1 $move2 $move3) ((index-atom $moveLabels $a) (index-atom $moveLabels $b) (index-atom $moveLabels $c)))
-        )
-        ($op $move1 $move2 $move3)
-    ))
-
-;; --- overlay definitions ---
-
+; (= (sampleLogicalPerms $op $arity) (sampleLogicalPerms $op $arity ()))
+;; (: sampleLogicalPerms (-> Atom Number Expression Expression))
+;; TODO: Rewrite using iterative logic
+;; LLMOSES: $nodePath, $siteKind and $localChildren describe the knob site for the
+;; atom-pair policy; the 3- and 4-argument forms default them.
 (= (sampleLogicalPerms $op $arity $argLabels $nodePath $siteKind $localChildren)
     (let*
         (
@@ -105,6 +103,34 @@
 (= (sampleLogicalPerms $op $arity $argLabels)
    (sampleLogicalPerms $op $arity $argLabels () exemplar_node ()))
 
+;; getMoveArgs -> generate move expressions from pairs of move indices
+;; Params:
+;;          $op: move operator (PRIORITIZED-OR)
+;;          $PermPairs: list of pairs of idx permutations
+;;          $picked: list of picked move idxs
+;;          $moveLabels: list of move labels (playcenter, playcorner, etc.)
+;; Returns: move expressions with operator and move combinations
+;; (: getMoveArgs (-> Atom Expression Expression Expression Expression))
+;; TODO: Rewrite using iterative logic
+(= (getMoveArgs $op $PermPairs $picked $moveLabels)
+    (let*
+        (
+            (($a $b $c) (index-atom $PermPairs (superpose $picked)))
+            (($move1 $move2 $move3) ((index-atom $moveLabels $a) (index-atom $moveLabels $b) (index-atom $moveLabels $c)))
+        )
+        ($op $move1 $move2 $move3)
+    ))
+
+;; sampleStrategyPerms -> generate strategy permutations for game strategy evolution
+;; Params:
+;;          $op: the strategy operator (PRIORITIZED-OR)
+;;          $arity: the number of moves in the strategy sequence
+;;          $moveLabels: list of move labels (playcenter, playblock, playcorner, etc.)
+;;          $nodePath: (optional) path of the knob site, for the atom-pair policy (LLMOSES)
+;; Returns:
+;;          Union of original moves with alternative move strategy expressions
+;; (: sampleStrategyPerms (-> Atom Number Expression Expression))
+;; TODO: Rewrite using iterative logic
 (= (sampleStrategyPerms $op $arity $moveLabels $nodePath)
     (let*
         (

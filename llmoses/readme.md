@@ -1,6 +1,6 @@
 # LLMOSES
 
-LLMOSES is a shadow wrapper layer for metta-moses. It captures MOSES state and action information without changing the root MOSES files in place. Milestone 2 adds four response calls per generation: row weighting, exemplar selection, a conditional atom-pair policy, and retention. The responder's adjustments are mixed with the native distributions according to the experiment configuration.
+LLMOSES is a shadow wrapper layer for metta-moses. It captures MOSES state and action information without changing the root MOSES files in place. The wrapper imports LLMOSES versions of selected modules, captures run configuration and per-generation evolutionary state, and writes structured JSON plus readiness markers for downstream agent or analysis workflows. This adds four response calls per generation: row weighting, exemplar selection, a conditional atom-pair policy, and retention. The responder's adjustments are mixed with the native distributions according to the experiment configuration.
 
 ## Tree Overview
 
@@ -14,8 +14,6 @@ LLMOSES is a shadow wrapper layer for metta-moses. It captures MOSES state and a
 - `outputs/`: ignored generated logs, run metadata, state/action JSON, ready sentinels, and run-local guide files.
 
 ## Runtime status
-
-The Docker image, Makefile, root demo and smoke scripts, and LLMOSES test harness are local-only development artifacts. They are deliberately ignored and are not part of this repository's tracked source. The checked-in `run_m2.sh` requires a locally available image and an in-repository driver.
 
 The MeTTa source runs with the Petta runtime. A maintained, portable quickstart package will be added separately. See `skills/ACTION_LEVERS.md` for the M2 controls and `skills/RUN_DIRECTORY.md` for the response lifecycle.
 

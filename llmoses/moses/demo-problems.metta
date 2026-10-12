@@ -1,16 +1,12 @@
-;; ============================================================================
-;; llmoses/moses/demo-problems.metta
-;;
-;; Overlay for moses/demo-problems.metta — import INSTEAD OF upstream.
-;; Fixes runDemoProblem to pass the 15-arg runMoses context tuple expected by
-;; llmoses/deme/expand-deme.metta.
-;; ============================================================================
+;; LLMOSES overlay of moses/demo-problems.metta. Import this instead of the
+;; upstream file; it imports upstream itself and adds llRunDemoProblem, which
+;; calls runMoses with the 15 arguments expected by llmoses/deme/expand-deme.metta.
 
 !(import! &self moses/demo-problems)
 
-;; Demo keys -> problem table constructors (atoms; invoked as ($problem) at run time).
-;; Use llmoses-specific names so the upstream demoProblem/runDemoProblem
-;; definitions imported above cannot be selected nondeterministically.
+;; Maps a demo key to its problem table constructor, called as ($problem).
+;; Named llDemoProblem/llRunDemoProblem so they don't add clauses to the
+;; upstream demoProblem/runDemoProblem imported above.
 (= (llDemoProblem $key)
    (case $key
      ((pa     parity3)

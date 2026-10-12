@@ -1,35 +1,33 @@
-;; LLMOSES value extractors.
-;; Pure MeTTa helpers used by the state-builder wrapper before values cross
-;; into Python. knobsOfRep walks the DscMp structure directly instead of relying
-;; on MultiMap.values.
+;; LLMOSES value extractors: MeTTa helpers that pull fields out of MOSES values
+;; before wrapper/state-builder.metta passes them to Python.
 
-;; --- CSCORE: five raw fields via native getters; one ordered bundle ---------
+;; cscoreFields -- (score complexity complexity-penalty uniformity-penalty penalized-score)
 (= (cscoreFields $cs)
    ( (getScore $cs) (getComp $cs) (getCompPen $cs) (getUniPen $cs) (getPenScore $cs) ))
 
-;; --- MEMBER (exemplar) via native getters -----------------------------------
+;; metapopulation member (exemplar) fields
 (= (memberExpr $x)
    (let* (($tree (eval (getExemplarTree $x))))
-     (preOrder $tree)))                                  ;; short display (preOrder; lossy)
-(= (memberTree   $x) (eval (getExemplarTree $x)))        ;; full raw tree for stable program_id
+     (preOrder $tree)))                                  ;; preOrder form, for display only (lossy)
+(= (memberTree   $x) (eval (getExemplarTree $x)))        ;; full tree, used for the program_id
 (= (memberCscore $x) (eval (getExemplarCscore $x)))      ;; Cscore
 (= (memberPen    $x) (eval (getExemplarPenScore $x)))    ;; Number
-(= (memberBScore $x) (eval (getExemplarBScore $x)))      ;; (mkBScore $list); Python unwraps
+(= (memberBScore $x) (eval (getExemplarBScore $x)))      ;; (mkBScore $list)
 (= (memberFields $x) ( (memberExpr $x) (cscoreFields (memberCscore $x)) ))
 
-;; --- METAPOP traversal: confirmed native primitives -------------------------
+;; metapopulation access
 (= (metapopSize $os)    (OS.length $os))
-(= (memberByIdx $os $i) (OS.getByIdx $i $os))           ;; native arg order: idx first
+(= (memberByIdx $os $i) (OS.getByIdx $i $os))           ;; OS.getByIdx takes the index first
 
-;; --- REPRESENTATION field pulls (upstream mkKbMap now owns one DiscMap) ------
+;; representation fields, for one-field (boolean) and two-field (strategy) knob maps
 (= (repDscMp (mkRep (mkKbMap (mkDscMp $dscMp)) $tree)) $dscMp)
 (= (repTree  (mkRep (mkKbMap (mkDscMp $dscMp)) $tree)) $tree)
 (= (repDscMp (mkRep (mkKbMap $dscKbMp (mkDscMp $dscMp)) $tree)) $dscMp)
 (= (repTree  (mkRep (mkKbMap $dscKbMp (mkDscMp $dscMp)) $tree)) $tree)
 
-;; --- KNOBS: upstream embeds the location/index in mkKnob tree wrappers. -------
-;; The DiscMap preserves that instance order, so enumerate it and carry the
-;; index beside each logical/strategy knob for state emission.
+;; knobsOfRep -- lists a representation's knobs by walking the DiscMap directly.
+;; One-field knobs are wrapped as (llKnob $i $kb), $i being the knob's position in
+;; the DiscMap (and so in the instance); two-field (strategy) knobs carry their own location.
 (= (mmapKnobList () $i) ())
 (= (mmapKnobList (cons ($kbSpec $kb) $tail) $i)
    (cons (llKnob $i $kb) (mmapKnobList $tail (+ $i 1))))
@@ -41,7 +39,7 @@
 (= (knobsOfRep (mkRep (mkKbMap $dscKbMp (mkDscMp $dscMp)) $tree))
    (legacyKnobList $dscMp))
 
-;; --- Per-knob native accessors (thin delegating names) ----------------------
+;; per-knob accessors, for llKnob-wrapped and bare mkLSK/mkSSK knobs
 (= (knobLoc     (llKnob $i $kb)) $i)
 (= (knobMultip  (llKnob $i $kb)) (getKnobMultip $kb))
 (= (knobDefault (llKnob $i $kb)) (getKnobDefault $kb))
@@ -52,9 +50,7 @@
 (= (knobDefault (mkLSK $dk)) (getKnobDefault (mkLSK $dk)))
 (= (knobDefault (mkSSK $dk)) (getKnobDefault (mkSSK $dk)))
 
-;; --- DEME fields: NOT extracted here; runMosesLoop already binds $rep/$sInst/$demeId.
-
-;; Constructor tag: discriminates knob family without relying on multiplicity.
+;; knobTag -- LSK or SSK, read from the constructor rather than inferred from multiplicity
 (= (knobTag (llKnob $i (mkLSK $dk))) LSK)
 (= (knobTag (llKnob $i (mkSSK $dk))) SSK)
 (= (knobTag (mkLSK $dk)) LSK)

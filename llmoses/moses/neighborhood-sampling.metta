@@ -1,6 +1,7 @@
-;; Compatibility extension for upstream moses/neighborhood-sampling.metta.
-;; Boolean representations now use a one-field KnobMap, while upstream's
-;; strategy builder still produces the legacy index-map + DiscMap shape.
+;; LLMOSES overlay of moses/neighborhood-sampling.metta. Imports upstream and
+;; adds a sampleNewInstances clause for strategy representations, which still
+;; use the two-field (mkKbMap $dscKbMp (mkDscMp $disc)); upstream only handles
+;; the one-field form used by boolean representations.
 
 !(import! &self moses/neighborhood-sampling)
 

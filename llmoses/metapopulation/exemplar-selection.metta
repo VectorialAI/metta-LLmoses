@@ -1,5 +1,8 @@
-;; LLMOSES exemplar overlay: a separately configured native temperature,
-;; bounded score offsets, mix then sharpen, one native RNG draw at b=0.
+;; LLMOSES overlay of metapopulation/exemplar-selection.metta.
+;; The selection temperature comes from the run config, and the roulette draw
+;; is made by state_builder.select_index so the responder can weight it.
+
+;; bind is not supported for constants (as of 13 NOV) in PeTTa -- thus using function style notation
 (= (NO_EXEMPLAR) "empty metapopulation")
 (= (COMPXY_TEMP) (py-call (state_builder.selection_temperature)))
 (= (INV_TEMP) (/ 100.0 (COMPXY_TEMP)))
@@ -7,8 +10,8 @@
 ;; exemplar selection
 ;; if the metapopulation is empty - throw error and quit
 ;; if only one exemplar in the metapopulation select that
-;; if more than one: normalize penalized scores (Boltzmann), then draw the
-;; index through the (possibly utility-biased) Python roulette.
+;; if more than one exemplar in mp - convert penalized scores into Boltzmann
+;; probability values and draw an index with state_builder.select_index
 ; (: selectExemplar (-> (OS (Exemplar $a)) (Exemplar $a)))
 (= (selectExemplar $metaPop)
     (case $metaPop
@@ -27,10 +30,8 @@
                   )
                   (OS.getByIdx $idx $metaPop) )))))
 
-;; Stream one (index, native prob, tree) triple per member into the Python
-;; selection buffer. Walks the OS and the normalized-prob List in lockstep;
-;; the exemplar is destructured directly (this file loads before the
-;; metapopulation accessors, mirroring getPnScore below).
+;; sbStreamSelCands -- sends (index, probability, tree, penalized score) for each
+;; member to state_builder ahead of select_index
 (= (sbStreamSelCands () () $i) 0)
 (= (sbStreamSelCands (cons $x $rest) (cons $p $ps) $i)
    (let* (
@@ -40,7 +41,7 @@
    ) (sbStreamSelCands $rest $ps (+ $i 1))))
 
 ;; get penalized scores of all the exemplars as a list of Numbers
-;;      (cons $x $xs) -- pattern for the current list/ordered-set representation
+;;      (cons $x $xs) -- pattern for the list of exemplars constructed by cons
 ;;      made use of deconstruction by pattern matching
 
 ; (: getPnScore (-> (OS (Exemplar $a)) (List Number)))
@@ -60,19 +61,26 @@
 
         (cons $new $c)))
 
-;; Native rouletteSelect/roulette retained for reference and any external
-;; callers; the fork's selectExemplar no longer calls them (the draw happens
-;; in state_builder.select_index with identical semantics).
+;; the main roulette select function
+;;      $metaPop -- (OS (Exemplar $a)) -- list of exemplars
+;;      $probs -- (List Number) -- list of prob values as ScoreT types
+;;      $sum -- sum of penalized score values after normalization using the (pow-math EXP (* (- $val $higestScr) INV_TEMP))
+;;      to favour the selection of high scoring exemplars -- Boltzman distribution
+;; LLMOSES: rouletteSelect and roulette are no longer called by selectExemplar
+;; (the draw is in state_builder.select_index); kept for reference.
 ; (: rouletteSelect (-> (OS (Exemplar $a)) (List Number) Number (Exemplar $a)))
 (= (rouletteSelect $metaPop $probs $sum)
     (let* (
-           ($rndfloat (py-call (random.random)))
+           ($rndfloat (py-call (random.random))) ;;This was (random-float 0 1)
            ($ajstdSum (* $sum $rndfloat))
            ($index (roulette $probs 0 $ajstdSum))
           )
         (OS.getByIdx $index $metaPop)))
 
 ;; roulette function to do the roulette selection and return an index -- spin the wheel
+;;      $probs -- (List Number) -- list of prob values
+;;      $sIdx -- start index -- 0
+;;      $ajstdsum -- sum of probabilities which has been multiplied with a random with random value in (0 .. 1) range
 ; (: roulette (-> (List Number) Number Number Number))
 (= (roulette () $sIdx $ajstdsum) (- $sIdx 1))
 (= (roulette (cons $p $xs) $sIdx $ajstdsum)

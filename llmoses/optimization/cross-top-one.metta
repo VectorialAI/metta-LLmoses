@@ -1,6 +1,7 @@
-;; Compatibility extension for upstream hill-climbing crossover.
-;; Preserve the strategy representation's legacy index map while applying the
-;; upstream crossover algorithm to its scored instances.
+;; LLMOSES overlay of optimization/hillclimbing/cross-top-one.metta.
+;; llCrossTopOne calls upstream crossTopOne for one-field (boolean)
+;; representations, and repeats the same crossover for two-field (strategy)
+;; representations, keeping their $dscKbMp in the returned deme.
 
 !(import! &self optimization/hillclimbing/cross-top-one)
 

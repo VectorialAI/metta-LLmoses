@@ -1,6 +1,7 @@
 ;; LLMOSES overlay of optimization/hillclimbing/hill-climbing-helpers.metta.
-;; Keep this file synchronized with upstream; the sole behavior change is that
-;; the recursive search cap comes from state_builder instead of a hardcoded 500.
+;; Changes from upstream: $maxEvals comes from state_builder instead of a
+;; hardcoded 500, crossover calls llCrossTopOne, and strategy scoring is passed
+;; ($nGames) without the $size flag.
 
 ;; Verbatim port of the Infromation theoretic bits function from c++
 ;; Params: $knobMap: A map of knobs with their multiplicities
@@ -309,9 +310,8 @@
                                           (case $iTable
                                             (
                                               ((mkITable $rows $labels) ($transformFunction $updatedInstSet $rep $id (mkITable $rows $labels) $rowOCoeff))
-                                              ;; The upstream sentinel in $size distinguishes strategy
-                                              ;; search from feature selection; it is not part of the
-                                              ;; scoring context, which remains the one-field ($nGames).
+                                              ;; $size only flags strategy search vs. feature selection;
+                                              ;; the scoring context is just ($nGames).
                                               ($ComplexityRatio ($transformFunction $updatedInstSet $rep $id ($rowOCoeff) $ComplexityRatio))
                                             ))))
 

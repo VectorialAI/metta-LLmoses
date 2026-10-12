@@ -1,48 +1,43 @@
-;; LLMOSES state-builder wrapper.
-;; Bind extractor results with eval before passing them to py-call; direct
-;; extractor calls can cross into Python unreduced. Load after extractors.metta.
+;; LLMOSES state-builder wrapper: MeTTa entry points for utilities/state_builder.py.
+;; Load after extractors.metta. Bind extractor results with eval before passing
+;; them to py-call; otherwise they can reach Python unevaluated.
 
 !(import! &self "state_builder.py")
 
-;; Canary: prints the run dir at import if PYTHONPATH resolves the module.
+;; Prints the run directory on import, confirming state_builder.py was found on PYTHONPATH.
 !(py-call (state_builder.sb_run_dir))
 
-;; --- direct delegators (scalars already; mirror emitGen/emitNewRun) ---------
+;; direct calls; arguments are already plain values
 (= (sbNewRun)           (py-call (state_builder.new_run)))
 (= (sbBeginGen $g)      (py-call (state_builder.begin_gen $g)))
 (= (sbGetTotalEvals)    (py-call (state_builder.get_total_evals)))
 (= (sbEnterGen $g) (py-call (state_builder.enter_gen $g)))
 (= (sbCheckpoint $continuation) (py-call (state_builder.checkpoint_native $continuation)))
-;; sbResume is defined after llmContinue in deme/expand-deme.metta. At this
-;; import point PeTTa would compile the unknown dispatcher as a literal atom.
+;; sbResume lives in llmoses/deme/expand-deme.metta, after llmContinue; defined
+;; here, PeTTa would treat (llmContinue ...) as data.
 (= (sbSnapshotMembers $mp)
    (let* (($g (py-call (state_builder.current_generation)))
           ($_clear (py-call (state_builder.clear_members $g)))
           ($_members (sbEmitAllMembers $g $mp))) 0))
 
-;; --- input feature spec: emit once per run from the ITable ----------------
-;; Boolean problems have $itable in context; strategy problems pass 0 (no-op).
+;; records the input feature labels from the ITable, once per boolean run
 (= (sbSetProblemSpec $itable)
    (let* (($labels (eval (getArgLabels $itable))))
      (py-call (state_builder.set_problem_spec $labels))))
 
-;; --- post_selection hook: buffer the selected exemplar's tree -------------
-;; Called from inside expandDeme right after $tree is bound. Passes the FULL
-;; raw tree (so its program_id matches a member/candidate id). Buffered in
-;; Python; flush_gen consumes + validates it against the gen's candidates.
+;; records the selected exemplar. Pass the full tree so its program_id matches the member's.
 (= (sbSetSelection $tree)
    (py-call (state_builder.set_selection $tree)))
 
-;; --- member loop: eval-bind every extractor result, THEN py-call ------------
-;; $expr = short preOrder display; $tree = full raw tree for collision-resistant id.
-;; cscore crosses as a flat list via cscoreFields; Python unwraps defensively.
+;; sends each metapopulation member to state_builder.add_member
+;; $expr is the preOrder form for display; $tree is the full tree, used for the program_id.
 (= (sbEmitMembers $g $os $i $n)
    (if (>= $i $n)
        0
        (let* (
          ($x    (memberByIdx $os $i))
-         ($expr (eval (memberExpr   $x)))   ; short display (preOrder)
-         ($tree (eval (memberTree   $x)))   ; full raw tree -> collision-resistant id
+         ($expr (eval (memberExpr   $x)))
+         ($tree (eval (memberTree   $x)))
          ($cs   (eval (cscoreFields (memberCscore $x))))
          ($bs   (eval (memberBScore $x)))
          ($_    (py-call (state_builder.add_member $g $expr $tree $cs $bs)))
@@ -51,7 +46,7 @@
 (= (sbEmitAllMembers $g $os)
    (let* (($n (eval (metapopSize $os)))) (sbEmitMembers $g $os 0 $n)))
 
-;; --- per-deme emit: iterate optimized-deme tuple, keying knobs + meta by demeId -----
+;; sends a deme's knobs, tree and instance count to state_builder, keyed by $demeId
 (= (sbEmitDemeKnobs $g $demeId ()) 0)
 (= (sbEmitDemeKnobs $g $demeId (cons $k $rest))
    (let* (
@@ -70,8 +65,8 @@
      ($_s   (py-call (state_builder.set_deme $g $demeId $tr $inst)))
    ) 0))
 
-;; Named run-parameter buffering (replaces the 12-arg positional sbFlushGen).
-;; Values persist in Python until new_run; flush_terminal reuses them without re-set.
+;; run parameters, stored in Python until the next new_run and reused by
+;; flush_gen and flush_terminal
 (= (sbSetRunParam $name $value)
    (py-call (state_builder.set_run_param $name $value)))
 
@@ -93,18 +88,15 @@
      ($_p12 (sbSetRunParam "hill_climb_max_evaluations" $hillClimbMaxEvals))
    ) 0))
 
-;; --- post_deme_close Tier A/B ----------------------------------------------
-;; sbBeginMerge MUST be called BEFORE mergeDemes so the in-merge set_merge_count
-;; events land in an open buffer. sbEmitAllMerged only WALKS the post-merge pop.
+;; sbBeginMerge must be called before merging so set_merge_count and
+;; sbEmitCullCands have a merge record to write to.
 (= (sbBeginMerge) (py-call (state_builder.begin_merge)))
 
-;; Run-level static config preamble (before generation 1).
+;; writes the run configuration, before generation 1
 (= (sbEmitRunConfig) (py-call (state_builder.emit_run_config)))
 
-;; Walk $removedDominated (mkExemplar list) and buffer each as a cull candidate.
-;; Called at the merge-demes hook site, buffer open from sbBeginMerge.
-;; cscore fields extracted via named accessors (getScore / getComp / getPenScore)
-;; so the three scalars cross as ints/floats rather than as a raw mkCscore atom.
+;; records the candidates that survived dominance filtering in merge-demes.
+;; Score fields are extracted one by one so they reach Python as numbers, not as an mkCscore atom.
 (= (sbEmitCullCands ()) 0)
 (= (sbEmitCullCands (cons $ex $rest))
    (let* (
@@ -118,6 +110,7 @@
      ($_ (py-call (state_builder.add_cull_candidate $expr $tree $bscore $raw $cpx $pen)))
    ) (sbEmitCullCands $rest)))
 
+;; records the tree of each member of the merged metapopulation
 (= (sbEmitMergedPop $os $i $n)
    (if (>= $i $n) 0
        (let* (($x  (memberByIdx $os $i))
@@ -128,9 +121,8 @@
    (let* (($n (eval (metapopSize $os))))
      (sbEmitMergedPop $os 0 $n)))
 
-;; --- one-call convenience: emit a full generation --------------------------
-;; sbEmitGeneration takes the WHOLE optimized-deme tuple and iterates via sbEmitDeme.
-;; Run parameters are pre-buffered via sbSetRunParams; flush_gen reads them from Python.
+;; emits a whole generation in one call: members, every optimized deme, then flush_gen.
+;; Requires sbSetRunParams to have been called for the run.
 (= (sbEmitGeneration $g $metaPop $optimizedDemes)
    (let* (
      ($_g1 (sbBeginGen $g))
@@ -139,9 +131,8 @@
      ($_g4 (py-call (state_builder.flush_gen $g)))
    ) 0))
 
-;; Terminal snapshot — full ProgramRecords of the FINAL post-merge metapop.
-;; Reuses sbBeginGen + sbEmitAllMembers; writes terminal.json (no sentinel).
-;; Run parameters are pre-buffered via sbSetRunParams; flush_terminal reads them.
+;; writes the final metapopulation to terminal.json. No ready file is written
+;; for it. Requires sbSetRunParams to have been called for the run.
 (= (sbEmitTerminal $g $metaPop)
    (let* (
      ($_t1 (sbBeginGen $g))
@@ -149,15 +140,14 @@
      ($_t3 (py-call (state_builder.flush_terminal $g)))
    ) 0))
 
-;; Strategy problem spec: upstream now evaluates a mixed random/minimax budget,
-;; so the former caller-selected opponent is recorded as mixed-opponents.
+;; records the strategy problem. Upstream scores against a mix of random and
+;; minimax opponents, so the opponent is recorded as mixed-opponents.
 (= (sbSetProblemSpecStrategy $nGames $complexityRatio)
    (let* (($moves (eval (getAllGameMoves))))
      (py-call (state_builder.set_problem_spec_strategy $moves $nGames mixed-opponents $complexityRatio))))
 
-;; Explicit boolean run initializer — call instead of sbNewRun + sbSetProblemSpec.
-;; Combines new_run, problem-spec, and run-param buffering in one call.
-;; Use for the 4-field context: ($prune $fsAlgo $truthTableBScore $itable)
+;; starts a boolean run: new_run, problem spec, run parameters, run config.
+;; For the context ($prune $fsAlgo $truthTableBScore $itable).
 (= (sbBeginRunBoolean
       $maxGen $nEval $maxCandsPerDeme $minPoolSize $complexityTemperature
       $nToKeep $capCoef $nDeme
@@ -175,8 +165,7 @@
      ($_3 (sbEmitRunConfig))
    ) 0))
 
-;; Explicit strategy run initializer — call instead of sbNewRun + sbSetProblemSpecStrategy.
-;; Use for the upstream 2-field context: ($nGames $complexityRatio)
+;; starts a strategy run, as above. For the context ($nGames $complexityRatio).
 (= (sbBeginRunStrategy
       $maxGen $nEval $maxCandsPerDeme $minPoolSize $complexityTemperature
       $nToKeep $capCoef $nDeme

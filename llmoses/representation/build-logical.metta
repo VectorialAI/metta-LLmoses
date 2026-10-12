@@ -1,5 +1,10 @@
-;; LLMOSES overlay: native recursion/order, plus causal metadata for pair policy.
-;; Native probe paths are unchanged. Causal paths distinguish appended sites.
+;; LLMOSES overlay of representation/build-logical.metta.
+;; buildLogical takes two extra arguments, passed down the recursion to
+;; addLogicalKnobsFast for the atom-pair policy:
+;;   $causalPath: child positions from the root to this knob site, including appended children
+;;   $siteKind:   how the knob site arose (exemplar_node, appended_child, literal_wrap, sampled_subtree)
+;; Recursion order and the $currentNodeId paths given to logicalProbe are unchanged.
+
 ;; siblingit => Iterate over list of Tree children and build logical knobs for each node
 ;; Extended to support PRIORITIZED-OR for game strategies
 ;;params:
@@ -179,6 +184,6 @@
         )
             ($updatedTree $updatedMMap)))))
 
-;; Seven-argument upstream entry starts a causal root. No RNG is consumed here.
+;; 7-argument form (upstream signature): start at the root with an empty $causalPath.
 (= (buildLogical $tree $parentOp $map $labels $disc $globalTree $nativeId)
    (buildLogical $tree $parentOp $map $labels $disc $globalTree $nativeId () exemplar_node))

@@ -1,11 +1,7 @@
-;; ============================================================================
-;; llmoses/scoring/bscore.metta
-;;
-;; Overlay for scoring/bscore.metta — import INSTEAD OF the upstream module.
-;; Replaces scoreTree's cache key from bare $tree to ($ctx $tree ...) where
-;; $ctx is the full mkITable, preventing cross-table cache poisoning when the
-;; same tree shape is scored against different truth tables.
-;; ============================================================================
+;; LLMOSES overlay of scoring/bscore.metta. Import this instead of the upstream
+;; file; it imports upstream itself and adds the scoreTree clause below.
+;; scoreTree caches on (ITable, tree) rather than tree alone, so a tree scored
+;; against two different truth tables doesn't reuse the wrong result.
 
 !(import! &self scoring/bscore)
 

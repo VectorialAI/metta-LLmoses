@@ -1,6 +1,7 @@
 ;; LLMOSES overlay of deme/merge-demes.metta.
-;; The merge algorithm follows upstream; the additions below buffer merge
-;; counters and culled candidates for the state/action emitter.
+;; Merging follows upstream, plus py-calls that record merge counts and the
+;; candidates entering the metapopulation. The final resizeMetapop is moved out
+;; of the per-deme loop; see llmFilterDemes and mergeDemes at the bottom.
 
 ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
 ;;                 Merge Demes                       ;;
@@ -205,10 +206,10 @@
    (cons $exemplar $acc))
 (= (removeDominatedRec $exemplar (cons $other $rest) $acc)
    (let $dom (dominates (getExemplarBScore $exemplar) (getExemplarBScore $other))
-      (if (== $dom True)
+      (if (== $dom True) ;; Could also be Indeterminate that's why we use explicit == comparison
           (removeDominatedRec $exemplar $rest $acc)
           (if (== $dom False)
-              ;; F-022: revisit every incomparable candidate against the new pivot.
+              ;; $other becomes the pivot; candidates already set aside in $acc are rechecked against it
               (removeDominatedRec $other (llmAppendCons $rest $acc) ())
               (removeDominatedRec $exemplar $rest (cons $other $acc))))))
 (= (llmAppendCons () $ys) $ys)
@@ -240,6 +241,8 @@
 ;;   $genCount: Generation count for resizing.
 ;; Return: Updated and resized metapopulation.
 ; (: mergeDemes (-> Expression Number Number Number Number (ITable $a) (OS (Exemplar $a)) Number Number Number (OS (Exemplar $a))))
+;; llmFilterDemes takes the same parameters as mergeDemes but does not resize;
+;; the retention step resizes once after all demes are merged.
 (= (llmFilterDemes $demes $nEval $maxCandsPerDeme $minPoolSize $complexityTemperature $scoringContext $metapop $nToKeep $capCoef $genCount)
     (if (== $demes ()) $metapop
         (let*
@@ -274,7 +277,7 @@
             ($updatedMetaPop (mergeCandidates $removedDominated $metapop))  ;;merge candidates into metapop
             ;; ($_ (println! (merged Candidate: $updatedMetaPop)))
             ($_ (println! (Metapop size before resize: (OS.length $updatedMetaPop))))
-            ($resizedMetapop $updatedMetaPop)  ;;resize the metapop
+            ($resizedMetapop $updatedMetaPop)  ;; resize deferred to resizeMetapop in the retention step
             ($_ (println! (Metapop size after resize: (OS.length $resizedMetapop))))
             ; ($resizedMetapop (if (<= $nToKeep (OS.length $updatedMetaPop)) (OS.getTopN $nToKeep $updatedMetaPop) $updatedMetaPop)) ;; select top nToKeep candidates
             ;; ($_ (println! (Resized Metapop: $resizedMetapop)))
@@ -288,7 +291,7 @@
     )
 )
 
-;; Public compatibility entry: filter all demes first, then retain once.
+;; Upstream entry point: filter every deme, then resize once.
 (= (mergeDemes $demes $nEval $maxCands $minimum $trim $ctx $mp $keep $cap $gen)
    (let $pool (llmFilterDemes $demes $nEval $maxCands $minimum $trim $ctx $mp $keep $cap $gen)
         (resizeMetapop $pool $keep $minimum $trim $cap $gen)))
